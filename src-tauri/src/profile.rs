@@ -1296,6 +1296,29 @@ fn kernel_file_privileged(path: &std::path::Path) -> bool {
     }
 }
 
+/// Whether `fd` is still a live descriptor in this process. Android hands the
+/// VpnService TUN to the Rust child as an inherited number, and the number is
+/// only meaningful while the host VpnService owns it: after `onRevoke` closed
+/// it, a later launch must not pass the stale number (it may have been reused
+/// by an unrelated descriptor). `/proc/self/fd` (Linux/Android) and `/dev/fd`
+/// (Darwin) expose one entry per open descriptor without touching its contents.
+#[cfg(unix)]
+fn descriptor_is_open(fd: i32) -> bool {
+    if fd < 0 {
+        return false;
+    }
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    let path = format!("/proc/self/fd/{fd}");
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    let path = format!("/dev/fd/{fd}");
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+#[cfg(not(unix))]
+fn descriptor_is_open(_fd: i32) -> bool {
+    false
+}
+
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
     /// Engine the next launch uses; kept in sync with the profile book selection.
@@ -1771,7 +1794,15 @@ impl ProcessRuntime {
         // never as a `tun.file-descriptor` YAML key. Desktop has no such fd.
         if self.engine == Engine::Rust {
             if let Some(fd) = self.tun_fd {
-                command.arg("--tun-fd").arg(fd.to_string());
+                // A child that exited on its own leaves the number behind; the
+                // VpnService may also have released it on revoke. Only a live
+                // descriptor can be inherited, otherwise the next process would
+                // poll a reused number (or fail on a closed one).
+                if descriptor_is_open(fd) {
+                    command.arg("--tun-fd").arg(fd.to_string());
+                } else {
+                    self.tun_fd = None;
+                }
             }
         }
         command
@@ -11138,6 +11169,66 @@ proxy-groups:
         assert_eq!(
             (kernel.stops, kernel.starts, vpn.establish_calls),
             (stops, starts, establishes)
+        );
+    }
+
+    #[test]
+    fn android_rust_repeated_package_changes_keep_the_child_and_tunnel() {
+        let dir = temp_dir("android-idempotent-package");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let mut kernel = EngineKernel::new();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        book.switch_engine(Engine::Rust, &mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .unwrap();
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.vpn && connected.connected, "{connected:?}");
+        // Make the exclusion list current (this one is a real change).
+        book.set_app_rules("exclude", &["com.bank".to_string()], &mut kernel, &mut vpn);
+        assert!(kernel.alive);
+        let (stops, starts, establishes) = (kernel.stops, kernel.starts, vpn.establish_calls);
+
+        // The same package again, and a package that is not excluded, change
+        // nothing: the live tunnel and the Android Rust child must survive.
+        let repeated = book.exclude_package("com.bank", &mut kernel, &mut vpn);
+        assert!(repeated.vpn && repeated.connected, "{repeated:?}");
+        assert!(kernel.alive && vpn.open);
+        assert_eq!(kernel.tun_fd, Some(1), "the child still reads the same fd");
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes),
+            "a no-op exclude must not stop the child or rebuild the fd"
+        );
+
+        let absent = book.include_package("com.absent", &mut kernel, &mut vpn);
+        assert!(absent.vpn && absent.connected, "{absent:?}");
+        assert!(kernel.alive && vpn.open);
+        assert_eq!(kernel.tun_fd, Some(1));
+        assert_eq!(
+            (kernel.stops, kernel.starts, vpn.establish_calls),
+            (stops, starts, establishes),
+            "including a package that was not excluded is a no-op"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_live_descriptors_pass_the_android_tun_fd_check() {
+        use std::os::unix::io::AsRawFd;
+        assert!(!descriptor_is_open(-1));
+        // A number above the open-file limit is never a live descriptor.
+        assert!(!descriptor_is_open(i32::MAX));
+        let dir = temp_dir("android-tun-fd-check");
+        let path = dir.0.join("probe");
+        fs::write(&path, b"ok").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        assert!(
+            descriptor_is_open(file.as_raw_fd()),
+            "an open file descriptor must be passed to the child"
         );
     }
 

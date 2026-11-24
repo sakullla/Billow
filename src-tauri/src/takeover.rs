@@ -483,8 +483,9 @@ impl LinkModel {
 /// `before_replace` runs only when a live tunnel is about to be re-established,
 /// i.e. exactly when the fd returned by `vpn.establish` replaces the previous
 /// one. Callers that must stop an Android Rust child holding the old descriptor
-/// do it there: a caller-side stop happens even when the effective filter is
-/// unchanged, and then no tunnel is rebuilt.
+/// do it there. All three list operations are idempotent: an unchanged
+/// effective filter (including a package already present/absent) returns `None`
+/// without stopping the child or rebuilding the descriptor.
 pub fn set_app_rules(
     model: &mut LinkModel,
     mode: &str,
@@ -522,8 +523,15 @@ pub fn exclude_package(
     let Some(package_name) = clean_package(package_name) else {
         return None;
     };
+    // Same idempotency rule as `set_app_rules`: a package already bypassed (or
+    // hidden by a non-empty allowlist) changes nothing, so the live tunnel and
+    // the Android Rust child must not be rebuilt for a no-op save.
+    let before = model.app_filter();
     if !model.excluded.iter().any(|item| item == &package_name) {
         model.excluded.push(package_name);
+    }
+    if model.app_filter() == before {
+        return None;
     }
     refresh_vpn(model, vpn, before_replace)
 }
@@ -540,7 +548,11 @@ pub fn include_package(
     let Some(package_name) = clean_package(package_name) else {
         return None;
     };
+    let before = model.app_filter();
     model.excluded.retain(|item| item != &package_name);
+    if model.app_filter() == before {
+        return None;
+    }
     refresh_vpn(model, vpn, before_replace)
 }
 

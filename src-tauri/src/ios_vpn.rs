@@ -96,6 +96,46 @@ pub struct IosStatus {
     pub last_error: Option<String>,
     pub error_code: Option<i32>,
     pub started_at: Option<String>,
+    /// Live counters + process peak RSS. Published by the Rust extension's
+    /// `billow_ios_vpn_stats`; absent for Mihomo and older builds.
+    #[serde(default)]
+    pub stats: Option<IosStats>,
+}
+
+/// The Rust extension's `stats` object (`billow_ios_vpn_stats`). Every field is
+/// optional so a reply without a counter still decodes; key names mirror the
+/// JSON emitted by the kernel and the Swift `ProviderStats`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IosStats {
+    pub running: Option<bool>,
+    pub version: Option<String>,
+    pub generation: Option<u64>,
+    pub reloads: Option<u64>,
+    pub peak_rss_bytes: Option<u64>,
+    pub in_packets: Option<u64>,
+    pub in_bytes: Option<u64>,
+    pub out_packets: Option<u64>,
+    pub out_bytes: Option<u64>,
+    pub tcp_opened: Option<u64>,
+    pub tcp_closed: Option<u64>,
+    pub tcp_rejected: Option<u64>,
+    pub tcp_flows: Option<u64>,
+    pub tcp_flow_high: Option<u64>,
+    pub udp_datagrams: Option<u64>,
+    pub udp_replies: Option<u64>,
+    pub udp_flows: Option<u64>,
+    pub udp_flow_high: Option<u64>,
+    pub dns_queries: Option<u64>,
+    pub dns_failures: Option<u64>,
+    pub invalid_packets: Option<u64>,
+    pub fragments: Option<u64>,
+    pub unsupported_protocols: Option<u64>,
+    pub icmp_dropped: Option<u64>,
+    pub dropped_inbound: Option<u64>,
+    pub dropped_egress: Option<u64>,
+    pub queue_high: Option<u64>,
+    pub queued_packets: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,17 +378,20 @@ pub async fn ios_vpn_disconnect() -> Result<(), IosVpnError> {
 
 #[tauri::command]
 pub async fn ios_vpn_status(engine: String) -> Result<Option<IosStatus>, IosVpnError> {
-    run(move || {
-        let value = dispatch(
-            &PlatformTransport,
-            &HostRequest::new("status").engine(&engine),
-        )?;
-        if value.is_null() {
-            return Ok(None);
-        }
-        decode(value).map(Some)
-    })
-    .await
+    run(move || status(&PlatformTransport, &engine)).await
+}
+
+/// Shared by the command and the tests: an absent status reply is `Ok(None)`,
+/// a present one carries the same `stats` object the extension sent.
+fn status<T: HostTransport>(
+    transport: &T,
+    engine: &str,
+) -> Result<Option<IosStatus>, IosVpnError> {
+    let value = dispatch(transport, &HostRequest::new("status").engine(engine))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    decode(value).map(Some)
 }
 
 #[tauri::command]
@@ -477,6 +520,66 @@ mod tests {
         )
         .unwrap();
         assert!(value.is_null());
+    }
+
+    #[test]
+    fn status_reply_carries_the_rust_stats_for_the_r4_entry() {
+        let mock = Mock::new(
+            r#"{"ok":true,"data":{
+                "extensionId":"app.billow.client.rust","engine":"rust",
+                "embeddedVersion":"billow-rust 0.1.0","running":true,
+                "version":"v7","loopbackPort":null,"loopbackListen":null,
+                "lastError":null,"errorCode":null,
+                "startedAt":"2026-11-24T00:00:00Z",
+                "stats":{"running":true,"version":"billow-rust 0.1.0",
+                    "generation":3,"reloads":2,"peakRssBytes":28491776,
+                    "tcpFlows":8,"tcpOpened":12,"tcpClosed":4,
+                    "queuedPackets":0,"queueHigh":7,
+                    "udpFlows":2,"dnsQueries":5}
+            }}"#,
+        );
+        let status = status(&mock, "rust").unwrap().expect("status");
+        assert!(status.running);
+        assert_eq!(status.version.as_deref(), Some("v7"));
+        let stats = status.stats.expect("stats passthrough");
+        assert_eq!(stats.generation, Some(3));
+        assert_eq!(stats.reloads, Some(2));
+        assert_eq!(stats.peak_rss_bytes, Some(28_491_776));
+        assert_eq!(stats.tcp_flows, Some(8));
+        assert_eq!(stats.tcp_opened, Some(12));
+        assert_eq!(stats.queued_packets, Some(0));
+        assert_eq!(stats.queue_high, Some(7));
+        assert_eq!(stats.dns_queries, Some(5));
+    }
+
+    #[test]
+    fn status_reply_without_stats_stays_compatible() {
+        let mock = Mock::new(
+            r#"{"ok":true,"data":{
+                "extensionId":"app.billow.client.mihomo","engine":"mihomo",
+                "embeddedVersion":"v1.19.34","running":true,"version":"v1",
+                "loopbackPort":1234,"loopbackListen":"127.0.0.1:1234",
+                "lastError":null,"errorCode":null,"startedAt":null
+            }}"#,
+        );
+        let status = status(&mock, "mihomo").unwrap().expect("status");
+        assert_eq!(status.loopback_port, Some(1234));
+        assert_eq!(status.stats, None);
+    }
+
+    #[test]
+    fn stats_keys_unknown_to_this_build_do_not_break_decoding() {
+        let mock = Mock::new(
+            r#"{"ok":true,"data":{
+                "extensionId":"app.billow.client.rust","engine":"rust",
+                "embeddedVersion":null,"running":false,"version":null,
+                "loopbackPort":null,"loopbackListen":null,"lastError":null,
+                "errorCode":null,"startedAt":null,
+                "stats":{"generation":1,"futureCounter":99}
+            }}"#,
+        );
+        let status = status(&mock, "rust").unwrap().expect("status");
+        assert_eq!(status.stats.unwrap().generation, Some(1));
     }
 
     #[cfg(not(target_os = "ios"))]
