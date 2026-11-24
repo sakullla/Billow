@@ -545,6 +545,36 @@ tasks:
       - docs/testing
       - tool/kernel-compat
       - .github
+  - id: T30
+    goal: 补齐 anytls 与 vless 的剩余有效配置
+    depends_on:
+      - T27
+      - T28
+    covers:
+      - R2
+    outcomes:
+      - anytls：实现 UDP/UoT 关联、会话复用（client-metadata、idle-session-*、min-idle-session、disable-reuse）、TLS-in-TLS（shadow-tls-opts、jls-opts）与 uTLS client-fingerprint；以真实 anytls/Mihomo 对端验证成功与认证失败，无法复现的项具名登记。
+      - vless：实现 UDP/XUDP、packet-encoding、packet-addr 与 uTLS client-fingerprint；以 pinned Mihomo vless 服务端验证 TCP/UDP 出站与错误路径。
+      - 更新选项矩阵并证明 anytls/vless 的 rust=reject 行降为 0（或逐项登记残留）；默认套件/差分不回归，更新 rust-mapping/README/证据。
+    test: extend
+    scope:
+      - native-kernel
+      - tool/kernel-compat
+  - id: T31
+    goal: 补齐 hysteria2/vmess/anytls 的剩余传输与混淆
+    depends_on:
+      - T30
+    covers:
+      - R2
+    outcomes:
+      - hysteria2：实现端口跳跃（ports/hop-interval）、Salamander/Gecko obfs、Brutal up、realm-opts、udp-mtu、bbr-profile；以 pinned Mihomo hysteria2 服务端验证成功与失败路径，无法复现的项具名登记。
+      - vmess：实现 mKCP、mekya、TLS-mirror 传输；以 pinned 对端验证或具名登记不可复现的依赖。
+      - anytls：实现 shadow-tls-opts 与 jls-opts（可复用 T15 shadowquic 的 JLS ClientHello 改写），以真实 anytls 对端验证。
+      - 更新选项矩阵，使 hysteria2/vmess/anytls 的 rust=reject 行清零或逐项登记；默认套件、pinned peer、差分与 runner 不回归。
+    test: extend
+    scope:
+      - native-kernel
+      - tool/kernel-compat
 delivery_verification:
   frontend_tests:
     command: npm test

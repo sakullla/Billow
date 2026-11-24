@@ -25,6 +25,10 @@ summary: "Rust 转发库与 Mihomo 复用有效配置。桌面和 Android 使用
 
 T9 的职责是把已交付的协议子集与显式拒绝集成到同一候选，保证可构建、证据可复现、CLI 与嵌入库入口一致；R2 的“所有有效配置可用”由最终交付验证（T8/Delivery）在完整候选上判定，T9 不因仍有已登记的 partial 缺口而单独阻断。
 
+Owner 进一步要求：`hysteria2` 与 `vmess` 的剩余有效配置也必须在首版补齐（hysteria2 的 ports/obfs/up/realm/udp-mtu/bbr，vmess 的 mKCP/mekya/TLS-mirror），anytls 的 shadow-tls/jls 也继续补齐；由 T31 承接，按 pinned 对端验证，确实不可复现的项需最终登记并经 Owner 确认。
+
+Owner 已明确要求：`anytls` 与 `vless` 的剩余有效配置必须在首版内补齐，包括 UDP/UoT、`packet-encoding`/`packet-addr`、anytls 的会话复用与 TLS-in-TLS（shadow-tls/jls）以及 uTLS `client-fingerprint`；由单独任务承接并用真实/受控对端验证。其余选项缺口仍按族归属或需求方收窄处理。
+
 交付复审（changes_requested）追加两类返修：Android 上 Rust 内核需要独立的 VpnService TUN fd 数据面（复用 T7 的用户态 IP 栈，宿主直接移交 fd，而不是把 tun 作为 YAML 键注入后被拒绝）；R2 的选项矩阵仍有 pinned Mihomo 接受而 Rust 具名拒绝的有效形式，按协议族分两批以矩阵为驱动补齐，无法实现的形式由需求方书面收窄或登记。Windows/Linux/Android/iOS 的打包后实跑与 R3/R4 真机测量作为独立补证任务，在具备工具链与设备的环境执行；真机与 CI 证据缺失时交付保持未通过。
 
 配置平面同样按可独立复验的能力拆分，避免单个任务同时承担 DNS、策略组、规则/provider 与控制接口：DNS 与 hosts（含 fake-ip、nameserver-policy、DoH/DoT）、策略组与选择/测速（select/url-test/fallback/load-balance/relay 与嵌套组）、规则与 provider/GEO-MRS/覆写/资源更新、控制接口分别作为独立任务交付，T5 只负责把这些能力与 T15/T16 协议适配集成到同一候选并做逐项与组合差分。每项仍须显式拒绝未实现形状并登记，最终完整兼容由 T8/Delivery 判定。

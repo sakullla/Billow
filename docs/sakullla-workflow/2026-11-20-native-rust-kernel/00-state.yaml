@@ -3,35 +3,15 @@ workflow_id: 2026-11-20-native-rust-kernel
 requirement_ref: docs/requirements/2026-11-20-native-rust-kernel.md
 requirement_version: sha256:aa0f5410f9097c8b8cb30a481039c5e1b8cde2d2646c354fd27a99cf981b038b
 requirement_ids: [R1, R2, R3, R4]
-requirement_revision: 13
+requirement_revision: 15
 revision_fence:
-  from_revision: 12
-  to_revision: 13
+  from_revision: 14
+  to_revision: 15
   status: reconciled
-  preserved_active_task_ids: [T26]
+  preserved_active_task_ids: []
   preserved_result_task_ids: []
   preserved_review_task_ids: []
-  preserved_drafts:
-    - task_id: T26
-      paths:
-        - repository_id: anchor
-          path: docs/testing/2026-11-23-ios-rust-extension-memory.md
-          digest: sha256:bf02439932e58de2a5bd9b816862dc2a31698045d88375fb081ac840f8bbfbfc
-        - repository_id: anchor
-          path: src-tauri/src/ios_vpn.rs
-          digest: sha256:fc0c1628703f4c91ab3f40ffa1c0de67efdf4a32e4e75f91d61d113277d87662
-        - repository_id: anchor
-          path: src-tauri/src/profile.rs
-          digest: sha256:2e8a7d4ce1bc6142321a6fc62171d2ca47a2764248401e08177bb2c2e069a794
-        - repository_id: anchor
-          path: src-tauri/src/takeover.rs
-          digest: sha256:bb07aca31fa07acc287477dcbcfcd318edc494b9c9a67046770903939967266c
-        - repository_id: anchor
-          path: tool/engine-switch.md
-          digest: sha256:5f94be93d919f9b50b8ceee5966f9e3d6ea242e6f9e772bf0a27ccf32d97299a
-        - repository_id: anchor
-          path: tool/ios/verify-device.md
-          digest: sha256:e15d9d4910f77fbef05a3d10c3d5c8374b432d5a8e163712d3a495701b48dd81
+  preserved_drafts: []
   reused_task_ids:
     - T1
     - T2
@@ -60,10 +40,13 @@ revision_fence:
     - T21
     - T26
     - T27
+    - T28
+    - T29
+    - T30
   stale_task_ids: []
   revision_attempt_task_ids: []
-  rebuilt_task_ids: [T28, T29]
-status: blocked
+  rebuilt_task_ids: [T31]
+status: active
 stages:
   exploration: completed
   solution: completed
@@ -1209,13 +1192,85 @@ tasks:
         review_digest: sha256:467ce38f5b5b88a777a9daf744d37e47838eaefdf4b1cc451b8aad5bd6115506
     history_head_ref: evidence/history/70.json
     history_count: 4
-blocker:
-  reason: R2 仍有 107 项 pinned Mihomo 接受而 Rust 具名拒绝的有效配置，且无需求方书面收窄；Windows/Linux/Android 缺工具链、iOS 缺签名真机，R3/R4 无真机测量。需范围决定与外部补证，保持未通过。
-  owner: deliver
-  resume_action: delivery.prepare
+  - id: T30
+    status: completed
+    task_run_ref: task-runs/T30-run.md
+    recipe_digest: sha256:6b2587c477d013ab1387014d56ddad1206804677fa79993d2a7b50eb05f76532
+    recipe_snapshot:
+      id: T30
+      goal: 补齐 anytls 与 vless 的剩余有效配置
+      depends_on: [T27, T28]
+      covers: [R2]
+      outcomes:
+        - anytls：实现 UDP/UoT 关联、会话复用（client-metadata、idle-session-*、min-idle-session、disable-reuse）、TLS-in-TLS（shadow-tls-opts、jls-opts）与 uTLS client-fingerprint；以真实 anytls/Mihomo 对端验证成功与认证失败，无法复现的项具名登记。
+        - vless：实现 UDP/XUDP、packet-encoding、packet-addr 与 uTLS client-fingerprint；以 pinned Mihomo vless 服务端验证 TCP/UDP 出站与错误路径。
+        - 更新选项矩阵并证明 anytls/vless 的 rust=reject 行降为 0（或逐项登记残留）；默认套件/差分不回归，更新 rust-mapping/README/证据。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 14
+    review_base_ref: f0ed0078c0559eb8feb561df0cba9a727dc1cc92
+    attempts:
+      - attempt_id: T30-A2
+        message_id: T30-A2-M1
+        recipe_digest: sha256:6b2587c477d013ab1387014d56ddad1206804677fa79993d2a7b50eb05f76532
+        owner_mode: worker
+        baseline_ref: db53a022f77cb27ffccc328b79b87d4a6a4af98d
+        checkpoint_ref: 49af85477ddf470d5e2daa668e740a8065172ca0
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 2
+        path_count: 22
+        review_evidence_refs: [evidence/reviews/140.json]
+        scope_ref: evidence/history/72.json#Attempt-History/T30-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/72.json#Attempt-History/T30-A2/execution
+        execution_digest: sha256:cced6a77a8efccfe6dad9ce0c124f15ced76d66624faf49c579ab050d2cc177b
+        review_ref: evidence/history/72.json#Attempt-History/T30-A2/review
+        review_digest: sha256:a33b98aa3d86521156dffa7445b0443ee8357fa5693c4563caeaa80ea6d81472
+    history_head_ref: evidence/history/72.json
+    history_count: 2
+  - id: T31
+    status: completed
+    task_run_ref: task-runs/T31-run.md
+    recipe_digest: sha256:fbed669826b5c2d6c8104834c3a7129ff6c961da7dab44c41736fc0626b2a50a
+    recipe_snapshot:
+      id: T31
+      goal: 补齐 hysteria2/vmess/anytls 的剩余传输与混淆
+      depends_on: [T30]
+      covers: [R2]
+      outcomes:
+        - hysteria2：实现端口跳跃（ports/hop-interval）、Salamander/Gecko obfs、Brutal up、realm-opts、udp-mtu、bbr-profile；以 pinned Mihomo hysteria2 服务端验证成功与失败路径，无法复现的项具名登记。
+        - vmess：实现 mKCP、mekya、TLS-mirror 传输；以 pinned 对端验证或具名登记不可复现的依赖。
+        - anytls：实现 shadow-tls-opts 与 jls-opts（可复用 T15 shadowquic 的 JLS ClientHello 改写），以真实 anytls 对端验证。
+        - 更新选项矩阵，使 hysteria2/vmess/anytls 的 rust=reject 行清零或逐项登记；默认套件、pinned peer、差分与 runner 不回归。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 15
+    review_base_ref: 49af85477ddf470d5e2daa668e740a8065172ca0
+    attempts:
+      - attempt_id: T31-A4
+        message_id: T31-A4-M1
+        recipe_digest: sha256:fbed669826b5c2d6c8104834c3a7129ff6c961da7dab44c41736fc0626b2a50a
+        owner_mode: worker
+        baseline_ref: 19af0dd4d5c24ad76262ea7d3ab52051d65d6a52
+        checkpoint_ref: 2f1eaf371d01d90cf068ab25f88bb1c6914ae91e
+        execution_status: completed
+        review_decision: passed
+        finding_count: 1
+        path_count: 8
+        review_evidence_refs: [evidence/reviews/148.json]
+        scope_ref: evidence/history/76.json#Attempt-History/T31-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/76.json#Attempt-History/T31-A4/execution
+        execution_digest: sha256:d6bc388e4315b7495e83313989602ecaf8e4f02f6e3389aada6c7f126af8906c
+        review_ref: evidence/history/76.json#Attempt-History/T31-A4/review
+        review_digest: sha256:4079266aaf134dc0f78038b655bb754319f0cd2a6bc4c956235949306a630d38
+    history_head_ref: evidence/history/76.json
+    history_count: 4
+blocker: null
 delivery:
-  status: active
-plan_input_digest: sha256:7be6efefab2e5e2456e761514d8f7f0b9786ccb02a30a7934d2233544e4d7f50
+  status: pending
+plan_input_digest: sha256:efb4ed0f0f8b081a9e735506b592e9f922ffed53d48de6011cdf4f513199c066
 scheduling:
   capacities: {}
   capabilities: {}
@@ -1760,5 +1815,59 @@ scheduling:
       status: released
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t29-a3-invocation.json
       admission_evidence_ref: ""
+    - lease_id: task:T30-A1
+      invocation_id: ses_df1ac1739ffeJDCZ1sLXzpMtNZ
+      task_id: T30
+      attempt_id: T30-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t30-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T30-A2
+      invocation_id: ses_df1697ec2ffeHFCzn9knJMK8T2
+      task_id: T30
+      attempt_id: T30-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t30-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T31-A1
+      invocation_id: ses_df12d5e68ffegSLHnzh91WHFaS
+      task_id: T31
+      attempt_id: T31-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t31-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T31-A2
+      invocation_id: ses_df0fc35a8ffeoxPVVpGQMnSqvu
+      task_id: T31
+      attempt_id: T31-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t31-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T31-A3
+      invocation_id: ses_df0b88e06ffeOQrv3T8mlnQY4C
+      task_id: T31
+      attempt_id: T31-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t31-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T31-A4
+      invocation_id: ses_df07d4761ffec3RgImfEzsin3F
+      task_id: T31
+      attempt_id: T31-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t31-a4-invocation.json
+      admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/462.json
+result_inbox_ref: evidence/results/500.json
