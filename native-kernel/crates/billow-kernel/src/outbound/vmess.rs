@@ -915,20 +915,85 @@ async fn dial_command(
     // `via[0]` is this vmess outbound; `via[1]` is the single socks5 hop a
     // `dialer-proxy` chain may carry (validated at load). The server socket is
     // either direct or the hop tunnel, never a silent bypass.
-    let (stream, server): (BoxStream, std::net::SocketAddr) = match via.len() {
-        0 | 1 => {
-            let tcp = connect_tcp(&option.server, option.port).await?;
-            let server = tcp.peer_addr().map_err(|e| handshake("vmess", e))?;
-            (Box::new(tcp), server)
+    let (stream, server): (BoxStream, std::net::SocketAddr) = if let VmessNetwork::Mekya(config) = &option.network {
+        if via.len() > 1 {
+            return Err(handshake(
+                "vmess mekya",
+                io::Error::other(
+                    "network 'mekya' cannot be reached through a dialer-proxy chain",
+                ),
+            ));
         }
-        _ => (
-            super::udp::server_stream(&option.server, option.port, via, timeout, tls).await?,
-            super::peer_of(via[0]),
-        ),
+        let server = super::resolve(&option.server, option.port).await?;
+        let stream = super::mekya::connect(
+            &option.server,
+            option.port,
+            &option.tls_settings,
+            tls,
+            config,
+            option.tls,
+        )
+        .await
+        .map_err(|e| handshake("vmess mekya", e))?;
+        (stream, server)
+    } else if let VmessNetwork::Mkcp(config) = &option.network {
+        // mKCP is a UDP transport; a `dialer-proxy` chain would need the
+        // pinned UDP hop dialer, which this kernel does not implement.
+        if via.len() > 1 {
+            return Err(handshake(
+                "vmess mkcp",
+                io::Error::other(
+                    "network 'mkcp' cannot be reached through a dialer-proxy chain",
+                ),
+            ));
+        }
+        let server = super::resolve(&option.server, option.port).await?;
+        (
+            super::mkcp::connect(&option.server, option.port, config)
+                .await
+                .map_err(|e| handshake("vmess mkcp", e))?,
+            server,
+        )
+    } else {
+        match via.len() {
+            0 | 1 => {
+                let tcp = connect_tcp(&option.server, option.port).await?;
+                let server = tcp.peer_addr().map_err(|e| handshake("vmess", e))?;
+                (Box::new(tcp), server)
+            }
+            _ => (
+                super::udp::server_stream(&option.server, option.port, via, timeout, tls).await?,
+                super::peer_of(via[0]),
+            ),
+        }
     };
     let mut stream: BoxStream = match &option.network {
-        VmessNetwork::Tcp => {
+        VmessNetwork::Mekya(_) => stream,
+        VmessNetwork::Mkcp(_) => {
             if option.tls {
+                Box::new(
+                    tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
+                        .await
+                        .map_err(|e| handshake("vmess tls", e))?,
+                )
+            } else {
+                stream
+            }
+        }
+        VmessNetwork::Tcp => {
+            if let Some(mirror) = &option.tlsmirror {
+                Box::new(
+                    super::tlsmirror::wrap(
+                        stream,
+                        &option.server,
+                        &option.tls_settings,
+                        tls,
+                        mirror,
+                    )
+                    .await
+                    .map_err(|e| handshake("vmess tlsmirror", e))?,
+                )
+            } else if option.tls {
                 Box::new(
                     tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
                         .await

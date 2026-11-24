@@ -308,9 +308,21 @@ the pinned listeners; anytls UoT, ss UoT and vmess plain UDP open one
 association per destination and honour the same single-SOCKS5 `dialer-proxy`
 hop as TCP. The four `client-fingerprint` rows stay approximations (closest
 rustls profile, no uTLS ClientHello) and are counted as residuals, not parity.
-The remaining target-family rejections are named in the mapping and README
-(anytls security modes, vmess mkcp/mekya/tlsmirror, hysteria2 port
-hopping/obfs/Brutal/realm/udp-mtu/bbr-profile).
+T31 closes the target families further: anytls ShadowTLS v2 is implemented
+(the HMAC read digest is framed inside the first application record and the
+camouflage handshake disables TLS 1.3 tickets so the digest ends on the pinned
+server's last write); hysteria2 `ports`/`hop-interval` (wrapped
+`quinn::AsyncUdpSocket`), `obfs: salamander`, `up` (Brutal window), `udp-mtu`
+and `bbr-profile` are implemented and verified against the pinned hysteria2
+listener; vmess `network: mkcp`/`kcp` (KCP over UDP with the pinned auth/header
+modes) and `network: mekya` (KCP over HTTP/2 bundle requests) are implemented
+and verified against the pinned vmess listener; vmess `tlsmirror-opts` is the
+pinned carrier-TLS + hidden AES-GCM record layer (primary-key, TLS 1.3) and is
+verified against the pinned vmess listener's `tlsmirror-config` with a real TLS
+destination. The remaining target-family gaps are `hysteria2 obfs: gecko`,
+`ech-opts` and UDP, plus `hysteria2 realm-opts` at dial time (its block loads
+and is parsed, but the HTTP control + STUN/punch rendezvous client is not
+implemented); they are named in the mapping and this README.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

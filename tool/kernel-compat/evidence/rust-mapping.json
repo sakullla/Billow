@@ -577,14 +577,15 @@
         "min-idle-session",
         "disable-reuse",
         "jls-opts (username, password)",
+        "client-fingerprint (approximation: closest rustls profile, counted as residual)",
         "shadow-tls-opts version 1 (password)",
-        "client-fingerprint (approximation: closest rustls profile, counted as residual)"
+        "shadow-tls-opts version 2 (password; the pinned default)"
       ],
       "udp": "implemented: `udp: true` opens a UoT stream (`sp.v2.udp-over-tcp.arpa`) and frames `u16 length || payload`; one stream per destination (pinned `ListenPacketContext`), the server connection honours the TCP `dialer-proxy` chain, and the idle-session pool honours the reuse knobs; tested against the pinned anytls listener",
       "notImplemented": [
         "ech-opts",
-        "shadow-tls-opts: version 2 (the pinned default) and version 3",
-        "restls-opts"
+        "restls-opts",
+        "shadow-tls-opts: version 3"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
@@ -602,7 +603,9 @@
         "tests/mihomo_peers.rs::anytls_over_jls_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::anytls_over_jls_with_a_wrong_password_never_reaches_the_sink",
         "tests/mihomo_peers.rs::anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink"
+        "tests/mihomo_peers.rs::anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink",
+        "tests/mihomo_peers.rs::anytls_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo",
+        "src/outbound/shadow_tls.rs::tests::framing_prefixes_the_hmac_and_uses_application_data_records"
       ],
       "notes": "Session reuse follows the pinned `anytls/session.Client`: idle sessions are pooled per outbound, `disable-reuse` closes a session when its stream ends, `min-idle-session`/`idle-session-timeout` bound the sweep, a background ticker runs every `idle-session-check-interval` (started on the first pooled session, aborted with the pool), and intervals/timeouts `<= 5s` are normalised to the pinned 30s. `client-metadata` is sent in the settings frame. A UoT association is opened per destination (the pinned `ListenPacketContext` shape) and its AnyTLS server connection honours the same single-socks5 `dialer-proxy` hop as TCP. `shadow-tls-opts`/`restls-opts`/`jls-opts` remain named rejections: rustls cannot set the uTLS session id / rewrite the ClientHello+ServerHello random those modes need. `client-fingerprint` is applied as the closest rustls profile (browser key-exchange list); extension order/ciphers are not reproduced, so the 4 family rows are approximations counted as residuals, never byte parity. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
       "security": "implemented for jls-opts and shadow-tls-opts version 1: the JLS ClientHello/ServerHello random is sealed and verified over a TCP rustls session built from the recorded-random provider (`src/outbound/jls.rs::tcp_client`, `src/outbound/tls_io.rs`), and ShadowTLS v1 runs the TLS 1.2 camouflage handshake and then hands the raw stream back (pinned `serverV1` splices raw traffic); both verified end to end against the pinned anytls listener (`jls-config`/`shadow-tls` inbound blocks). ShadowTLS v2 (the default) stays a named rejection: its client HMAC over the bytes the handshake read did not match the pinned server hash in verification (`[ShadowTLS] hashcode mismatch`), and v3 needs a ClientHello session-id hook rustls does not expose. Restls stays a named rejection."
@@ -616,7 +619,7 @@
         "alterId",
         "cipher",
         "tls",
-        "network (tcp, ws)",
+        "network (tcp, ws, mkcp, mekya)",
         "sni",
         "servername",
         "skip-cert-verify",
@@ -636,7 +639,10 @@
         "packet-addr",
         "xudp",
         "packet-encoding: packetaddr|packet|xudp",
-        "client-fingerprint (approximation: closest rustls profile, counted as residual)"
+        "client-fingerprint (approximation: closest rustls profile, counted as residual)",
+        "mkcp-opts",
+        "mekya-opts",
+        "tlsmirror-opts (primary-key)"
       ],
       "udp": "implemented: `command 2` UDP with one record per datagram, plus packet-addr (magic destination) and XUDP (mux frames); plain `command 2` opens one association per destination (pinned packet conn), and the server connection honours the TCP `dialer-proxy` chain; tested against the pinned vmess listener",
       "notImplemented": [
@@ -651,10 +657,7 @@
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
-        "jls-opts",
-        "tlsmirror-opts",
-        "mekya-opts",
-        "mkcp-opts"
+        "jls-opts"
       ],
       "evidence": [
         "src/outbound/vmess.rs::tests::request_body_layout_is_fixed",
@@ -670,9 +673,18 @@
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
         "tests/mihomo_peers.rs::vmess_udp_modes_reach_the_echo_through_mihomo",
         "tests/mihomo_peers.rs::vmess_plain_udp_reaches_two_destinations_from_one_association",
-        "tests/mihomo_peers.rs::chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo"
+        "tests/mihomo_peers.rs::chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo",
+        "src/outbound/mkcp.rs::tests::simple_authenticator_round_trips_and_pads_without_changing_the_length",
+        "src/outbound/mkcp.rs::tests::segment_round_trip_carries_all_fields",
+        "src/outbound/mekya.rs::tests::base64url_matches_the_unpadded_alphabet",
+        "tests/mihomo_peers.rs::vmess_over_mkcp_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::vmess_over_mekya_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::vmess_over_tlsmirror_reaches_the_receiving_side_through_mihomo",
+        "src/outbound/tlsmirror.rs::tests::xor_nonce_encryptor_and_decryptor_share_the_counter",
+        "src/outbound/tlsmirror.rs::tests::primary_key_decodes_standard_base64"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
+      "reason": " `network: mkcp`/`kcp` (KCP over UDP, seed AES-128-GCM or FNV-1a auth and all six camouflage headers) and `network: mekya` (KCP over HTTP/2 bundle requests; `mekya-opts` including nested `kcp`) are implemented; `tlsmirror-opts` is implemented as the pinned carrier-TLS + hidden AES-GCM record layer (primary-key; TLS 1.3; padding/enrollment/traffic-generation extras stay named)."
     },
     "snell": {
       "status": "implemented",
@@ -1246,7 +1258,7 @@
     },
     "hysteria2": {
       "status": "partial",
-      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets) and the initial/max stream/connection receive windows mapped to quinn. `down` is sent as Hysteria-CC-RX. Port hopping, Salamander/Gecko obfuscation, realm, UDP, `up` (Brutal TX cap) and `bbr-profile` are rejected by name.",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets), the initial/max stream/connection receive windows mapped to quinn, `up` as a Brutal sender (pinned window formula), `bbr-profile` mapped to the BBR initial window (quinn has no profile selector), `udp-mtu` mapped to the QUIC initial path MTU, Salamander obfuscation and `ports`/`hop-interval` port hopping on a wrapped `quinn::AsyncUdpSocket`. `realm-opts` loads and its control/TLS fields are parsed, but the rendezvous client (HTTP control API + STUN + punch) is not implemented at dial time and is refused by name; `obfs: gecko` and `ech-opts` are rejected by name; UDP remains unimplemented (no Hysteria UDP session relay).",
       "options": [
         "server",
         "port",
@@ -1271,17 +1283,20 @@
         "max-stream-receive-window",
         "initial-connection-receive-window",
         "max-connection-receive-window",
-        "client-fingerprint (approximation: closest rustls profile, counted as residual)"
-      ],
-      "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
-      "notImplemented": [
+        "client-fingerprint (approximation: closest rustls profile, counted as residual)",
         "up",
         "ports",
         "hop-interval",
-        "obfs",
         "realm-opts",
         "udp-mtu",
         "bbr-profile",
+        "obfs: salamander",
+        "up (Brutal)",
+        "realm-opts (block parsed; dial refused)"
+      ],
+      "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
+      "notImplemented": [
+        "obfs",
         "ech-opts"
       ],
       "evidence": [
@@ -1296,7 +1311,12 @@
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
-        "tests/config.rs::t27_quic_transport_tuning_is_parsed"
+        "tests/config.rs::t27_quic_transport_tuning_is_parsed",
+        "tests/mihomo_peers.rs::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_port_pool_selects_the_listed_port_through_mihomo",
+        "src/outbound/quic.rs::tests::layered_socket_obfuscates_and_rewrites_the_hop_port",
+        "src/outbound/quic.rs::tests::hop_interval_is_clamped_and_randomised",
+        "tests/quic_peers.rs::hysteria2_transport_options_are_parsed"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },

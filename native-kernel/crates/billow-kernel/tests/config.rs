@@ -881,7 +881,6 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
         // anytls ShadowTLS v3 carries the account in the ClientHello session
         // id, which rustls generates internally: a named rejection.
-        ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}"),
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p, version: 3}"),
         // ShadowTLS and JLS are mutually exclusive in the pinned type.
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}, jls-opts: {username: u, password: p}"),
@@ -1003,7 +1002,6 @@ fn anytls_options_are_strict() {
     for (field, value) in [
         ("ech-opts", "{enable: true, config: x}"),
         ("restls-opts", "{password: p}"),
-        ("shadow-tls-opts", "{password: p}"),
         ("shadow-tls-opts", "{password: p, version: 3}"),
         ("shadow-tls-opts", "{password: p, version: 4}"),
         ("jls-opts", "{}"),
@@ -1015,7 +1013,11 @@ fn anytls_options_are_strict() {
     // ShadowTLS v1/v2 and JLS are implemented security modes: their enabled
     // forms load with the parsed mode (behaviour is covered by the peer tests).
     use billow_kernel::proxies::{AnytlsSecurity, Protocol};
-    for (block, want_version) in [("shadow-tls-opts: {password: p, version: 1}", 1u8)] {
+    for (block, want_version) in [
+        ("shadow-tls-opts: {password: p}", 2u8),
+        ("shadow-tls-opts: {password: p, version: 1}", 1u8),
+        ("shadow-tls-opts: {password: p, version: 2}", 2u8),
+    ] {
         let yaml = format!("proxies:\n  - {{name: at, type: anytls, server: 127.0.0.1, port: 1, password: p, {block}}}\nrules: ['MATCH,at']\n");
         let loaded = load_config(&yaml, "t").expect("shadow-tls loads");
         match &loaded.config.proxies[0].protocol {
@@ -1179,6 +1181,99 @@ fn vmess_options_are_strict() {
     ] {
         let e = proxy_err(missing);
         assert!(e.contains("missing required option"), "{e}");
+    }
+}
+
+#[test]
+fn vmess_tlsmirror_options_load_and_name_the_unimplemented_extras() {
+    use billow_kernel::proxies::Protocol;
+    // The pinned decoder ignores unknown keys; `{enabled: true}` selects
+    // nothing and is accepted even without TLS.
+    load_config(
+        "proxies:\n  - {name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, tlsmirror-opts: {enabled: true}}\nrules: ['MATCH,vm']\n",
+        "t",
+    )
+    .expect("a tlsmirror block with no primary key is a no-op");
+    let key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+    let yaml = format!("proxies:\n  - {{name: vm, type: vmess, server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, tls: true, tlsmirror-opts: {{primary-key: \"{key}\"}}}}\nrules: ['MATCH,vm']\n");
+    let loaded = load_config(&yaml, "t").expect("tlsmirror loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vmess(proxy) => {
+            assert_eq!(
+                proxy.tlsmirror.as_ref().map(|mirror| mirror.primary_key.as_str()),
+                Some(key)
+            );
+        }
+        other => panic!("expected vmess, got {other:?}"),
+    }
+    for (block, field) in [
+        (
+            format!("tlsmirror-opts: {{primary-key: \"{key}\"}}"),
+            "tlsmirror-opts",
+        ),
+        (
+            format!("tls: true, tlsmirror-opts: {{primary-key: \"{key}\", transport-layer-padding: {{enabled: true}}}}"),
+            "transport-layer-padding",
+        ),
+        (
+            format!("tls: true, tlsmirror-opts: {{primary-key: \"{key}\", sequence-watermarking-enabled: true}}"),
+            "sequence-watermarking-enabled",
+        ),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, {block}}}\nrules: ['MATCH,vm']\n");
+        let error = proxy_err(&yaml);
+        assert!(error.contains(field), "{block}: {error}");
+    }
+}
+
+#[test]
+fn vmess_mkcp_and_mekya_options_load() {
+    use billow_kernel::proxies::{Protocol, VmessNetwork};
+    let mkcp = "proxies:\n  - {name: vm, type: vmess, server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, network: mkcp, mkcp-opts: {mtu: 1350, tti: 40, seed: s, header: srtp, congestion: true}}\nrules: ['MATCH,vm']\n";
+    let loaded = load_config(mkcp, "t").expect("vmess mkcp loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vmess(proxy) => match &proxy.network {
+            VmessNetwork::Mkcp(options) => {
+                assert_eq!(options.mtu, 1350);
+                assert_eq!(options.tti, 40);
+                assert_eq!(options.seed, "s");
+                assert_eq!(options.header, "srtp");
+                assert!(options.congestion);
+            }
+            other => panic!("expected mkcp, got {other:?}"),
+        },
+        other => panic!("expected vmess, got {other:?}"),
+    }
+    let mekya = "proxies:\n  - {name: vm, type: vmess, server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, tls: true, network: mekya, mekya-opts: {url: 'https://127.0.0.1:1/', h2-pool-size: 2, max-write-delay: 20, kcp: {header: none}}}\nrules: ['MATCH,vm']\n";
+    let loaded = load_config(mekya, "t").expect("vmess mekya loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vmess(proxy) => match &proxy.network {
+            VmessNetwork::Mekya(options) => {
+                assert_eq!(options.url, "https://127.0.0.1:1/");
+                assert_eq!(options.h2_pool_size, 2);
+                assert_eq!(options.max_write_delay, 20);
+                assert_eq!(options.kcp.header, "none");
+            }
+            other => panic!("expected mekya, got {other:?}"),
+        },
+        other => panic!("expected vmess, got {other:?}"),
+    }
+    // Unknown MKCP knobs and headers are named instead of ignored.
+    for (block, field) in [
+        ("mkcp-opts: {bogus: 1}", "bogus"),
+        ("mkcp-opts: {header: bogus}", "mkcp-opts.header"),
+        ("mekya-opts: {bogus: 1}", "bogus"),
+    ] {
+        let network = if block.starts_with("mekya") {
+            "mekya"
+        } else {
+            "mkcp"
+        };
+        let yaml = format!(
+            "proxies:\n  - {{name: vm, type: vmess, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, network: {network}, {block}}}\nrules: ['MATCH,vm']\n"
+        );
+        let error = proxy_err(&yaml);
+        assert!(error.contains(field), "{block}: {error}");
     }
 }
 

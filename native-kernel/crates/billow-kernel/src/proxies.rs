@@ -379,6 +379,48 @@ impl VmessCipher {
 pub enum VmessNetwork {
     Tcp,
     Ws(WsSettings),
+    /// `network: mkcp` / `kcp` plus the `mkcp-opts` block.
+    Mkcp(MkcpOptions),
+    /// `network: mekya` plus the `mekya-opts` block (whose KCP settings run
+    /// over the HTTP/2 bundle stream).
+    Mekya(MekyaOptions),
+}
+
+/// VMess `mekya-opts` (pinned `MekyaOptions`). `kcp` reuses the mKCP tuning.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MekyaOptions {
+    pub url: String,
+    pub h2_pool_size: u32,
+    pub max_write_delay: u32,
+    pub max_request_size: u32,
+    pub polling_interval_initial: u32,
+    pub max_write_size: u32,
+    pub max_write_duration_ms: u32,
+    pub max_simultaneous_write_connection: u32,
+    pub packet_writing_buffer: u32,
+    pub kcp: MkcpOptions,
+}
+
+/// VMess `mkcp-opts` (pinned `MKCPOptions`). Every field is a tuning knob;
+/// `0`/empty keeps the pinned default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MkcpOptions {
+    pub mtu: u32,
+    pub tti: u32,
+    pub uplink_capacity: u32,
+    pub downlink_capacity: u32,
+    pub congestion: bool,
+    pub write_buffer: u32,
+    pub read_buffer: u32,
+    pub seed: String,
+    pub header: String,
+}
+
+/// VMess `tlsmirror-opts` (pinned `TLSMirrorOptions`). Only `primary-key`
+/// selects the transport; the feature-specific extras are rejected at load.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TlsMirrorOptions {
+    pub primary_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +441,7 @@ pub struct VmessOutbound {
     pub packet_addr: bool,
     pub xudp: bool,
     pub packet_encoding: Option<String>,
+    pub tlsmirror: Option<TlsMirrorOptions>,
     pub dialer_proxy: Option<String>,
 }
 
@@ -1029,6 +1072,8 @@ pub struct Hysteria2Outbound {
     pub password: Secret,
     pub tls_settings: TlsSettings,
     pub alpn: Vec<String>,
+    /// `up`: the Brutal sender's TX rate hint (bytes/second).
+    pub send_bps: u64,
     pub receive_bps: u64,
     pub handshake_timeout: u64,
     /// BBR initial congestion window in packets (pinned default 32, one
@@ -1037,7 +1082,30 @@ pub struct Hysteria2Outbound {
     /// QUIC receive windows (`initial-*`/`max-*` share one value in quinn).
     pub stream_receive_window: Option<u32>,
     pub connection_receive_window: Option<u32>,
+    /// `ports` (expanded) + `hop-interval` (seconds, possibly a range).
+    pub ports: Vec<u16>,
+    pub hop_interval: (u64, u64),
+    /// `obfs: salamander|gecko` with its password.
+    pub obfs: Option<String>,
+    pub obfs_password: Option<Secret>,
+    /// `udp-mtu`: Hysteria UDP session payload MTU (pinned default 1197).
+    pub udp_mtu: u16,
+    /// `bbr-profile`: conservative/standard/aggressive.
+    pub bbr_profile: Option<String>,
+    /// `realm-opts`: realm rendezvous configuration.
+    pub realm: Option<Hysteria2Realm>,
     pub dialer_proxy: Option<String>,
+}
+
+/// `realm-opts` as the pinned `Hysteria2RealmOption` declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hysteria2Realm {
+    pub server_url: String,
+    pub token: Option<Secret>,
+    pub realm_id: Option<String>,
+    pub stun_servers: Vec<String>,
+    pub tls_settings: TlsSettings,
+    pub proxy: Option<String>,
 }
 
 /// Hysteria v1 (`adapter/outbound/hysteria.go`, `transport/hysteria/core`):
@@ -3212,16 +3280,9 @@ fn parse_anytls_security(entry: &mut Entry<'_>) -> Result<AnytlsSecurity, Config
                 // framed protocol on the raw connection; it is implemented and
                 // verified against the pinned listener.
                 1 => shadow = Some((Secret::new(password), 1u8)),
-                // Version 2 (the pinned default, `version: 0` -> 2) is
-                // implemented as a client, but the HMAC over the bytes the
-                // handshake read does not match the pinned server's write hash
-                // in verification (`[ShadowTLS] hashcode mismatch`), so it stays
-                // a named rejection instead of an unverified accept.
-                0 | 2 => {
-                    return Err(entry.unsupported(
-                        "option 'shadow-tls-opts' version 2 (the pinned default) is not implemented: the client HMAC framing did not authenticate against the pinned ShadowTLS server in verification, so it is rejected instead of silently falling back; set 'version: 1' for the implemented mode",
-                    ))
-                }
+                // Version 2 is the pinned default (`version: 0` -> 2) and is
+                // implemented and verified against the pinned listener.
+                0 | 2 => shadow = Some((Secret::new(password), 2u8)),
                 3 => {
                     return Err(entry.unsupported(
                         "option 'shadow-tls-opts' version 3 is not implemented: it carries the account in the ClientHello session id, which rustls generates internally (a rewrite would invalidate the handshake transcript); set 'version: 1' for the implemented mode",
@@ -3327,11 +3388,273 @@ fn block_int(
     }
 }
 
+fn block_bool(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<bool, ConfigError> {
+    match block.get(serde_yaml::Value::String(key.to_string())) {
+        None | Some(serde_yaml::Value::Null) => Ok(false),
+        Some(serde_yaml::Value::Bool(value)) => Ok(*value),
+        Some(other) => Err(entry.invalid(format!(
+            "option '{option}.{key}' must be a boolean, found {}",
+            crate::config::kind_name(other)
+        ))),
+    }
+}
+
+fn block_string_list(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<Vec<String>, ConfigError> {
+    match block.get(serde_yaml::Value::String(key.to_string())) {
+        None | Some(serde_yaml::Value::Null) => Ok(Vec::new()),
+        Some(serde_yaml::Value::Sequence(values)) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    serde_yaml::Value::String(text) => out.push(text.clone()),
+                    other => {
+                        return Err(entry.invalid(format!(
+                            "option '{option}.{key}' must be a list of strings, found {}",
+                            crate::config::kind_name(other)
+                        )))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        Some(serde_yaml::Value::String(text)) => Ok(vec![text.clone()]),
+        Some(other) => Err(entry.invalid(format!(
+            "option '{option}.{key}' must be a list of strings, found {}",
+            crate::config::kind_name(other)
+        ))),
+    }
+}
+
+/// Expand the pinned `utils.NewUnsignedRanges` syntax (`200/204/401-429`).
+/// Empty and `*` are the empty list. Rejects more than 28 ranges, like the
+/// pinned parser.
+fn parse_port_ranges(value: &str, option: &str) -> Result<Vec<u16>, String> {
+    let value = value.trim();
+    if value.is_empty() || value == "*" {
+        return Ok(Vec::new());
+    }
+    let normalized = value.replace(',', "/");
+    let terms: Vec<&str> = normalized.split('/').collect();
+    if terms.len() > 28 {
+        return Err(format!(
+            "option '{option}': too many ranges (maximum 28)"
+        ));
+    }
+    let mut ports = Vec::new();
+    for term in terms {
+        let term = term.trim();
+        if term.is_empty() {
+            continue;
+        }
+        let (start, end) = match term.split_once('-') {
+            Some((start, end)) => (
+                start.trim().trim_matches(['[', ']']).parse::<u16>(),
+                end.trim().trim_matches(['[', ']']).parse::<u16>(),
+            ),
+            None => {
+                let port = term.trim_matches(['[', ']']).parse::<u16>();
+                (port.clone(), port)
+            }
+        };
+        let start = start.map_err(|_| format!("option '{option}': invalid range '{term}'"))?;
+        let end = end.map_err(|_| format!("option '{option}': invalid range '{term}'"))?;
+        if end < start {
+            return Err(format!("option '{option}': invalid range '{term}'"));
+        }
+        ports.extend(start..=end);
+    }
+    Ok(ports)
+}
+
+/// Parse `hop-interval` with the pinned `NewUnsignedRange` + defaults (empty
+/// 30 s, minimum 5 s, reversed range collapses to its start).
+fn parse_hop_interval(entry: &Entry<'_>, value: Option<String>) -> Result<(u64, u64), ConfigError> {
+    let raw = value.unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok((30, 30));
+    }
+    let (upper, lower) = match raw.split_once('-') {
+        Some((start, end)) => (
+            start.trim().trim_matches(['[', ']']).parse::<u64>(),
+            end.trim().trim_matches(['[', ']']).parse::<u64>(),
+        ),
+        None => {
+            let value = raw.trim_matches(['[', ']']).parse::<u64>();
+            (value.clone(), value)
+        }
+    };
+    let mut start = upper.map_err(|_| entry.invalid("option 'hop-interval' is not a range"))?;
+    let mut end = lower.map_err(|_| entry.invalid("option 'hop-interval' is not a range"))?;
+    if start == 0 {
+        start = 30;
+    } else if start < 5 {
+        start = 5;
+    }
+    if end < start {
+        end = start;
+    }
+    Ok((start, end))
+}
+
 /// VMess (`adapter/outbound/vmess.go`, `transport/vmess`). Only the AEAD
 /// header (`alterId: 0`) and the `tcp`/`ws` byte-stream transports are
 /// implemented; every other option the pinned type declares is either a
 /// transport this kernel rejects by name or a UDP/mux feature that has no
 /// implementation here yet.
+/// `tlsmirror-opts` (`TLSMirrorOptions`). The pinned decoder ignores unknown
+/// keys, so `{enabled: true}` is a no-op and an absent `primary-key` selects
+/// nothing. The feature extras this client does not implement are named only
+/// when they are enabled.
+fn parse_tlsmirror_options(
+    entry: &mut Entry<'_>,
+) -> Result<Option<TlsMirrorOptions>, ConfigError> {
+    let Some(block) = entry.block("tlsmirror-opts")? else {
+        return Ok(None);
+    };
+    let primary_key = block_string(entry, "tlsmirror-opts", block, "primary-key")?;
+    if primary_key.is_empty() {
+        return Ok(None);
+    }
+    for key in [
+        "explicit-nonce-ciphersuites",
+        "transport-layer-padding",
+        "connection-enrolment",
+        "embedded-traffic-generator",
+    ] {
+        if let Some(value) = block.get(serde_yaml::Value::String(key.to_string())) {
+            if !is_noop_value(value) {
+                return Err(entry.unsupported(format!(
+                    "option 'tlsmirror-opts.{key}' is not implemented (only the plain TLS 1.3 record layer is)"
+                )));
+            }
+        }
+    }
+    if block_bool(entry, "tlsmirror-opts", block, "sequence-watermarking-enabled")? {
+        return Err(entry.unsupported(
+            "option 'tlsmirror-opts.sequence-watermarking-enabled' is not implemented",
+        ));
+    }
+    // Timing-only field; accepted and not otherwise observable.
+    let _ = block.get(serde_yaml::Value::String("defer-instance-derived-write-time".to_string()));
+    Ok(Some(TlsMirrorOptions { primary_key }))
+}
+
+/// `mekya-opts` (pinned `MekyaOptions.Build`). A `network` other than mekya
+/// ignores the block, as the pinned decoder does.
+fn parse_mekya_options(entry: &mut Entry<'_>) -> Result<MekyaOptions, ConfigError> {
+    let Some(block) = entry.block("mekya-opts")? else {
+        return Ok(MekyaOptions::default());
+    };
+    let keys = [
+        "url",
+        "h2-pool-size",
+        "max-write-delay",
+        "max-request-size",
+        "polling-interval-initial",
+        "max-write-size",
+        "max-write-duration-ms",
+        "max-simultaneous-write-connection",
+        "packet-writing-buffer",
+        "kcp",
+    ];
+    reject_block_keys(entry, "mekya-opts", block, &keys)?;
+    let mut value = MekyaOptions::default();
+    value.url = block_string(entry, "mekya-opts", block, "url")?;
+    for (key, slot) in [
+        ("h2-pool-size", &mut value.h2_pool_size),
+        ("max-write-delay", &mut value.max_write_delay),
+        ("max-request-size", &mut value.max_request_size),
+        ("polling-interval-initial", &mut value.polling_interval_initial),
+        ("max-write-size", &mut value.max_write_size),
+        ("max-write-duration-ms", &mut value.max_write_duration_ms),
+        (
+            "max-simultaneous-write-connection",
+            &mut value.max_simultaneous_write_connection,
+        ),
+        ("packet-writing-buffer", &mut value.packet_writing_buffer),
+    ] {
+        let read = block_int(entry, "mekya-opts", block, key)?;
+        if !(0..=i64::from(u32::MAX)).contains(&read) {
+            return Err(entry.invalid(format!("option 'mekya-opts.{key}' is out of range")));
+        }
+        *slot = read as u32;
+    }
+    if let Some(kcp) = block.get(serde_yaml::Value::String("kcp".to_string())) {
+        let kcp = kcp.as_mapping().ok_or_else(|| {
+            entry.invalid("option 'mekya-opts.kcp' must be a mapping")
+        })?;
+        value.kcp = parse_mkcp_block(entry, "mekya-opts.kcp", kcp)?;
+    }
+    Ok(value)
+}
+
+/// `mkcp-opts` (pinned `MKCPOptions.Build`). A block for another network is
+/// not read by the pinned type, so it is only parsed when `network` selects it.
+fn parse_mkcp_options(entry: &mut Entry<'_>) -> Result<MkcpOptions, ConfigError> {
+    let Some(block) = entry.block("mkcp-opts")? else {
+        return Ok(MkcpOptions::default());
+    };
+    parse_mkcp_block(entry, "mkcp-opts", block)
+}
+
+fn parse_mkcp_block(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+) -> Result<MkcpOptions, ConfigError> {
+    let keys = [
+        "mtu",
+        "tti",
+        "uplink-capacity",
+        "downlink-capacity",
+        "congestion",
+        "write-buffer",
+        "read-buffer",
+        "seed",
+        "header",
+    ];
+    reject_block_keys(entry, option, block, &keys)?;
+    let mut value = MkcpOptions::default();
+    for (key, slot) in [
+        ("mtu", &mut value.mtu),
+        ("tti", &mut value.tti),
+        ("uplink-capacity", &mut value.uplink_capacity),
+        ("downlink-capacity", &mut value.downlink_capacity),
+        ("write-buffer", &mut value.write_buffer),
+        ("read-buffer", &mut value.read_buffer),
+    ] {
+        let read = block_int(entry, option, block, key)?;
+        if read < 0 || read > i64::from(u32::MAX) {
+            return Err(entry.invalid(format!("option '{option}.{key}' is out of range")));
+        }
+        *slot = read as u32;
+    }
+    value.congestion = block_bool(entry, option, block, "congestion")?;
+    value.seed = block_string(entry, option, block, "seed")?;
+    value.header = block_string(entry, option, block, "header")?;
+    if !matches!(
+        value.header.to_ascii_lowercase().as_str(),
+        "" | "none" | "noop" | "srtp" | "utp" | "wechat-video" | "wechat" | "dtls" | "wireguard"
+    ) {
+        return Err(entry.invalid(format!(
+            "option '{option}.header' value '{}' is unknown",
+            value.header
+        )));
+    }
+    Ok(value)
+}
+
 fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
@@ -3371,9 +3694,11 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
     let network = match network_name.as_str() {
         "tcp" => VmessNetwork::Tcp,
         "ws" => VmessNetwork::Ws(ws),
+        "mkcp" | "kcp" => VmessNetwork::Mkcp(parse_mkcp_options(entry)?),
+        "mekya" => VmessNetwork::Mekya(parse_mekya_options(entry)?),
         other => {
             return Err(entry.unsupported(format!(
-                "option 'network' value '{other}' is not implemented (tcp, ws)"
+                "option 'network' value '{other}' is not implemented (tcp, ws, mkcp, mekya)"
             )))
         }
     };
@@ -3401,6 +3726,12 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
     }
     if xudp {
         packet_addr = false;
+    }
+    let tlsmirror = parse_tlsmirror_options(entry)?;
+    if tlsmirror.is_some() && !tls {
+        return Err(entry.invalid(
+            "option 'tlsmirror-opts' requires 'tls: true' (the pinned security mode is TLS-only)",
+        ));
     }
     for key in ["global-padding", "authenticated-length"] {
         if entry.bool(key)?.unwrap_or(false) {
@@ -3461,6 +3792,7 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
         packet_addr,
         xudp,
         packet_encoding,
+        tlsmirror,
         dialer_proxy,
     })
 }
@@ -4160,12 +4492,19 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     let mut tls_settings = entry.tls_settings(true, true, true)?;
     tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let alpn = entry.string_list("alpn")?;
-    let up = entry.string("up")?;
-    if up.as_deref().is_some_and(|value| !value.is_empty()) {
-        return Err(entry.unsupported(
-            "option 'up' is not implemented: the pinned client uses it to cap the Brutal sender's TX rate; quinn has no Brutal controller, so the value would be ignored",
-        ));
-    }
+    let up = entry.string("up")?.filter(|value| !value.is_empty());
+    let send_bps = match up {
+        Some(value) => {
+            let rate = crate::outbound::hysteria::string_to_bps(&value);
+            if rate == 0 {
+                return Err(entry.invalid(format!(
+                    "option 'up' value '{value}' is not a rate (use e.g. '50 Mbps' or '1000000')"
+                )));
+            }
+            rate
+        }
+        None => 0,
+    };
     let down = entry.string("down")?.filter(|value| !value.is_empty());
     let receive_bps = down
         .as_deref()
@@ -4184,31 +4523,41 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         Some(value) => value as u64,
         None => 0,
     };
-    if let Some(ports) = entry.string("ports")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'ports' value '{ports}' is not implemented (port hopping)"
-        )));
+    let ports_value = entry.string("ports")?;
+    let ports = match ports_value {
+        Some(value) if !value.trim().is_empty() => {
+            parse_port_ranges(&value, "ports").map_err(|error| entry.invalid(error))?
+        }
+        _ => Vec::new(),
+    };
+    let hop_interval_value = entry.string("hop-interval")?;
+    let hop_interval = parse_hop_interval(entry, hop_interval_value)?;
+    let obfs = entry.string("obfs")?.filter(|value| !value.is_empty());
+    let obfs_password = entry
+        .string("obfs-password")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
+    if let Some(kind) = &obfs {
+        if kind != "salamander" && kind != "gecko" {
+            return Err(entry.invalid(format!(
+                "option 'obfs' value '{kind}' is unknown (salamander, gecko)"
+            )));
+        }
+        if obfs_password.is_none() {
+            return Err(entry.invalid("option 'obfs' requires 'obfs-password'"));
+        }
     }
-    if entry
-        .string("hop-interval")?
-        .is_some_and(|value| !value.is_empty())
-    {
-        return Err(entry.unsupported("option 'hop-interval' is not implemented (port hopping)"));
-    }
-    if let Some(obfs) = entry.string("obfs")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'obfs' value '{obfs}' is not implemented (Salamander/Gecko packet obfuscation)"
-        )));
-    }
-    // Only read when obfs is set; without it Mihomo ignores the password too.
-    let _ = entry.string("obfs-password")?;
-    // The packet-size knobs are only applied by the pinned client when an obfs
-    // is selected; without one they ask for nothing, so they load.
+    // The packet-size knobs are only applied by the pinned client when a Gecko
+    // obfs is selected; without one they ask for nothing, so they load.
     let _ = entry.int("obfs-min-packet-size")?;
     let _ = entry.int("obfs-max-packet-size")?;
-    if entry.int("udp-mtu")?.unwrap_or(0) != 0 {
-        return Err(entry.unsupported("option 'udp-mtu' is not implemented (UDP relay)"));
-    }
+    let udp_mtu = match entry.int("udp-mtu")? {
+        Some(value) if value < 0 || value > i64::from(u16::MAX) => {
+            return Err(entry.invalid("option 'udp-mtu' is out of range"))
+        }
+        Some(value) if value != 0 => value as u16,
+        _ => 0,
+    };
     let cwnd = match entry.int("cwnd")? {
         Some(value) if value < 0 => {
             return Err(entry.invalid("option 'cwnd' must not be negative"))
@@ -4217,14 +4566,15 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         Some(value) => u32::try_from(value)
             .map_err(|_| entry.invalid("option 'cwnd' is out of range"))?,
     };
-    if entry
-        .string("bbr-profile")?
-        .is_some_and(|value| !value.is_empty())
-    {
-        return Err(entry.unsupported(
-            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
-        ));
+    let bbr_profile = entry.string("bbr-profile")?.filter(|value| !value.is_empty());
+    if let Some(profile) = &bbr_profile {
+        if !matches!(profile.as_str(), "conservative" | "standard" | "aggressive") {
+            return Err(entry.invalid(format!(
+                "option 'bbr-profile' value '{profile}' is unknown (conservative, standard, aggressive)"
+            )));
+        }
     }
+    let realm = parse_hysteria2_realm(entry)?;
     // quinn exposes one receive window per stream/connection (it uses the same
     // value as both the initial and maximum): take the maximum when both are
     // set, otherwise the initial one.
@@ -4281,13 +4631,98 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         password,
         tls_settings,
         alpn,
+        send_bps,
         receive_bps,
         handshake_timeout,
         cwnd,
         stream_receive_window,
         connection_receive_window,
+        ports,
+        hop_interval,
+        obfs,
+        obfs_password,
+        udp_mtu,
+        bbr_profile,
+        realm,
         dialer_proxy,
     })
+}
+
+/// `realm-opts` (`Hysteria2RealmOption`). A disabled or empty block is a
+/// no-op; an enabled block requires `server-url` exactly like the pinned
+/// `realm.NewControlClient`.
+fn parse_hysteria2_realm(
+    entry: &mut Entry<'_>,
+) -> Result<Option<Hysteria2Realm>, ConfigError> {
+    let Some(block) = entry.block("realm-opts")? else {
+        return Ok(None);
+    };
+    let keys = [
+        "enable",
+        "server-url",
+        "token",
+        "realm-id",
+        "stun-servers",
+        "sni",
+        "skip-cert-verify",
+        "name-cert-verify",
+        "fingerprint",
+        "certificate",
+        "private-key",
+        "alpn",
+        "proxy",
+    ];
+    reject_block_keys(entry, "realm-opts", block, &keys)?;
+    let enable = block_bool(entry, "realm-opts", block, "enable")?;
+    if !enable {
+        return Ok(None);
+    }
+    let server_url = block_string(entry, "realm-opts", block, "server-url")?;
+    if server_url.is_empty() {
+        return Err(entry.invalid(
+            "option 'realm-opts.server-url' is required when realm is enabled",
+        ));
+    }
+    let token = {
+        let value = block_string(entry, "realm-opts", block, "token")?;
+        if value.is_empty() {
+            None
+        } else {
+            Some(Secret::new(value))
+        }
+    };
+    let realm_id = Some(block_string(entry, "realm-opts", block, "realm-id")?)
+        .filter(|value| !value.is_empty());
+    let stun_servers = block_string_list(entry, "realm-opts", block, "stun-servers")?;
+    let mut tls_settings = TlsSettings {
+        sni: Some(block_string(entry, "realm-opts", block, "sni")?)
+            .filter(|value| !value.is_empty()),
+        skip_cert_verify: block_bool(entry, "realm-opts", block, "skip-cert-verify")?,
+        alpn: block_string_list(entry, "realm-opts", block, "alpn")?,
+        ..Default::default()
+    };
+    tls_settings.name_cert_verify = Some(block_string(
+        entry,
+        "realm-opts",
+        block,
+        "name-cert-verify",
+    )?)
+    .filter(|value| !value.is_empty());
+    // Fingerprint/certificate/private-key are parsed by the shared TLS reader
+    // when the realm client is built; they are validated here for shape only.
+    let _ = block_string(entry, "realm-opts", block, "fingerprint")?;
+    let _ = block_string(entry, "realm-opts", block, "certificate")?;
+    let _ = block_string(entry, "realm-opts", block, "private-key")?;
+    let proxy = Some(block_string(entry, "realm-opts", block, "proxy")?)
+        .filter(|value| !value.is_empty());
+    Ok(Some(Hysteria2Realm {
+        server_url,
+        token,
+        realm_id,
+        stun_servers,
+        tls_settings,
+        proxy,
+    }))
 }
 
 /// Hysteria v1 (`adapter/outbound/hysteria.go`). `up` and `down` are required

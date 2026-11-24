@@ -356,7 +356,22 @@ pub fn client_config(
     settings: &TlsSettings,
     tls: &ClientTls,
 ) -> io::Result<Arc<ClientConfig>> {
-    client_config_with(settings, tls, &settings.alpn, Versions::Any, true)
+    client_config_with(settings, tls, &settings.alpn, Versions::Any, true, true)
+}
+
+/// ShadowTLS v2's camouflage handshake. TLS 1.3 session tickets would be
+/// written by the camouflage host after the handshake completes; the pinned
+/// client (uTLS with no session cache) never reads them, and the ShadowTLS v2
+/// read-hash must end on the last write the server made before the first
+/// application record. A ticket that rustls reads but the server hashed as a
+/// later write makes the HMAC frame unrecognisable (`hashcode mismatch`), so
+/// the handshake advertises no resumption at all: the pinned client's
+/// behaviour and the only deterministic hash boundary.
+pub fn shadow_tls_client_config(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+) -> io::Result<Arc<ClientConfig>> {
+    client_config_with(settings, tls, &settings.alpn, Versions::Any, true, false)
 }
 
 /// TLS client configuration for a QUIC handshake: QUIC requires TLS 1.3 and a
@@ -368,7 +383,7 @@ pub fn quic_client_config(
     alpn: &[String],
     enable_sni: bool,
 ) -> io::Result<Arc<ClientConfig>> {
-    client_config_with(settings, tls, alpn, Versions::Tls13Only, enable_sni)
+    client_config_with(settings, tls, alpn, Versions::Tls13Only, enable_sni, true)
 }
 
 /// ShadowQUIC's JLS client configuration: TLS 1.3 only, the recorded-random
@@ -479,7 +494,7 @@ pub fn client_config_tls12(
     settings: &TlsSettings,
     tls: &ClientTls,
 ) -> io::Result<Arc<ClientConfig>> {
-    client_config_with(settings, tls, &settings.alpn, Versions::Tls12Only, true)
+    client_config_with(settings, tls, &settings.alpn, Versions::Tls12Only, true, true)
 }
 
 fn client_config_with(
@@ -488,6 +503,7 @@ fn client_config_with(
     alpn: &[String],
     versions: Versions,
     enable_sni: bool,
+    resumption: bool,
 ) -> io::Result<Arc<ClientConfig>> {
     let provider = provider_for(settings.client_fingerprint.as_deref());
     let builder = ClientConfig::builder_with_provider(provider.clone());
@@ -544,6 +560,9 @@ fn client_config_with(
     };
     config.alpn_protocols = alpn.iter().map(|a| a.as_bytes().to_vec()).collect();
     config.enable_sni = enable_sni;
+    if !resumption {
+        config.resumption = rustls::client::Resumption::disabled();
+    }
     Ok(Arc::new(config))
 }
 

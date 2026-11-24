@@ -828,11 +828,22 @@ async fn tuic_v5_request_timeout_bounds_stream_open() {
 }
 
 #[tokio::test]
-async fn hysteria2_up_is_rejected_at_load() {
-    let yaml = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: 50 Mbps}\nrules:\n  - MATCH,h2\n";
-    let error = billow_kernel::load_config(yaml, "hysteria2-up.yaml").unwrap_err();
-    assert_eq!(error.tag(), "unsupported");
-    assert!(error.to_string().contains("'up'"), "{error}");
+async fn hysteria2_transport_options_are_parsed() {
+    // `up` selects the Brutal sender; ports/hop/obfs/udp-mtu/bbr-profile are
+    // parsed into the outbound and applied by the QUIC endpoint.
+    let yaml = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: 50 Mbps, ports: '443,8443-8444', hop-interval: 7-9, obfs: salamander, obfs-password: s, udp-mtu: 1280, bbr-profile: aggressive}\nrules:\n  - MATCH,h2\n";
+    let config = billow_kernel::load_config(yaml, "hysteria2-options.yaml").unwrap();
+    match &config.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Hysteria2(proxy) => {
+            assert_eq!(proxy.send_bps, 50_000_000 / 8);
+            assert_eq!(proxy.ports, vec![443, 8443, 8444]);
+            assert_eq!(proxy.hop_interval, (7, 9));
+            assert_eq!(proxy.obfs.as_deref(), Some("salamander"));
+            assert_eq!(proxy.udp_mtu, 1280);
+            assert_eq!(proxy.bbr_profile.as_deref(), Some("aggressive"));
+        }
+        other => panic!("expected hysteria2, got {other:?}"),
+    }
     // An empty `up` asks for nothing and is accepted, like Mihomo's decoder.
     let empty = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: ''}\nrules:\n  - MATCH,h2\n";
     assert!(billow_kernel::load_config(empty, "hysteria2-up-empty.yaml").is_ok());

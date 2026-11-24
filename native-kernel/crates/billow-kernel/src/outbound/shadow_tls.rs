@@ -98,7 +98,7 @@ pub async fn wrap(
     // TLS 1.2 (its relay cannot follow a TLS 1.3 server flight).
     let config = match version {
         Version::V1 => tls::client_config_tls12(&settings, tls)?,
-        Version::V2 => tls::client_config(&settings, tls)?,
+        Version::V2 => tls::shadow_tls_client_config(&settings, tls)?,
     };
     let connection = rustls::ClientConnection::new(config, server_name)
         .map_err(|error| io::Error::other(format!("shadow-tls: {error}")))?;
@@ -179,10 +179,15 @@ impl AsyncWrite for ShadowFramed {
                 Poll::Pending => return Poll::Pending,
             }
         }
+        // The pinned `clientConn.Write` builds `prefix || p` and then frames
+        // it, so the 8-byte digest is the *payload* of the first application
+        // record, not bytes written before its header.
+        let mut framed = Vec::with_capacity(buf.len() + HMAC_PREFIX);
         if let Some(prefix) = self.prefix.take() {
-            self.out.extend_from_slice(&prefix);
+            framed.extend_from_slice(&prefix);
         }
-        for chunk in buf.chunks(MAX_PLAINTEXT) {
+        framed.extend_from_slice(buf);
+        for chunk in framed.chunks(MAX_PLAINTEXT) {
             self.out.push(APPLICATION_DATA);
             self.out.push(3);
             self.out.push(3);
@@ -320,9 +325,11 @@ mod tests {
         let mut received = vec![0u8; 64];
         use tokio::io::AsyncReadExt;
         let n = server.read(&mut received).await.unwrap();
-        assert_eq!(&received[..HMAC_PREFIX], &mac[..]);
-        assert_eq!(received[HMAC_PREFIX], APPLICATION_DATA);
-        assert_eq!(&received[HMAC_PREFIX + 3..HMAC_PREFIX + 5], &[0, 5]);
-        assert_eq!(&received[HMAC_PREFIX + 5..n], b"hello");
+        // The digest is the first eight payload bytes of the first
+        // application-data record (pinned `clientConn.Write`).
+        assert_eq!(received[0], APPLICATION_DATA);
+        assert_eq!(&received[3..5], &[0, 5 + HMAC_PREFIX as u8]);
+        assert_eq!(&received[5..5 + HMAC_PREFIX], &mac[..]);
+        assert_eq!(&received[5 + HMAC_PREFIX..n], b"hello");
     }
 }

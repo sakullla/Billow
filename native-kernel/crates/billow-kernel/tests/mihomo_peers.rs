@@ -1341,6 +1341,40 @@ fn anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
+fn anytls_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let camo = free_port();
+    // The listener requires an explicit `version` (the pinned server-side
+    // `NewServerConfig` rejects 0); the client's pinned default is 2, so the
+    // client option block omits `version` on purpose.
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "anytls",
+            port,
+            &format!(
+                ", users: {{user1: \"{ANYTLS_PASSWORD}\"}}, shadow-tls: {{enable: true, version: 2, password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", handshake: {{dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}}}"
+            ),
+        )
+    );
+    with_peer("anytls-shadow-tls-v2", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, shadow-tls-opts: {{password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\"}}}}\n"
+        ));
+        let marker = "marker-anytls-shadow-tls-v2-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("anytls-shadow-tls-v2", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
 fn anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink() {
     let port = free_port();
     let camo = free_port();
@@ -1881,6 +1915,92 @@ fn vmess_over_websocket_reaches_the_receiving_side_through_mihomo() {
     });
 }
 
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_over_mkcp_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let seed = "vmess-mkcp-seed";
+    let listeners = listener(
+        "vmess",
+        port,
+        &format!(
+            ", users: [{{username: u, uuid: {UUID}, alterId: 0}}], mkcp-config: {{enable: true, seed: \"{seed}\", header: srtp}}"
+        ),
+    );
+    with_quic_peer("vmess-mkcp", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, network: mkcp, mkcp-opts: {{seed: \"{seed}\", header: srtp}}}}\n"
+        ));
+        let marker = "marker-vmess-mkcp-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-mkcp", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_over_mekya_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = listener(
+        "vmess",
+        port,
+        &format!(
+            ", users: [{{username: u, uuid: {UUID}, alterId: 0}}], certificate: CERT, private-key: KEY, mekya-config: {{enable: true, max-write-duration-ms: 20}}"
+        ),
+    );
+    with_quic_peer("vmess-mekya", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, tls: true, skip-cert-verify: true, network: mekya, mekya-opts: {{url: \"https://127.0.0.1:{port}/\"}}}}\n"
+        ));
+        let marker = "marker-vmess-mekya-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-mekya", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_over_tlsmirror_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let camo = free_port();
+    // 32 bytes: b"0123456789abcdef0123456789abcdef".
+    let primary_key = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "vmess",
+            port,
+            &format!(
+                ", users: [{{username: u, uuid: {UUID}, alterId: 0}}], tlsmirror-config: {{primary-key: \"{primary_key}\", dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}"
+            ),
+        )
+    );
+    with_peer("vmess-tlsmirror", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, tls: true, skip-cert-verify: true, sni: localhost, tlsmirror-opts: {{primary-key: \"{primary_key}\"}}}}\n"
+        ));
+        let marker = "marker-vmess-tlsmirror-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("vmess-tlsmirror", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
 // --- T9: TrustTunnel -----------------------------------------------------
 
 fn trusttunnel_listener(port: u16) -> String {
@@ -2127,6 +2247,57 @@ fn hysteria2_outbound_reaches_the_receiving_side_through_mihomo() {
             &format!("127.0.0.1:{}", sink.port),
             marker.as_bytes(),
             || expect_marker("hysteria2", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let obfs_password = "hysteria2-obfs-secret";
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}, obfs: salamander, obfs-password: \"{obfs_password}\"}}\n"
+    );
+    with_quic_peer("hysteria2-obfs", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, obfs: salamander, obfs-password: \"{obfs_password}\", up: 50 Mbps, bbr-profile: standard, udp-mtu: 1200}}\n"
+        ));
+        let marker = "marker-hysteria2-obfs-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-obfs", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_port_pool_selects_the_listed_port_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("hysteria2-ports", &listeners, |sink, _mihomo| {
+        // The pinned listener does not share one QUIC transport across several
+        // ports, so the end-to-end case uses a single-port pool: it proves the
+        // random selection path dials the listed port. Multi-port rewriting is
+        // covered by the `LayeredSocket` unit test (the server side of a real
+        // hop needs a shared-transport listener the pinned engine does not
+        // expose).
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: 1, ports: \"{port}\", hop-interval: 30, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true}}\n"
+        ));
+        let marker = "marker-hysteria2-ports-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-ports", sink, marker),
         );
         assert_eq!(status, "HTTP/1.1 200 Connection Established");
     });

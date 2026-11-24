@@ -230,13 +230,7 @@ const t10Enabled = [
   ['hysteria', 'fast-open', 'fast-open: true'],
   ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
   ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['hysteria2', 'up', 'up: 50 Mbps'],
-  ['hysteria2', 'ports', 'ports: 443,8443'],
-  ['hysteria2', 'hop-interval', 'hop-interval: 10'],
   ['hysteria2', 'obfs', 'obfs: salamander'],
-  ['hysteria2', 'realm-opts', 'realm-opts: {enable: true, server-url: "https://realm.example"}'],
-  ['hysteria2', 'udp-mtu', 'udp-mtu: 1200'],
-  ['hysteria2', 'bbr-profile', 'bbr-profile: standard'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
 // T13/T17 families: explicit forms, because some rejected values are not
@@ -628,6 +622,15 @@ for (const [type, key, base, option] of [
   ['vmess', 'packet-encoding', bases.vmess.off, 'udp: true, packet-encoding: xudp'],
   ['vmess', 'client-fingerprint', bases.vmess.on, 'client-fingerprint: chrome'],
   ['hysteria2', 'client-fingerprint', bases.hysteria2.on, 'client-fingerprint: chrome'],
+  ['hysteria2', 'up', bases.hysteria2.on, 'up: 50 Mbps'],
+  ['hysteria2', 'ports', bases.hysteria2.on, 'ports: "443,8443"'],
+  ['hysteria2', 'hop-interval', bases.hysteria2.on, 'hop-interval: 10'],
+  ['hysteria2', 'realm-opts', bases.hysteria2.on, 'realm-opts: {enable: true, server-url: "https://realm.example"}'],
+  ['hysteria2', 'udp-mtu', bases.hysteria2.on, 'udp-mtu: 1200'],
+  ['hysteria2', 'bbr-profile', bases.hysteria2.on, 'bbr-profile: standard'],
+  ['vmess', 'mkcp-opts', bases.vmess.off, 'network: mkcp, mkcp-opts: {mtu: 1350, seed: s, header: srtp}'],
+  ['vmess', 'mekya-opts', bases.vmess.on, 'network: mekya, mekya-opts: {url: "https://127.0.0.1:443/"}'],
+  ['vmess', 'tlsmirror-opts', bases.vmess.on, 'tlsmirror-opts: {primary-key: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}'],
 ]) {
   implemented.push({ type, key, base, option })
 }

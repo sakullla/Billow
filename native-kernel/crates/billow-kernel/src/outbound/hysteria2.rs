@@ -27,7 +27,9 @@ use std::io;
 use std::time::Duration;
 
 use super::h3;
-use super::quic::{self, CongestionController, QuicOptions, QuicStream};
+use super::quic::{
+    self, BbrProfile, CongestionController, HopConfig, QuicOptions, QuicStream, Salamander,
+};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
 use quinn::RecvStream;
@@ -104,6 +106,46 @@ pub async fn dial(
     let mut quic_options = QuicOptions::new(alpn);
     quic_options.keep_alive = Some(Duration::from_secs(10));
     quic_options.datagrams = true;
+    if option.udp_mtu != 0 {
+        quic_options.udp_mtu = Some(option.udp_mtu);
+    }
+    if !option.ports.is_empty() {
+        quic_options.hop = Some(HopConfig {
+            ports: option.ports.clone(),
+            interval: Duration::from_secs(option.hop_interval.0),
+            interval_max: Duration::from_secs(option.hop_interval.1),
+        });
+    }
+    match option.obfs.as_deref() {
+        Some("salamander") => {
+            if let Some(password) = &option.obfs_password {
+                quic_options.obfs = Some(Salamander {
+                    password: password.expose().as_bytes().to_vec(),
+                });
+            }
+        }
+        Some("gecko") => {
+            return Err(handshake(
+                "hysteria2",
+                "obfs 'gecko' is not available at dial time (only salamander is implemented)",
+            ))
+        }
+        _ => {}
+    }
+    if let Some(profile) = option.bbr_profile.as_deref().and_then(BbrProfile::parse) {
+        quic_options.bbr_profile = Some(profile);
+    }
+    if option.send_bps > 0 {
+        // The pinned client switches to Brutal when the server does not ask
+        // for automatic bandwidth detection and `up` is set.
+        quic_options.brutal_bps = Some(option.send_bps);
+    }
+    if option.realm.is_some() {
+        return Err(handshake(
+            "hysteria2",
+            "realm-opts is not implemented at dial time (no realm rendezvous client)",
+        ));
+    }
     // The pinned client always switches hysteria2 to BBR (`SetBBRCongestion`)
     // with `cwnd` packets (default 32) as the initial window.
     let packets = if option.cwnd == 0 { 32 } else { option.cwnd };

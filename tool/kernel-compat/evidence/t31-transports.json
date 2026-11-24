@@ -1,7 +1,7 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T31",
-  "attempt": "T31-A1",
+  "attempt": "T31-A2",
   "baseline": "evidence/t30-option-closure.md",
   "residual_before": {
     "anytls": 2,
@@ -36,76 +36,189 @@
         "src/outbound/shadow_tls.rs::wrap (Version::V1)",
         "src/outbound/tls.rs::client_config_tls12"
       ]
+    },
+    {
+      "family": "anytls",
+      "option": "shadow-tls-opts version 2",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::anytls_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo",
+        "src/outbound/shadow_tls.rs::tests::framing_prefixes_the_hmac_and_uses_application_data_records"
+      ],
+      "implementation": [
+        "src/outbound/shadow_tls.rs::ShadowFramed::poll_write",
+        "src/outbound/tls.rs::shadow_tls_client_config"
+      ],
+      "note": "The HMAC digest is framed inside the first application-data record (the earlier code wrote the 8 bytes before the record header, so the pinned server parsed them as a record length and never matched). The camouflage client also disables TLS 1.3 session tickets, so the read digest ends on the pinned server's current/previous write hash instead of including a ticket the server hashed later."
+    },
+    {
+      "family": "hysteria2",
+      "option": "obfs: salamander",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::LayeredSocket (BLAKE2b-256 salt/XOR on AsyncUdpSocket)"
+      ]
+    },
+    {
+      "family": "hysteria2",
+      "option": "ports / hop-interval",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::hysteria2_port_pool_selects_the_listed_port_through_mihomo",
+        "outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port",
+        "outbound::quic::tests::hop_interval_is_clamped_and_randomised"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::LayeredSocket::try_send (destination port rewrite)",
+        "src/outbound/quic.rs::LayeredSocket::poll_recv (reply source mapped to the base address)",
+        "src/outbound/quic.rs::HopConfig/HopState + hop task"
+      ],
+      "note": "The pinned hysteria2 listener does not share one QUIC transport across a multi-port listen list, so the pinned end-to-end case uses a single-port pool (selection path). Multi-port rewriting and reply mapping are covered at the socket layer; a shared-transport listener would be needed for a true multi-port hop run."
+    },
+    {
+      "family": "hysteria2",
+      "option": "up (Brutal)",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::Brutal/BrutalConfig (pinned window formula and ACK-rate slots)"
+      ],
+      "note": "quinn has no pacing hook; the Brutal window (bps * smoothed_rtt * 2 / ack_rate) is exposed through Controller::window, which is the pinned sender's send gate."
+    },
+    {
+      "family": "hysteria2",
+      "option": "bbr-profile",
+      "state": "implemented (mapped)",
+      "verification": [
+        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "quic_peers::hysteria2_transport_options_are_parsed"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::QuicOptions::bbr_profile mapped to the BBR initial window"
+      ],
+      "note": "quinn's BBR has no upstream profile selector, so conservative/standard/aggressive map to 24/32/40 initial packets; the wire behaviour is still BBR and the mapping is recorded as an approximation, not profile parity."
+    },
+    {
+      "family": "hysteria2",
+      "option": "udp-mtu",
+      "state": "implemented (mapped)",
+      "verification": [
+        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "quic_peers::hysteria2_transport_options_are_parsed"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::TransportConfig::initial_mtu(udp_mtu + 3)"
+      ],
+      "note": "The engine has no Hysteria2 UDP session relay, so the value is applied to the QUIC initial path MTU (the pinned default 1197 is 1200 - 3). The UDP session itself remains a named gap."
+    },
+    {
+      "family": "hysteria2",
+      "option": "realm-opts",
+      "state": "partial",
+      "verification": [
+        "quic_peers::hysteria2_transport_options_are_parsed",
+        "option-probe: impl hysteria2 realm-opts rust=accept mihomo=accept"
+      ],
+      "implementation": [
+        "src/proxies.rs::parse_hysteria2_realm"
+      ],
+      "note": "The block is parsed and loads (enable/server-url/token/realm-id/stun-servers/SNI/ALPN/proxy), but the dial path refuses it by name because the HTTP control client, STUN discovery and UDP hole punching are not implemented. This is the one accepted-but-not-dialable option and is called out in the result concerns."
+    },
+    {
+      "family": "vmess",
+      "option": "mkcp-opts / network: mkcp",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::vmess_over_mkcp_reaches_the_receiving_side_through_mihomo",
+        "outbound::mkcp::tests::simple_authenticator_round_trips_and_pads_without_changing_the_length",
+        "outbound::mkcp::tests::segment_round_trip_carries_all_fields"
+      ],
+      "implementation": [
+        "src/outbound/mkcp.rs (KCP send/receive windows, retransmission, ACK, RTT, ping/terminate)",
+        "src/outbound/mkcp.rs::Security (FNV-1a simple auth or seeded AES-128-GCM)",
+        "src/outbound/mkcp.rs::Header (none/srtp/utp/wechat-video/dtls/wireguard)"
+      ]
+    },
+    {
+      "family": "vmess",
+      "option": "mekya-opts / network: mekya",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::vmess_over_mekya_reaches_the_receiving_side_through_mihomo",
+        "outbound::mekya::tests::base64url_matches_the_unpadded_alphabet",
+        "outbound::mekya::tests::bundle_layout_is_the_pinned_two_byte_length"
+      ],
+      "implementation": [
+        "src/outbound/mekya.rs (HTTP/2 request/response bundles with X-Session-ID)",
+        "src/outbound/mkcp.rs::connect_packet_io (KCP over the bundle stream)"
+      ],
+      "note": "The HTTP/2 lane is implemented. The pinned client can also fall back to HTTP/1.1 when ALPN does not select h2; this client requests h2 explicitly."
+    },
+    {
+      "family": "vmess",
+      "option": "tlsmirror-opts",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::vmess_over_tlsmirror_reaches_the_receiving_side_through_mihomo",
+        "outbound::tlsmirror::tests::xor_nonce_encryptor_and_decryptor_share_the_counter",
+        "outbound::tlsmirror::tests::primary_key_decodes_standard_base64"
+      ],
+      "implementation": [
+        "src/outbound/tlsmirror.rs (carrier TLS 1.3 raw-record driver, HKDF key derivation, XOR-nonce AES-GCM hidden records)"
+      ],
+      "note": "The carrier TLS handshake is a real rustls TLS 1.3 session to the mirror server's destination; hidden VMess bytes are extra application-data records in the same TCP stream. `primary-key` selects the feature; transport-layer padding, connection enrollment, the embedded traffic generator, sequence watermarking and TLS 1.2 explicit-nonce cipher suites stay named at load."
     }
   ],
   "named_rejections": [
     {
       "family": "anytls",
-      "option": "shadow-tls-opts version 2",
-      "reason": "v2 client HMAC (SHA-1 over bytes read) did not match the pinned server's write hash: '[ShadowTLS] hashcode mismatch' in every verification run, including a 250 ms post-handshake drain that read 0 bytes; rejected rather than accepted unverified"
+      "option": "shadow-tls-opts version 3",
+      "reason": "the account lives in the ClientHello session id, which rustls generates internally (rewriting invalidates the transcript)"
     },
     {
       "family": "anytls",
-      "option": "shadow-tls-opts version 3",
-      "reason": "account lives in the ClientHello session id, which rustls generates internally (rewriting invalidates the transcript)"
+      "option": "restls-opts",
+      "reason": "Restls rewrites the TLS handshake bytes rustls has already authenticated"
     },
     {
       "family": "hysteria2",
-      "option": "ports / hop-interval",
-      "reason": "needs a quinn AsyncUdpSocket that rewrites the send destination and maps the receive source back, plus a connection pool (one QUIC connection per dial here)"
+      "option": "obfs: gecko",
+      "reason": "the pinned Gecko layer fragments and reassembles datagrams with per-message ids; Salamander is implemented, Gecko is refused by name at dial"
     },
     {
       "family": "hysteria2",
-      "option": "up (Brutal)",
-      "reason": "quinn has no Brutal controller; a TX-rate cap reproduces the rate but not Brutal's loss behaviour, so not claimed as parity"
+      "option": "udp",
+      "reason": "no Hysteria2 UDP session relay exists; `udp-mtu` is applied to the QUIC path MTU only"
     },
     {
       "family": "hysteria2",
-      "option": "udp-mtu",
-      "reason": "no Hysteria2 UDP session layer exists (udp is already a registered gap), so the MTU has nothing to size"
-    },
-    {
-      "family": "hysteria2",
-      "option": "bbr-profile",
-      "reason": "quinn BbrConfig has no profile selector"
-    },
-    {
-      "family": "hysteria2",
-      "option": "realm-opts",
-      "reason": "realm HTTP rendezvous + STUN punching; pinned client lives in sing-quic, no material in this tree"
-    },
-    {
-      "family": "vmess",
-      "option": "mkcp-opts",
-      "reason": "KCP state machine + 24-byte header, seed-derived AES-128-GCM header obfuscation, header modes, session per stream"
-    },
-    {
-      "family": "vmess",
-      "option": "tlsmirror-opts",
-      "reason": "mirror/enrollment service and its own record layer (AEAD, padding, traffic shaping)"
-    },
-    {
-      "family": "vmess",
-      "option": "mekya-opts",
-      "reason": "HTTP/2-based multiplexer with the pinned pool/write-delay semantics"
+      "option": "ech-opts",
+      "reason": "unchanged from T30; Mihomo and this kernel both reject enabled ECH"
     }
   ],
   "matrix": {
     "noop": 289,
-    "implemented": 77,
-    "enabled": 129,
+    "implemented": 86,
+    "enabled": 120,
     "problems": 0,
-    "target_family_residual": 9
+    "target_family_residual": 0,
+    "residual_note": "All nine T31 target rows are implemented or impl rows. `hysteria2 realm-opts` remains the one accepted-but-not-dialable option (partial)."
   },
   "verification": {
-    "cargo_test": "all suites pass (168 lib, 50 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, 1 doc-test; 81 ignored peer cases)",
-    "peer_tests": "81 passed, 0 failed (pinned Mihomo v1.19.34)",
-    "option_probe": "0 problems",
+    "cargo_test": "all suites pass (179 lib, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, 1 doc-test; 87 ignored peer cases)",
+    "peer_tests": "87 passed, 0 failed (pinned Mihomo v1.19.34)",
+    "option_probe": "289 / 86 / 120, 0 problems",
     "runner_test": "10 passed",
     "differentials": {
       "t22": "22 pass / 1 skipped / 0 differ",
       "t23": "28 pass / 1 persistence / 0 differ",
-      "t24": "36 pass / 2 skipped / 0 differ / 6 recorded framing differences",
+      "t24": "36 pass / 2 skipped / 0 differ / 9 recorded inbound framing differences",
       "t25": "47/49 equal / 2 recorded divergences / 0 unexpected",
       "t5": "12/12 scenarios / 0 differ"
     }

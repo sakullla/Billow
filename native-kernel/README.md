@@ -635,7 +635,7 @@ identities of the servers are logged as the session exit.
 | `trojan` | TLS, `network: tcp` / `ws` (`ws-opts.path`, `headers`, `v2ray-http-upgrade`), optional `ss-opts` Shadowsocks AEAD layer (`aes-128/192/256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`; every other name the pinned `core.PickCipher` accepts, including `DUMMY`, is rejected by name; the legacy AEAD names it does not accept are rejected by both engines) | `udp: true`: `addr|len|CRLF|payload` frames over the TLS stream | `listeners: type: trojan`, wrong password, untrusted certificate (TCP and UDP) |
 | `vless` | `tls: true`, `network: tcp` / `ws` (`ws-opts.path`), `encryption: none`, `udp` with XUDP (pinned default) or `packet-encoding: packetaddr\|packet` | `udp: true`: XUDP mux frames, packet-addr records; `udp: false` is TCP-only | `listeners: type: vless` (tcp, `ws-path`, XUDP and packet-addr UDP echo), wrong uuid |
 | `anytls` | TLS, protocol version 2, idle-session pool (`client-metadata`, `idle-session-*`, `min-idle-session`, `disable-reuse`) | `udp: true`: UoT over a dedicated AnyTLS stream (`u16 length \|\| payload`), one stream per destination; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP | `listeners: type: anytls` TCP/UoT echo, one association with two destinations, dead-hop chain, wrong password, untrusted certificate |
-| `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `network: tcp`/`ws` (`ws-opts.path`, `headers`), `sni`/`servername`, `udp` with plain `command 2`, packet-addr or XUDP | `udp: true`: one record per datagram in all three pinned modes; plain `command 2` opens one association per destination and the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target, plain/packet-addr/XUDP UDP echo, one association with two destinations, dead-hop chain), wrong uuid |
+| `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `tlsmirror-opts` (carrier TLS + hidden AES-GCM records), `network: tcp`/`ws` (`ws-opts.path`, `headers`)/`mkcp`/`kcp`/`mekya`, `mkcp-opts` (MTU/TTI/capacity/buffers, `seed` AES-128-GCM, all six camouflage headers), `mekya-opts` (HTTP/2 bundle requests + nested KCP), `sni`/`servername`, `udp` with plain `command 2`, packet-addr or XUDP | `udp: true`: one record per datagram in all three pinned modes; plain `command 2` opens one association per destination and the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target, plain/packet-addr/XUDP UDP echo, one association with two destinations, dead-hop chain, `mkcp-config` and `mekya-config`), wrong uuid |
 | `snell` | v1 (chacha20-poly1305) / v2 / v3 (aes-128-gcm), Argon2id KDF, `obfs-opts: {mode: http, host}` | no | `listeners: type: snell` v1/v2/v3, v3 + http obfs, wrong psk |
 | `trusttunnel` | TLS + HTTP/2 `CONNECT`, Basic `Proxy-Authorization`, ALPN `h2`, `sni`, `skip-cert-verify` | no | `listeners: type: trusttunnel` (`network: [tcp]`), wrong password |
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature), `mux` (smux v1 session, one stream per dial) | `udp: true`: one association bound to the target, `length(u16 BE) || payload` frames | controlled relay-v2 server (header vectors, auth/forward/TLS/status, UDP and smux cases); no Mihomo listener exists |
@@ -643,7 +643,7 @@ identities of the servers are logged as the session exit.
 | `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), every protocol plugin (`origin`, `auth_sha1_v4`, `auth_aes128_md5`, `auth_aes128_sha1`, `auth_chain_a`, `auth_chain_b`), every obfs plugin (`plain`, `http_simple`, `http_post`, `random_head`, `tls1.2_ticket_auth`, `tls1.2_ticket_fastauth`) | `udp: true`: the pinned `cipher.PacketConn` + `protocol.PacketConn` association (no obfs, as in the pinned outbound). Pinned limit: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so `protocol-param` breaks the UDP path; the UDP cases use no `protocol-param` | pinned Go cipher vectors; the Go plugin peer, which the *pinned* client packages also accept for all 36 protocol/obfs combinations; wrong-password and UDP cases; no Mihomo listener exists |
 | `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
 | `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
-| `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout` | no | `listeners: type: hysteria2` (users map), wrong password, unreachable target |
+| `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout`, `ports`/`hop-interval` (wrapped `AsyncUdpSocket` port rewrite), `obfs: salamander`, `up` (Brutal window), `udp-mtu`, `bbr-profile` (BBR initial-window mapping) | no: `realm-opts` loads its block but the HTTP rendezvous/STUN/punch client is refused at dial; `obfs: gecko`, `ech-opts` and UDP are rejected by name | `listeners: type: hysteria2` (users map, salamander obfs, single-port hop pool), wrong password, unreachable target |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
 | `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, `multiplex: on` over that chain, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
 | `masque` | two shapes over HTTP/3 (`quinn` 0.11, TLS 1.3, ALPN `h3`): (1) RFC 9484 CONNECT-IP for the pinned Cloudflare WARP configuration — base64 SEC1 P-256 client key → the pinned adapter's self-signed client certificate, `public-key` (DER SPKI) pinning the endpoint, `:protocol cf-connect-ip`, `uri` (default `https://cloudflareaccess.com`), `capsule-protocol: ?1`, a `ROUTE_ADVERTISEMENT` for every IPv4/IPv6 destination, `ADDRESS_ASSIGN`/`ROUTE_ADVERTISEMENT` parsing, whole IP packets in HTTP Datagrams (quarter stream ID + context ID 0), a minimal IPv4/IPv6/UDP stack with header/UDP checksums and a per-destination UDP flow table (32 flows, LRU eviction), `mtu` (default 1280), `ip-stack` mode selection, tunnel DNS (`remote-dns-resolve`/`dns`) and TCP termination with the in-tree minimal client (`src/outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS/window limits, RTO backoff and fast retransmit, reordering, half-close; one tunnel and one connection per `dial`); (2) the RFC 9298 CONNECT-UDP subset (`:protocol connect-udp`, one request stream per destination, `DATAGRAM` capsules, UDP only by protocol) | `udp: true` for both shapes; TCP needs the WARP CONNECT-IP shape (CONNECT-UDP cannot carry TCP) | controlled HTTP/3 peers in `tests/quic_peers.rs` (CONNECT-IP: request shape, client certificate and SPKI, endpoint pin, route advertisement, ADDRESS_ASSIGN, IPv4/IPv6 UDP echo with an independent IP codec, tunnel DNS, missing datagram settings, ADDRESS_REQUEST, 403, TCP echo/refusal/timeout/half-close with an independent TCP codec; CONNECT-UDP: request headers, per-destination flows, capsule echo, refusal, missing extended CONNECT/capsule negotiation, untrusted certificate, peer-FIN reopen, 32 closed flows then a new destination) plus the shipped CLI's SOCKS5 UDP ASSOCIATE and HTTP CONNECT (TCP) tunnels in `family_cli.rs`; no Mihomo listener exists and a WARP registration endpoint is not reachable offline |
@@ -932,12 +932,16 @@ With the pinned option tables that means the trojan/vless `smux` block,
 `http-opts`, `h2-opts`, `xhttp-opts`, a non-AEAD `ss-opts.method`, `plugin`/`plugin-opts`, ws
 early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint` (accepted as a documented rustls approximation, counted as
 a residual rather than parity), vless `flow`/`reality-opts`/`shadow-tls-opts`/
-`restls-opts`/`jls-opts`, anytls `shadow-tls-opts: version 2/3`/`restls-opts`
-(JLS and ShadowTLS version 1 are implemented: the JLS ClientHello/ServerHello
-random is sealed and verified over a TCP rustls session, and ShadowTLS v1 runs
-the TLS 1.2 camouflage handshake and then hands the raw stream back), vmess
-`alterId > 0`/`global-padding`/`authenticated-length` and the vmess
-mkcp/mekya/TLS-mirror blocks, snell
+`restls-opts`/`jls-opts`, anytls `shadow-tls-opts: version 3`/`restls-opts`
+(JLS and ShadowTLS versions 1 and 2 are implemented: the JLS
+ClientHello/ServerHello random is sealed and verified over a TCP rustls
+session, ShadowTLS v1 runs the TLS 1.2 camouflage handshake and hands the raw
+stream back, and ShadowTLS v2 frames the HMAC-SHA1 read digest as the first
+application record with TLS 1.3 session tickets disabled so the digest ends on
+the pinned server's last write), vmess
+`alterId > 0`/`global-padding`/`authenticated-length` (vmess `network:
+mkcp`/`kcp` and `network: mekya` are implemented over KCP, and `tlsmirror-opts`
+implements the carrier/hidden TLS record layer), snell
 `version: 4-6`/`reuse`/`mode`/obfs `tls`, trusttunnel
 `udp`/`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
 `congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
@@ -953,10 +957,13 @@ masque `quic.Config` value); `bbr_meta_v1` and
 `bbr-profile` are named. `hysteria`
 `ports`/`hop-interval` (port hopping), `obfs` (XPlus), `protocol:
 faketcp|wechat`, `fast-open`; `recv-window*` and `disable-mtu-discovery` are
-applied. `hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko),
-`realm-opts`, `up` (the pinned Brutal TX-rate cap; quinn has no Brutal
-controller), `udp-mtu`, `bbr-profile`; BBR with `cwnd` and the receive windows
-are applied. `mieru` rejects `transport: UDP`,
+applied. `hysteria2` `ports`/`hop-interval` (a wrapped `quinn::AsyncUdpSocket` rewrites
+the destination port and maps replies back), `obfs: salamander` (BLAKE2b-256
+salt/XOR), `up` (a Brutal window controller), `udp-mtu` (QUIC initial path MTU)
+and `bbr-profile` (mapped to the BBR initial window, a recorded approximation);
+`obfs: gecko`, `realm-opts` at dial time (the control/TLS block loads, but the
+HTTP rendezvous + STUN/punch client is not implemented and is refused by name)
+and `ech-opts` stay named. BBR with `cwnd` and the receive windows are applied. `mieru` rejects `transport: UDP`,
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping). `sudoku` rejects
 `udp: true` (the UDP-over-TCP/UoT association) and the HTTP tunnel modes
@@ -1032,7 +1039,7 @@ the TLS SNI). Their
 unimplemented options (`udp: true`, `packet-addr`, `xudp`, `packet-encoding`,
 `global-padding`, `authenticated-length`, `grpc-opts`/`h2-opts`/`http-opts`,
 `reality-opts`/`ech-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts`,
-`tlsmirror-opts`/`mekya-opts`/`mkcp-opts`, snell `version: 4-6`/`reuse`/`mode`,
+snell `version: 4-6`/`reuse`/`mode`,
 and the snell obfs `tls` mode) are rejected with the key named. Keys the pinned type does not declare at all
 (`smux`, `ss-opts` on vless, `udp` on http, any unknown name) are ignored, which
 is what Mihomo does with them. Three cases are rejected even when "empty":
@@ -1040,9 +1047,9 @@ is what Mihomo does with them. Three cases are rejected even when "empty":
 and `reality-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts` require
 `tls: true` (Mihomo rejects them without TLS, so they are not ignored). The
 same keys are ignored on a type whose option table does not declare them
-(`socks5`/`http`/`ss`); `anytls` applies `jls-opts` and `shadow-tls-opts`
-`version: 1` as security modes, while ShadowTLS version 2 (the pinned default)
-and version 3 stay registered rejections with the field named.
+(`socks5`/`http`/`ss`); `anytls` applies `jls-opts` and `shadow-tls-opts` versions 1 and 2 (the pinned
+default) as security modes, while ShadowTLS version 3 stays a registered
+rejection with the field named.
 
 A transport block for a transport the configuration did not select
 (`grpc-opts`, `http-opts`, `h2-opts`, `xhttp-opts` with `network: tcp|ws`) is
