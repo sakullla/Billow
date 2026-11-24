@@ -1319,6 +1319,21 @@ fn descriptor_is_open(_fd: i32) -> bool {
     false
 }
 
+/// The `--tun-fd` value for this launch. A number the host no longer owns is
+/// dropped so the child never polls a reused descriptor, and the drop is
+/// recorded on stderr (`logcat` on Android): otherwise the kernel would start
+/// without a TUN and the only symptom would be missing traffic.
+fn live_tun_fd_argument(fd: i32, is_open: impl Fn(i32) -> bool) -> Option<String> {
+    if is_open(fd) {
+        return Some(fd.to_string());
+    }
+    eprintln!(
+        "billow: dropping stale Android TUN fd {fd} before launching the Rust kernel \
+         (descriptor closed or revoked by the VpnService)"
+    );
+    None
+}
+
 /// Spawns the already installed kernel. Tests inject [`KernelLaunch`] instead.
 pub struct ProcessRuntime {
     /// Engine the next launch uses; kept in sync with the profile book selection.
@@ -1798,10 +1813,11 @@ impl ProcessRuntime {
                 // VpnService may also have released it on revoke. Only a live
                 // descriptor can be inherited, otherwise the next process would
                 // poll a reused number (or fail on a closed one).
-                if descriptor_is_open(fd) {
-                    command.arg("--tun-fd").arg(fd.to_string());
-                } else {
-                    self.tun_fd = None;
+                match live_tun_fd_argument(fd, descriptor_is_open) {
+                    Some(value) => {
+                        command.arg("--tun-fd").arg(value);
+                    }
+                    None => self.tun_fd = None,
                 }
             }
         }
@@ -11230,6 +11246,22 @@ proxy-groups:
             descriptor_is_open(file.as_raw_fd()),
             "an open file descriptor must be passed to the child"
         );
+    }
+
+    #[test]
+    fn stale_tun_fd_is_dropped_from_the_launch_arguments() {
+        // A live descriptor keeps its number on the command line.
+        assert_eq!(
+            live_tun_fd_argument(7, |_| true).as_deref(),
+            Some("7"),
+            "the launch must pass the live fd as --tun-fd 7"
+        );
+        // A closed/revoked descriptor is not passed at all; the runtime clears
+        // its own copy in `launch`, and this is the value that would have been
+        // handed to the child.
+        assert_eq!(live_tun_fd_argument(7, |_| false), None);
+        // The real probe also rejects negative numbers.
+        assert_eq!(live_tun_fd_argument(-1, descriptor_is_open), None);
     }
 
     #[test]

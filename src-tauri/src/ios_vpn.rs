@@ -97,14 +97,16 @@ pub struct IosStatus {
     pub error_code: Option<i32>,
     pub started_at: Option<String>,
     /// Live counters + process peak RSS. Published by the Rust extension's
-    /// `billow_ios_vpn_stats`; absent for Mihomo and older builds.
+    /// `billow_ios_vpn_stats`; absent for Mihomo and older builds. The Swift
+    /// host does not forward it yet (`ProviderStatus` has no `stats` field), so
+    /// on a device this stays `None` until that product gap is closed.
     #[serde(default)]
     pub stats: Option<IosStats>,
 }
 
 /// The Rust extension's `stats` object (`billow_ios_vpn_stats`). Every field is
 /// optional so a reply without a counter still decodes; key names mirror the
-/// JSON emitted by the kernel and the Swift `ProviderStats`.
+/// JSON emitted by the kernel and the extension's status reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IosStats {
