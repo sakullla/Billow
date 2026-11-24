@@ -274,6 +274,19 @@ impl<W: AsyncWrite + Unpin + Send> AsyncRead for AnytlsStream<W> {
                 return Poll::Ready(result);
             }
             *this.state.recv.lock().expect("anytls waker") = Some(cx.waker().clone());
+            // The receive loop may have queued bytes or a close between the
+            // check above and the waker registration. Re-check after the
+            // waker is visible so no wakeup is lost; the loop delivers it.
+            let ready = {
+                let inbox = this.state.inbox.lock().expect("anytls inbox");
+                !inbox.is_empty()
+            } || this.state.closed.lock().expect("anytls closed").is_some();
+            if ready {
+                // Drop our waker (the receive loop may already have taken it
+                // and woken us, which is harmless) and deliver the state.
+                *this.state.recv.lock().expect("anytls waker") = None;
+                continue;
+            }
             return Poll::Pending;
         }
     }
@@ -411,16 +424,22 @@ struct IdleSession {
 ///
 /// `client-metadata` is sent in the settings frame of every new session;
 /// `disable-reuse` never pools (a stream's session is closed when it ends);
-/// the check interval is applied lazily on acquire/release instead of with the
-/// pinned background ticker, and `idle-session-timeout` / `min-idle-session`
+/// a background ticker sweeps expired sessions every
+/// `idle-session-check-interval` (with a lazy sweep on acquire/release as a
+/// fallback outside a runtime), and `idle-session-timeout` / `min-idle-session`
 /// decide which idle sessions are kept. The pool is runtime state, not part of
-/// the configuration, so equality ignores it.
+/// the configuration, so equality ignores it and dropping it aborts the ticker
+/// and closes idle sessions.
 #[derive(Default)]
 pub struct AnytlsPool {
     idle: Mutex<Vec<IdleSession>>,
     check_interval: u64,
     timeout: u64,
     min_idle: usize,
+    /// The pinned background ticker (`util.StartRoutine`). It is started on
+    /// the first pooled session, because configuration parsing may run outside
+    /// a Tokio runtime, and aborted when the pool is dropped.
+    ticker: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for AnytlsPool {
@@ -453,11 +472,12 @@ impl AnytlsPool {
             check_interval,
             timeout,
             min_idle,
+            ticker: Mutex::new(None),
         })
     }
 
-    /// The pinned check interval only decides how often expired sessions are
-    /// swept; sweeping at the next acquire/release is equivalent for a client.
+    /// The pinned check interval decides how often the background ticker
+    /// sweeps expired sessions.
     pub fn check_interval(&self) -> u64 {
         self.check_interval
     }
@@ -466,6 +486,9 @@ impl AnytlsPool {
         let now = Instant::now();
         let timeout = Duration::from_secs(self.timeout);
         let mut idle = self.idle.lock().expect("anytls pool");
+        // The pinned skip list iterates newest-idle first; keep that order so
+        // `min-idle-session` retains the most recently returned sessions.
+        idle.sort_by(|a, b| b.since.cmp(&a.since));
         let mut kept = Vec::with_capacity(idle.len());
         for (index, session) in idle.drain(..).enumerate() {
             let expired = now.duration_since(session.since) >= timeout;
@@ -491,14 +514,18 @@ impl AnytlsPool {
         self.sweep();
         let mut idle = self.idle.lock().expect("anytls pool");
         loop {
-            let session = idle.pop()?;
+            if idle.is_empty() {
+                return None;
+            }
+            // Newest idle session first, as the pinned `getIdleSession`.
+            let session = idle.remove(0);
             if !session.session.is_closed() {
                 return Some((session.session, session.server));
             }
         }
     }
 
-    fn put(&self, session: Arc<Session<BoxWriter>>, server: std::net::SocketAddr) {
+    fn put(self: &Arc<Self>, session: Arc<Session<BoxWriter>>, server: std::net::SocketAddr) {
         if session.is_closed() {
             return;
         }
@@ -511,17 +538,78 @@ impl AnytlsPool {
                 server,
                 since: Instant::now(),
             });
+        self.ensure_ticker();
+    }
+
+    /// Start the pinned interval sweep once. `idle-session-check-interval` is
+    /// otherwise only a stored number; the ticker makes it decide how often
+    /// expired sessions are actually closed.
+    fn ensure_ticker(self: &Arc<Self>) {
+        let mut ticker = self.ticker.lock().expect("anytls ticker");
+        if ticker.is_some() {
+            return;
+        }
+        let interval = Duration::from_secs(self.check_interval.max(1));
+        let weak = Arc::downgrade(self);
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // No runtime (configuration parsing/drop outside Tokio): the lazy
+            // sweep on acquire/release still applies the timeout.
+            return;
+        };
+        *ticker = Some(handle.spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                match weak.upgrade() {
+                    Some(pool) => pool.sweep(),
+                    None => break,
+                }
+            }
+        }));
+    }
+}
+
+impl Drop for AnytlsPool {
+    fn drop(&mut self) {
+        let handle = self
+            .ticker
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            handle.abort();
+        }
+        let idle = self
+            .idle
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for session in idle.drain(..) {
+            session.session.close();
+        }
     }
 }
 
 async fn open_session(
     option: &AnytlsOutbound,
     tls: &ClientTls,
+    via: &[&crate::proxies::Proxy],
+    timeout: Duration,
 ) -> Result<(Arc<Session<BoxWriter>>, std::net::SocketAddr), DialError> {
-    let tcp = connect_tcp(&option.server, option.port).await?;
-    let server = tcp.peer_addr().map_err(|e| handshake("anytls", e))?;
+    // `via[0]` is this anytls outbound and `via[1]` the single socks5 hop the
+    // `dialer-proxy` chain may carry (validated at load). The server socket is
+    // therefore either direct or a hop tunnel, never a silent bypass.
+    let (stream, server): (BoxStream, std::net::SocketAddr) = match via.len() {
+        0 | 1 => {
+            let tcp = connect_tcp(&option.server, option.port).await?;
+            let server = tcp.peer_addr().map_err(|e| handshake("anytls", e))?;
+            (Box::new(tcp), server)
+        }
+        _ => (
+            super::udp::server_stream(&option.server, option.port, via, timeout, tls).await?,
+            super::peer_of(via[0]),
+        ),
+    };
     let mut stream: BoxStream = Box::new(
-        tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+        tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
             .await
             .map_err(|e| handshake("anytls tls", e))?,
     );
@@ -570,13 +658,15 @@ async fn open_session(
 async fn acquire_session(
     option: &AnytlsOutbound,
     tls: &ClientTls,
+    via: &[&crate::proxies::Proxy],
+    timeout: Duration,
 ) -> Result<(Arc<Session<BoxWriter>>, std::net::SocketAddr), DialError> {
     if !option.disable_reuse {
         if let Some((session, server)) = option.session_pool.take() {
             return Ok((session, server));
         }
     }
-    open_session(option, tls).await
+    open_session(option, tls, via, timeout).await
 }
 
 /// Open one stream on `session`, sending the destination first.
@@ -619,8 +709,9 @@ pub async fn dial(
     option: &AnytlsOutbound,
     target: &Target,
     tls: &ClientTls,
+    timeout: Duration,
 ) -> Result<Dialed, DialError> {
-    let (session, server) = acquire_session(option, tls).await?;
+    let (session, server) = acquire_session(option, tls, &[], timeout).await?;
     let stream = open_stream(session, target).await?;
     Ok(Dialed {
         stream: Box::new(stream),
@@ -636,9 +727,11 @@ pub const UOT_MAGIC: &str = "sp.v2.udp-over-tcp.arpa";
 pub async fn dial_uot(
     option: &AnytlsOutbound,
     target: &Target,
+    via: &[&crate::proxies::Proxy],
+    timeout: Duration,
     tls: &ClientTls,
 ) -> Result<(AnytlsStream<BoxWriter>, std::net::SocketAddr), DialError> {
-    let (session, server) = acquire_session(option, tls).await?;
+    let (session, server) = acquire_session(option, tls, via, timeout).await?;
     let magic = Target {
         host: UOT_MAGIC.to_string(),
         port: 0,

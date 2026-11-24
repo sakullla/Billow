@@ -1,7 +1,7 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T30",
-  "attempt": "T30-A1",
+  "attempt": "T30-A2",
   "matrix": {
     "noop": 289,
     "implemented": 75,
@@ -27,32 +27,37 @@
         "udp (XUDP default)",
         "xudp",
         "packet-addr",
-        "packet-encoding",
-        "client-fingerprint (rustls approximation)"
+        "packet-encoding"
       ],
       "anytls": [
-        "udp (UoT)",
+        "udp (UoT, one stream per destination)",
         "client-metadata",
         "idle-session-check-interval",
         "idle-session-timeout",
         "min-idle-session",
-        "disable-reuse",
-        "client-fingerprint (rustls approximation)"
+        "disable-reuse"
       ],
       "ss": [
-        "udp-over-tcp",
+        "udp-over-tcp (one stream per destination for v1/v2)",
         "udp-over-tcp-version"
       ],
       "vmess": [
-        "udp",
+        "udp (plain command 2 opens one association per destination)",
         "xudp",
         "packet-addr",
-        "packet-encoding",
-        "client-fingerprint (rustls approximation)"
+        "packet-encoding"
       ],
-      "hysteria2": [
-        "client-fingerprint (rustls approximation)"
-      ]
+      "hysteria2": []
+    },
+    "approximations_counted_as_residual": {
+      "count": 4,
+      "rows": [
+        "vless/client-fingerprint",
+        "anytls/client-fingerprint",
+        "vmess/client-fingerprint",
+        "hysteria2/client-fingerprint"
+      ],
+      "reason": "rustls cannot emit a uTLS ClientHello. The pinned names are validated and applied as the closest rustls profile (browser key-exchange list), but extension order, GREASE and the exact cipher list are not reproduced. These 4 option-matrix `impl` rows plus the shared TLS-layer note are reported as approximations, not as verified parity; the matrix still counts them as loadable so its 0-problem result is unchanged."
     },
     "named_residuals": {
       "anytls": [
@@ -75,33 +80,46 @@
     }
   },
   "tests": {
-    "default": "cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel (all suites pass; 72 ignored peer cases)",
+    "default": "CARGO_TARGET_DIR=<independent> cargo test --manifest-path native-kernel/Cargo.toml --locked: every suite passes (165 lib, 50 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, doc-test; 77 ignored pinned-peer cases)",
     "peers": [
       "vless_udp_xudp_reaches_the_echo_through_mihomo",
       "vless_udp_packet_addr_reaches_the_echo_through_mihomo",
       "anytls_udp_uot_reaches_the_echo_through_mihomo",
+      "anytls_udp_reaches_two_destinations_from_one_association",
+      "chained_anytls_udp_with_a_dead_hop_never_reaches_the_echo",
       "shadowsocks_uot_reaches_the_echo_through_mihomo",
       "shadowsocks_uot_v1_reaches_the_echo_through_mihomo",
+      "shadowsocks_uot_v2_reaches_two_destinations_from_one_association",
       "vmess_udp_modes_reach_the_echo_through_mihomo",
-      "full pinned peer suite: 72 passed, 0 failed",
+      "vmess_plain_udp_reaches_two_destinations_from_one_association",
+      "chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo",
+      "full pinned peer suite: 77 passed, 0 failed",
       "node --test tool/kernel-compat/runner.test.mjs: 10 passed"
     ],
-    "matrix": "node tool/kernel-compat/option-probe.mjs --rust <release>/billow-kernel --mihomo .cache/baseline/mihomo-a55a9073f9b7 --out evidence/option-matrix.txt (0 problems)",
-    "differentials": "t22/t23/t24/t25/t5 differential scripts were not re-run in this attempt; the default suite and the complete pinned peer suite (72 cases, incl. the new UDP/UoT cases) pass, and the option matrix reports 0 problems."
+    "matrix": "node tool/kernel-compat/option-probe.mjs --rust <debug>/billow-kernel --mihomo .cache/baseline/mihomo-a55a9073f9b7 --out evidence/option-matrix.txt (289 no-op / 75 implemented / 131 enabled, target-family disagreements 11, 0 problems)",
+    "differentials": "Re-run in T30-A2 against the pinned v1.19.34 binary: t22 22 pass / 1 skipped / 0 differ (the skip needs a decompressed Country.mmdb), t23 28 pass / 0 differ, t24 36 pass / 2 skipped / 0 differ / 6 recorded inbound framing differences, t25 47/49 equal / 2 recorded divergences / 0 unexpected, t5 12/12 scenarios / 0 differ. Each equals the previously recorded summary."
+  },
+  "repair_A2": {
+    "P1_anytls_vmess_udp_dialer_proxy": "AnytlsUot and VmessUdp now receive the same `chain_for` hops as the TCP path and build the server connection through `server_stream` (direct for 1 hop, one socks5 tunnel for 2). Regression: `chained_anytls_udp_with_a_dead_hop_never_reaches_the_echo` and `chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo`; a forced-bypass mutation made the anytls case fail by reaching the echo.",
+    "P1_per_destination_associations": "anytls UoT, ss UoT (v1/v2) and vmess plain command-2 are no longer bound to the first destination. The relay keeps `HashMap<(proxy, target), writer>` plus one reader task per association (mpsc back to the relay), aborts readers with the association, and retires a writer after a failed write. Regression: the three `*_reaches_two_destinations_from_one_association` cases; a constant-key mutation made the anytls case fail.",
+    "P2_anytls_pool": "A background ticker now sweeps idle sessions every `idle-session-check-interval` (started on the first pooled session, aborted and idle sessions closed on pool drop); intervals/timeouts `<= 5s` normalize to 30s like `session.NewClient`. Lazy sweep on acquire/release remains as a fallback outside a runtime.",
+    "P2_anytls_waker": "`AnytlsStream::poll_read` re-checks the inbox and close state after publishing its waker, so a frame queued in that window cannot be lost.",
+    "P2_client_fingerprint": "Kept as a documented rustls approximation and moved out of `implemented_and_verified` into `approximations_counted_as_residual` (4 matrix rows + the TLS note), with the matrix counts unchanged.",
+    "P2_dns_test_race": "The dns test fixtures now reserve their TCP/UDP ephemeral ports (`common::bind_loopback{,_udp}`), so a parallel `free_port` cannot hand the UDP port to a fixed `dns.listen`; the dns suite passed 12 consecutive runs."
   },
   "limitations": [
-    "uTLS client-fingerprint: rustls cannot emit a uTLS ClientHello; known pinned names are validated and applied as the closest rustls profile (browser key-exchange list) and documented as an approximation. Extension order/cipher list are not reproduced.",
+    "uTLS client-fingerprint (vless/anytls/vmess/hysteria2, 4 matrix rows + the shared TLS note): rustls cannot emit a uTLS ClientHello; known pinned names are validated and applied as the closest rustls profile (browser key-exchange list). Extension order/GREASE/cipher list are not reproduced, so these are approximations counted as residuals, not parity.",
     "anytls shadow-tls-opts/jls-opts need a client-controlled ClientHello session id / ServerHello random; rustls exposes neither, so non-empty blocks stay named rejections.",
     "vmess mkcp/mekya/tlsmirror are separate transports (KCP/mekya session/TLS mirror) and remain named rejections.",
     "hysteria2 port hopping/Salamander+Gecko obfs/Brutal up/realm/udp-mtu/bbr-profile require the pinned packet-connection layer and senders quinn does not expose (and the engine has no Hysteria2 UDP relay); they remain named rejections with the reason.",
-    "AnyTLS session-reuse sweep runs lazily on acquire/release instead of the pinned background ticker; client-metadata/reuse/idle bounds are applied."
+    "AnyTLS session reuse now has the pinned interval ticker; the ticker is started lazily on the first pooled session (configuration parsing may run outside a runtime) and the lazy acquire/release sweep remains as a fallback."
   ],
   "files": [
     "native-kernel/crates/billow-kernel/src/proxies.rs",
-    "native-kernel/crates/billow-kernel/src/outbound/{vless,anytls,vmess,udp,tls}.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/{vless,anytls,vmess,udp,tls,mod}.rs",
     "native-kernel/crates/billow-kernel/src/engine.rs",
-    "native-kernel/crates/billow-kernel/tests/{config,mihomo_peers}.rs",
+    "native-kernel/crates/billow-kernel/tests/{config,mihomo_peers,dns,common/mod}.rs",
     "native-kernel/README.md",
-    "tool/kernel-compat/{README.md,option-probe.mjs,evidence/rust-mapping.json,evidence/option-matrix.txt}"
+    "tool/kernel-compat/{README.md,evidence/rust-mapping.json,evidence/option-matrix.txt,evidence/t22-dns.json,evidence/t23-differential.json,evidence/t24-differential.json,evidence/t25-differential.json,evidence/t5-integration.json}"
   ]
 }

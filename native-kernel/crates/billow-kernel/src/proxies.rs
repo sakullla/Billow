@@ -3099,6 +3099,14 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
     })
 }
 
+/// The pinned `session.NewClient` normalisation: `<= 5s` becomes 30s.
+fn normalize_anytls_seconds(value: Option<i64>) -> u64 {
+    match value {
+        Some(seconds) if seconds > 5 => seconds as u64,
+        _ => 30,
+    }
+}
+
 fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
@@ -3106,20 +3114,11 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let mut tls_settings = entry.tls_settings(true, true, true)?;
     tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    // Session reuse (pinned `session.Client`): a non-positive interval is
-    // clamped to the pinned 30s default; the timeout likewise.
-    let idle_session_check_interval = entry
-        .int("idle-session-check-interval")?
-        .filter(|value| *value > 0)
-        .map(|value| value as u64)
-        .unwrap_or(30)
-        .max(30);
-    let idle_session_timeout = entry
-        .int("idle-session-timeout")?
-        .filter(|value| *value > 0)
-        .map(|value| value as u64)
-        .unwrap_or(30)
-        .max(30);
+    // Session reuse (pinned `session.NewClient`): an interval or timeout at or
+    // below 5s (including 0/negative) is normalised to the pinned 30s default;
+    // a value above 5s is kept as configured.
+    let idle_session_check_interval = normalize_anytls_seconds(entry.int("idle-session-check-interval")?);
+    let idle_session_timeout = normalize_anytls_seconds(entry.int("idle-session-timeout")?);
     let min_idle_session = match entry.int("min-idle-session")? {
         Some(value) if value < 0 => {
             return Err(entry.invalid("option 'min-idle-session' must not be negative"))

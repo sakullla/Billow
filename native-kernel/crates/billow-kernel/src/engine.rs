@@ -4,6 +4,7 @@
 //! Every accepted connection is tracked until its task has returned, so after
 //! [`Kernel::stop`] returns there are no live sessions, tasks or buffers.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -1717,6 +1718,58 @@ async fn serve_udp_associate(
     }
 }
 
+/// One live per-destination UDP association. The pinned anytls UoT / ss UoT v2
+/// / vmess plain outbounds open a packet conn or UoT stream per destination, so
+/// the relay keeps one writer and one reader task per (proxy, target).
+struct UotEntry {
+    id: u64,
+    writer: outbound::udp::UotWriter,
+    abort: tokio::task::AbortHandle,
+}
+
+fn install_uot(
+    map: &mut HashMap<outbound::udp::UotKey, UotEntry>,
+    next_id: &mut u64,
+    events: &tokio::sync::mpsc::UnboundedSender<outbound::udp::UotEvent>,
+    key: outbound::udp::UotKey,
+    reader: outbound::udp::UotReader,
+    writer: outbound::udp::UotWriter,
+) {
+    let assoc_id = *next_id;
+    *next_id = next_id.wrapping_add(1);
+    let abort = outbound::udp::spawn_uot_reader(reader, key.clone(), assoc_id, events.clone());
+    map.insert(
+        key,
+        UotEntry {
+            id: assoc_id,
+            writer,
+            abort,
+        },
+    );
+}
+
+/// Send on an existing per-target association; a failed write retires it so
+/// the next datagram opens a fresh one instead of losing traffic silently.
+async fn send_on_uot(
+    map: &mut HashMap<outbound::udp::UotKey, UotEntry>,
+    key: &outbound::udp::UotKey,
+    payload: &[u8],
+) -> io::Result<()> {
+    let result = match map.get_mut(key) {
+        Some(entry) => entry.writer.send(payload).await,
+        None => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no association for this destination",
+        )),
+    };
+    if result.is_err() {
+        if let Some(entry) = map.remove(key) {
+            entry.abort.abort();
+        }
+    }
+    result
+}
+
 async fn serve_udp_associate_inner(
     mut client: TcpStream,
     peer: SocketAddr,
@@ -1767,9 +1820,7 @@ async fn serve_udp_associate_inner(
     let mut direct_v4 = true;
     let mut socks5: Option<outbound::socks5::Socks5Udp> = None;
     let mut ss: Option<outbound::udp::SsUdp> = None;
-    let mut ss_uot: Option<outbound::udp::SsUot> = None;
     let mut vless: Option<outbound::udp::VlessUdp> = None;
-    let mut anytls: Option<outbound::udp::AnytlsUot> = None;
     let mut vmess: Option<outbound::udp::VmessUdp> = None;
     let mut trojan: Option<outbound::udp::TrojanUdp> = None;
     let mut ssr: Option<outbound::udp::SsrUdp> = None;
@@ -1777,6 +1828,14 @@ async fn serve_udp_associate_inner(
     let mut gost_target: Option<outbound::Target> = None;
     let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
+    // Destination-bound UoT / plain-UDP associations (anytls, ss UoT v2/v1,
+    // vmess plain). The pinned outbound opens one packet conn per destination
+    // and reads every one of them concurrently; the relay mirrors that with a
+    // writer map plus one reader task per association.
+    let (uot_tx, mut uot_events) =
+        tokio::sync::mpsc::unbounded_channel::<outbound::udp::UotEvent>();
+    let mut uot_map: HashMap<outbound::udp::UotKey, UotEntry> = HashMap::new();
+    let mut uot_next_id: u64 = 0;
     // One datagram buffer for the client, plus one reply buffer per transport
     // that is actually used: a direct-only association never allocates the ss
     // or trojan buffer.
@@ -1784,9 +1843,7 @@ async fn serve_udp_associate_inner(
     let mut direct_buf: Option<Vec<u8>> = None;
     let mut socks5_buf: Option<Vec<u8>> = None;
     let mut ss_buf: Option<Vec<u8>> = None;
-    let mut ss_uot_buf: Option<Vec<u8>> = None;
     let mut vless_buf: Option<Vec<u8>> = None;
-    let mut anytls_buf: Option<Vec<u8>> = None;
     let mut vmess_buf: Option<Vec<u8>> = None;
     let mut trojan_buf: Option<Vec<u8>> = None;
     let mut ssr_buf: Option<Vec<u8>> = None;
@@ -1802,9 +1859,7 @@ async fn serve_udp_associate_inner(
     let mut direct_eof = false;
     let mut socks5_eof = false;
     let mut ss_eof = false;
-    let mut ss_uot_eof = false;
     let mut vless_eof = false;
-    let mut anytls_eof = false;
     let mut vmess_eof = false;
     let mut trojan_eof = false;
     let mut ssr_eof = false;
@@ -1828,20 +1883,10 @@ async fn serve_udp_associate_inner(
             ss_buf = None;
             ss_eof = false;
         }
-        if ss_uot_eof {
-            ss_uot = None;
-            ss_uot_buf = None;
-            ss_uot_eof = false;
-        }
         if vless_eof {
             vless = None;
             vless_buf = None;
             vless_eof = false;
-        }
-        if anytls_eof {
-            anytls = None;
-            anytls_buf = None;
-            anytls_eof = false;
         }
         if vmess_eof {
             vmess = None;
@@ -1886,6 +1931,28 @@ async fn serve_udp_associate_inner(
                     // Data on the control connection is not part of RFC 1928's
                     // UDP association; it is discarded, the association stays.
                     Ok(_) => {}
+                }
+            }
+            event = uot_events.recv() => {
+                match event {
+                    Some(outbound::udp::UotEvent::Datagram { from, payload }) => {
+                        if let Some(client_udp) = client_udp {
+                            let mut reply = outbound::udp::reply_header(&from);
+                            reply.extend_from_slice(&payload);
+                            let _ = relay.send_to(&reply, client_udp).await;
+                            counters
+                                .bytes_down
+                                .fetch_add(payload.len() as u64, Ordering::Relaxed);
+                        }
+                    }
+                    Some(outbound::udp::UotEvent::Closed { key, id: assoc_id }) => {
+                        if uot_map.get(&key).is_some_and(|entry| entry.id == assoc_id) {
+                            if let Some(entry) = uot_map.remove(&key) {
+                                entry.abort.abort();
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
             received = relay.recv_from(&mut client_buf) => {
@@ -2042,20 +2109,34 @@ async fn serve_udp_associate_inner(
                         crate::proxies::Protocol::Shadowsocks(option)
                             if option.udp && option.udp_over_tcp =>
                         {
-                            if ss_uot.is_none() {
+                            let key = outbound::udp::UotKey {
+                                proxy: proxy.name.clone(),
+                                target: outgoing.clone(),
+                            };
+                            if !uot_map.contains_key(&key) {
                                 let hops = chain_for(config, &proxy);
-                                match outbound::udp::SsUot::connect(
-                                    option,
-                                    &outgoing,
-                                    &hops,
-                                    limits.dial_timeout,
-                                    &context.runtime.tls,
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::SsUot::connect(
+                                        option,
+                                        &outgoing,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
                                 )
                                 .await
                                 {
                                     Ok(association) => {
-                                        ss_uot = Some(association);
-                                        ss_uot_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                        let (reader, writer) = association.into_halves();
+                                        install_uot(
+                                            &mut uot_map,
+                                            &mut uot_next_id,
+                                            &uot_tx,
+                                            key.clone(),
+                                            outbound::udp::UotReader::SsUot(reader),
+                                            outbound::udp::UotWriter::SsUot(writer),
+                                        );
                                     }
                                     Err(e) => {
                                         warn!(session = id, proxy = %proxy.name, "ss UoT association failed: {e}");
@@ -2064,11 +2145,7 @@ async fn serve_udp_associate_inner(
                                     }
                                 }
                             }
-                            ss_uot
-                                .as_mut()
-                                .expect("connected above")
-                                .send(&outgoing, payload)
-                                .await
+                            send_on_uot(&mut uot_map, &key, payload).await
                         }
                         crate::proxies::Protocol::Vless(option) if option.udp => {
                             if vless.is_none() {
@@ -2099,17 +2176,34 @@ async fn serve_udp_associate_inner(
                                 .await
                         }
                         crate::proxies::Protocol::Anytls(option) if option.udp => {
-                            if anytls.is_none() {
-                                match outbound::udp::AnytlsUot::connect(
-                                    option,
-                                    &outgoing,
-                                    &context.runtime.tls,
+                            let key = outbound::udp::UotKey {
+                                proxy: proxy.name.clone(),
+                                target: outgoing.clone(),
+                            };
+                            if !uot_map.contains_key(&key) {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::AnytlsUot::connect(
+                                        option,
+                                        &outgoing,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
                                 )
                                 .await
                                 {
                                     Ok(association) => {
-                                        anytls = Some(association);
-                                        anytls_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                        let (reader, writer) = association.into_halves();
+                                        install_uot(
+                                            &mut uot_map,
+                                            &mut uot_next_id,
+                                            &uot_tx,
+                                            key.clone(),
+                                            outbound::udp::UotReader::Anytls(reader),
+                                            outbound::udp::UotWriter::Anytls(writer),
+                                        );
                                     }
                                     Err(e) => {
                                         warn!(session = id, proxy = %proxy.name, "anytls UoT association failed: {e}");
@@ -2118,37 +2212,87 @@ async fn serve_udp_associate_inner(
                                     }
                                 }
                             }
-                            anytls
-                                .as_mut()
-                                .expect("connected above")
-                                .send(&outgoing, payload)
-                                .await
+                            send_on_uot(&mut uot_map, &key, payload).await
                         }
                         crate::proxies::Protocol::Vmess(option) if option.udp => {
-                            if vmess.is_none() {
-                                match outbound::udp::VmessUdp::connect(
-                                    option,
-                                    &outgoing,
-                                    &context.runtime.tls,
-                                )
-                                .await
-                                {
-                                    Ok(association) => {
-                                        vmess = Some(association);
-                                        vmess_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
-                                    }
-                                    Err(e) => {
-                                        warn!(session = id, proxy = %proxy.name, "vmess UDP association failed: {e}");
-                                        failed = true;
-                                        continue;
+                            if option.xudp || option.packet_addr {
+                                // XUDP and packet-addr carry the destination per
+                                // frame, so one association serves every target.
+                                if vmess.is_none() {
+                                    let hops = chain_for(config, &proxy);
+                                    match outbound::with_dialer(
+                                        proxy.dialer.clone(),
+                                        outbound::udp::VmessUdp::connect(
+                                            option,
+                                            &outgoing,
+                                            &hops,
+                                            limits.dial_timeout,
+                                            &context.runtime.tls,
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(association) => {
+                                            vmess = Some(association);
+                                            vmess_buf =
+                                                Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "vmess UDP association failed: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
                                     }
                                 }
+                                vmess
+                                    .as_mut()
+                                    .expect("connected above")
+                                    .send(&outgoing, payload)
+                                    .await
+                            } else {
+                                // Plain `command 2` binds one destination, so
+                                // mirror the pinned per-destination packet conn.
+                                let key = outbound::udp::UotKey {
+                                    proxy: proxy.name.clone(),
+                                    target: outgoing.clone(),
+                                };
+                                if !uot_map.contains_key(&key) {
+                                    let hops = chain_for(config, &proxy);
+                                    match outbound::with_dialer(
+                                        proxy.dialer.clone(),
+                                        outbound::udp::VmessUdp::connect(
+                                            option,
+                                            &outgoing,
+                                            &hops,
+                                            limits.dial_timeout,
+                                            &context.runtime.tls,
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(association) => {
+                                            let (reader, writer) = association.into_plain_halves();
+                                            install_uot(
+                                                &mut uot_map,
+                                                &mut uot_next_id,
+                                                &uot_tx,
+                                                key.clone(),
+                                                outbound::udp::UotReader::Vmess {
+                                                    reader,
+                                                    bound: outgoing.clone(),
+                                                },
+                                                outbound::udp::UotWriter::Vmess(writer),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "vmess UDP association failed: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                send_on_uot(&mut uot_map, &key, payload).await
                             }
-                            vmess
-                                .as_mut()
-                                .expect("connected above")
-                                .send(&outgoing, payload)
-                                .await
                         }
                         crate::proxies::Protocol::Shadowsocks(option) if option.udp => {
                             if ss.is_none() {
@@ -2413,30 +2557,6 @@ async fn serve_udp_associate_inner(
                 }
             }
             received = async {
-                match (ss_uot.as_mut(), ss_uot_buf.as_mut()) {
-                    (Some(association), Some(buffer)) => {
-                        association.recv(buffer.as_mut_slice()).await
-                    }
-                    _ => std::future::pending().await,
-                }
-            }, if ss_uot.is_some() && !ss_uot_eof => {
-                match &received {
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => {
-                        ss_uot_eof = true;
-                        failed = true;
-                    }
-                }
-                if let (Ok(Some((from, read))), Some(buffer)) = (received, ss_uot_buf.as_ref()) {
-                    if let Some(client_udp) = client_udp {
-                        let mut reply = outbound::udp::reply_header(&from);
-                        reply.extend_from_slice(&buffer[..read]);
-                        let _ = relay.send_to(&reply, client_udp).await;
-                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
-                    }
-                }
-            }
-            received = async {
                 match (vless.as_mut(), vless_buf.as_mut()) {
                     (Some(association), Some(buffer)) => {
                         association.recv(buffer.as_mut_slice()).await
@@ -2452,30 +2572,6 @@ async fn serve_udp_associate_inner(
                     }
                 }
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, vless_buf.as_ref()) {
-                    if let Some(client_udp) = client_udp {
-                        let mut reply = outbound::udp::reply_header(&from);
-                        reply.extend_from_slice(&buffer[..read]);
-                        let _ = relay.send_to(&reply, client_udp).await;
-                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
-                    }
-                }
-            }
-            received = async {
-                match (anytls.as_mut(), anytls_buf.as_mut()) {
-                    (Some(association), Some(buffer)) => {
-                        association.recv(buffer.as_mut_slice()).await
-                    }
-                    _ => std::future::pending().await,
-                }
-            }, if anytls.is_some() && !anytls_eof => {
-                match &received {
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => {
-                        anytls_eof = true;
-                        failed = true;
-                    }
-                }
-                if let (Ok(Some((from, read))), Some(buffer)) = (received, anytls_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {
                         let mut reply = outbound::udp::reply_header(&from);
                         reply.extend_from_slice(&buffer[..read]);
@@ -2627,6 +2723,11 @@ async fn serve_udp_associate_inner(
                 }
             }
         }
+    }
+    // Retire every per-destination reader task with the association; a task
+    // must not outlive the client that owns the relay.
+    for (_, entry) in uot_map.drain() {
+        entry.abort.abort();
     }
     info!(session = id, "UDP association closed");
     if failed {

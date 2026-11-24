@@ -644,7 +644,7 @@ impl TrojanUdp {
 /// One dedicated TCP stream toward the proxy server, honouring the
 /// `dialer-proxy` chain exactly like the TCP dial path: direct, or through one
 /// socks5 hop's CONNECT tunnel.
-async fn server_stream(
+pub(crate) async fn server_stream(
     server: &str,
     port: u16,
     via: &[&crate::proxies::Proxy],
@@ -1048,9 +1048,10 @@ fn parse_vmess_address(bytes: &[u8]) -> Option<Target> {    if bytes.len() < 3 {
 }
 
 /// AnyTLS UoT association: a dedicated AnyTLS stream to the UoT magic
-/// destination, then `u16 length || payload` in both directions. One stream is
-/// bound to one destination (the pinned `ListenPacketContext` shape), so a
-/// second destination is refused instead of misdelivered.
+/// destination, then `u16 length || payload` in both directions. The pinned
+/// outbound opens one such stream per destination (`ListenPacketContext`), so
+/// the engine owns one association per target and this type can be split into
+/// independent halves.
 pub struct AnytlsUot {
     stream: super::anytls::AnyUotStream,
     bound: Target,
@@ -1060,33 +1061,42 @@ impl AnytlsUot {
     pub async fn connect(
         option: &crate::proxies::AnytlsOutbound,
         target: &Target,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
         tls: &ClientTls,
     ) -> Result<AnytlsUot, DialError> {
         debug_assert!(option.udp);
-        let (stream, _server) = super::anytls::dial_uot(option, target, tls).await?;
+        let (stream, _server) = super::anytls::dial_uot(option, target, via, timeout, tls).await?;
         Ok(AnytlsUot {
             stream,
             bound: target.clone(),
         })
     }
 
-    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
-        if target != &self.bound {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "anytls UoT association is bound to its first destination",
-            ));
-        }
-        let mut frame = Vec::with_capacity(2 + payload.len());
-        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        frame.extend_from_slice(payload);
-        self.stream.write_all(&frame).await?;
-        self.stream.flush().await
+    /// Split into a read half (server → client) and a write half (client →
+    /// server) so one target's replies do not block another target's sends.
+    pub fn into_halves(self) -> (AnyUotReader, AnyUotWriter) {
+        let (read, write) = tokio::io::split(self.stream);
+        (
+            AnyUotReader {
+                read,
+                bound: self.bound,
+            },
+            AnyUotWriter { write },
+        )
     }
+}
 
+/// Read half of one destination-bound AnyTLS UoT stream.
+pub struct AnyUotReader {
+    read: tokio::io::ReadHalf<super::anytls::AnyUotStream>,
+    bound: Target,
+}
+
+impl AnyUotReader {
     pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
         let mut length = [0u8; 2];
-        if self.stream.read_exact(&mut length).await.is_err() {
+        if self.read.read_exact(&mut length).await.is_err() {
             return Ok(None);
         }
         let length = u16::from_be_bytes(length) as usize;
@@ -1096,10 +1106,25 @@ impl AnytlsUot {
                 "anytls UoT datagram larger than the buffer",
             ));
         }
-        if self.stream.read_exact(&mut buffer[..length]).await.is_err() {
+        if self.read.read_exact(&mut buffer[..length]).await.is_err() {
             return Ok(None);
         }
         Ok(Some((self.bound.clone(), length)))
+    }
+}
+
+/// Write half of one destination-bound AnyTLS UoT stream.
+pub struct AnyUotWriter {
+    write: tokio::io::WriteHalf<super::anytls::AnyUotStream>,
+}
+
+impl AnyUotWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        let mut frame = Vec::with_capacity(2 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.write.write_all(&frame).await?;
+        self.write.flush().await
     }
 }
 
@@ -1125,6 +1150,8 @@ impl VmessUdp {
     pub async fn connect(
         option: &crate::proxies::VmessOutbound,
         target: &Target,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
         tls: &ClientTls,
     ) -> Result<VmessUdp, DialError> {
         debug_assert!(option.udp);
@@ -1142,16 +1169,18 @@ impl VmessUdp {
                     host: "0.0.0.0".to_string(),
                     port: 0,
                 };
-                super::vmess::dial_mux(option, &ignored, tls).await?
+                super::vmess::dial_mux(option, &ignored, via, timeout, tls).await?
             }
             VmessUdpMode::PacketAddr => {
                 let magic = Target {
                     host: PACKETADDR_MAGIC.to_string(),
                     port: 443,
                 };
-                super::vmess::dial_packet(option, &magic, tls).await?
+                super::vmess::dial_packet(option, &magic, via, timeout, tls).await?
             }
-            VmessUdpMode::Plain => super::vmess::dial_packet(option, target, tls).await?,
+            VmessUdpMode::Plain => {
+                super::vmess::dial_packet(option, target, via, timeout, tls).await?
+            }
         };
         Ok(VmessUdp {
             packet,
@@ -1161,6 +1190,13 @@ impl VmessUdp {
             first: true,
             read_buf: Vec::new(),
         })
+    }
+
+    /// Split a plain (`command 2`) association into independent halves, one
+    /// per destination in the engine's map.
+    pub fn into_plain_halves(self) -> (super::vmess::VmessPacketReader, super::vmess::VmessPacketWriter) {
+        debug_assert!(matches!(self.mode, VmessUdpMode::Plain));
+        self.packet.into_halves()
     }
 
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
@@ -1333,55 +1369,66 @@ impl SsUot {
         })
     }
 
-    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
-        if self.version != 1 && target != &self.bound {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "ss UoT v2 association is bound to its first destination",
-            ));
-        }
-        let mut frame = Vec::with_capacity(target.host.len() + 4 + payload.len());
-        if self.version == 1 {
-            frame.extend_from_slice(&uot_address(target));
-        }
-        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        frame.extend_from_slice(payload);
-        self.stream.write_all(&frame).await?;
-        self.stream.flush().await
+    /// Split into independent read/write halves. The engine keeps one
+    /// association per destination (v2 is bound; v1 still sends each
+    /// destination in its frame, so per-target is correct and simpler).
+    pub fn into_halves(self) -> (SsUotReader, SsUotWriter) {
+        let (read, write) = tokio::io::split(self.stream);
+        (
+            SsUotReader {
+                read,
+                version: self.version,
+                bound: self.bound.clone(),
+            },
+            SsUotWriter {
+                write,
+                version: self.version,
+                bound: self.bound,
+            },
+        )
     }
+}
 
+/// Read half of one destination-bound ss UoT association.
+pub struct SsUotReader {
+    read: tokio::io::ReadHalf<super::shadowsocks::SsStream<BoxStream>>,
+    version: u8,
+    bound: Target,
+}
+
+impl SsUotReader {
     pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
         let mut target = self.bound.clone();
         // v1 frames start with the UoT `AddrParser` source address.
         if self.version == 1 {
             let mut family = [0u8; 1];
-            if self.stream.read_exact(&mut family).await.is_err() {
+            if self.read.read_exact(&mut family).await.is_err() {
                 return Ok(None);
             }
             let mut address = vec![family[0]];
             match family[0] {
                 0 => {
                     let mut rest = [0u8; 6];
-                    if self.stream.read_exact(&mut rest).await.is_err() {
+                    if self.read.read_exact(&mut rest).await.is_err() {
                         return Ok(None);
                     }
                     address.extend_from_slice(&rest);
                 }
                 1 => {
                     let mut rest = [0u8; 18];
-                    if self.stream.read_exact(&mut rest).await.is_err() {
+                    if self.read.read_exact(&mut rest).await.is_err() {
                         return Ok(None);
                     }
                     address.extend_from_slice(&rest);
                 }
                 2 => {
                     let mut length = [0u8; 1];
-                    if self.stream.read_exact(&mut length).await.is_err() {
+                    if self.read.read_exact(&mut length).await.is_err() {
                         return Ok(None);
                     }
                     address.push(length[0]);
                     let mut rest = vec![0u8; length[0] as usize + 2];
-                    if self.stream.read_exact(&mut rest).await.is_err() {
+                    if self.read.read_exact(&mut rest).await.is_err() {
                         return Ok(None);
                     }
                     address.extend_from_slice(&rest);
@@ -1394,7 +1441,7 @@ impl SsUot {
             }
         }
         let mut length = [0u8; 2];
-        if self.stream.read_exact(&mut length).await.is_err() {
+        if self.read.read_exact(&mut length).await.is_err() {
             return Ok(None);
         }
         let length = u16::from_be_bytes(length) as usize;
@@ -1404,11 +1451,119 @@ impl SsUot {
                 "ss UoT datagram larger than the buffer",
             ));
         }
-        if self.stream.read_exact(&mut buffer[..length]).await.is_err() {
+        if self.read.read_exact(&mut buffer[..length]).await.is_err() {
             return Ok(None);
         }
         Ok(Some((target, length)))
     }
+}
+
+/// Write half of one destination-bound ss UoT association.
+pub struct SsUotWriter {
+    write: tokio::io::WriteHalf<super::shadowsocks::SsStream<BoxStream>>,
+    version: u8,
+    bound: Target,
+}
+
+impl SsUotWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        let mut frame = Vec::with_capacity(self.bound.host.len() + 4 + payload.len());
+        if self.version == 1 {
+            frame.extend_from_slice(&uot_address(&self.bound));
+        }
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.write.write_all(&frame).await?;
+        self.write.flush().await
+    }
+}
+
+/// Identity of one destination-bound association: the selected proxy plus the
+/// destination. The pinned outbound opens a packet conn / UoT stream per
+/// destination; the engine reuses that association for every datagram to the
+/// same target and proxy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UotKey {
+    pub proxy: String,
+    pub target: Target,
+}
+
+/// Events from a per-target association reader task back to the relay.
+pub enum UotEvent {
+    Datagram { from: Target, payload: Vec<u8> },
+    Closed { key: UotKey, id: u64 },
+}
+
+/// Write half of a per-target association, dispatched across the three
+/// families whose pinned outbound binds one packet conn per destination.
+pub enum UotWriter {
+    Anytls(AnyUotWriter),
+    SsUot(SsUotWriter),
+    Vmess(super::vmess::VmessPacketWriter),
+}
+
+impl UotWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        match self {
+            UotWriter::Anytls(writer) => writer.send(payload).await,
+            UotWriter::SsUot(writer) => writer.send(payload).await,
+            UotWriter::Vmess(writer) => writer.send(payload).await,
+        }
+    }
+}
+
+/// Read half of a per-target association.
+pub enum UotReader {
+    Anytls(AnyUotReader),
+    SsUot(SsUotReader),
+    Vmess {
+        reader: super::vmess::VmessPacketReader,
+        /// Plain `command 2` carries no source address on replies; the pinned
+        /// packet conn is bound to its destination, so the engine reports that
+        /// destination.
+        bound: Target,
+    },
+}
+
+impl UotReader {
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        match self {
+            UotReader::Anytls(reader) => reader.recv(buffer).await,
+            UotReader::SsUot(reader) => reader.recv(buffer).await,
+            UotReader::Vmess { reader, bound } => reader
+                .recv(buffer)
+                .await
+                .map(|read| read.map(|length| (bound.clone(), length))),
+        }
+    }
+}
+
+/// Spawn a reader task for one per-target association. Replies are forwarded
+/// to the relay through `events`; a closed stream sends `Closed` so the engine
+/// can retire the writer instead of silently losing datagrams.
+pub fn spawn_uot_reader(
+    reader: UotReader,
+    key: UotKey,
+    id: u64,
+    events: tokio::sync::mpsc::UnboundedSender<UotEvent>,
+) -> tokio::task::AbortHandle {
+    let handle = tokio::spawn(async move {
+        let mut reader = reader;
+        let mut buffer = vec![0u8; MAX_DATAGRAM];
+        loop {
+            match reader.recv(&mut buffer).await {
+                Ok(Some((from, length))) => {
+                    let payload = buffer[..length].to_vec();
+                    if events.send(UotEvent::Datagram { from, payload }).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = events.send(UotEvent::Closed { key, id });
+    });
+    handle.abort_handle()
 }
 
 #[cfg(test)]

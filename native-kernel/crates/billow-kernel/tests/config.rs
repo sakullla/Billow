@@ -1021,6 +1021,32 @@ fn anytls_options_are_strict() {
 }
 
 #[test]
+fn anytls_session_intervals_match_the_pinned_normalisation() {
+    use billow_kernel::proxies::Protocol;
+
+    // Pinned `session.NewClient`: an interval/timeout at or below 5s (including
+    // the zero value) becomes 30s; above 5s it is kept.
+    for (interval, timeout, want_interval, want_timeout) in [
+        (10, 40, 10, 40),
+        (5, 3, 30, 30),
+        (1, 0, 30, 30),
+    ] {
+        let yaml = format!(
+            "proxies:\n  - {{name: at, type: anytls, server: 127.0.0.1, port: 443, password: p, idle-session-check-interval: {interval}, idle-session-timeout: {timeout}}}\nrules: ['MATCH,at']\n"
+        );
+        let loaded = load_config(&yaml, "t").expect("anytls intervals load");
+        match &loaded.config.proxies[0].protocol {
+            Protocol::Anytls(p) => {
+                assert_eq!(p.idle_session_check_interval, want_interval);
+                assert_eq!(p.idle_session_timeout, want_timeout);
+                assert_eq!(p.session_pool.check_interval(), want_interval);
+            }
+            other => panic!("expected anytls, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn t30_datagram_and_fingerprint_options_are_accepted() {
     use billow_kernel::proxies::Protocol;
 

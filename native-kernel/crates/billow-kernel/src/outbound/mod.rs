@@ -403,11 +403,11 @@ async fn dial_inner(
         }
         Protocol::Anytls(p) => {
             refuse_chain(via, "anytls")?;
-            anytls::dial(p, target, tls).await
+            anytls::dial(p, target, tls, timeout).await
         }
         Protocol::Vmess(p) => {
             refuse_chain(via, "vmess")?;
-            vmess::dial(p, target, tls).await
+            vmess::dial(p, target, via, timeout, tls).await
         }
         Protocol::Snell(p) => {
             refuse_chain(via, "snell")?;

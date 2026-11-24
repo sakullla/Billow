@@ -1,13 +1,13 @@
 {
   "format": "t24-differential",
   "version": 1,
-  "startedAt": "2026-11-24T02:53:17.759Z",
+  "startedAt": "2026-11-24T17:52:20.064Z",
   "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
-  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t28-release-target/release/billow-kernel",
+  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t30-a2-target/debug/billow-kernel",
   "mmdbDir": null,
   "echo": {
     "host": "0.0.0.0",
-    "port": 54194
+    "port": 55925
   },
   "summary": {
     "cases": 38,
@@ -32,7 +32,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54196\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55927\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -42,8 +42,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54200\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:35.501 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=168979f7-914e-46e5-8159-6b535b160fe8 pid=9505 version=\"0.1.0\" listen=127.0.0.1:54200\n[02:52:35.596 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54203 code=\"closed\"\n[02:52:35.596 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[02:52:35.596 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:35.596 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:35.596 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:35.596 INFO  billow_kernel::engine] message=billow-kernel stopped instance=168979f7-914e-46e5-8159-6b535b160fe8 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55931\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:38.006 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=083f05dc-5634-44f0-bc34-7ff6f9cab994 pid=91425 version=\"0.1.0\" listen=127.0.0.1:55931\n[17:51:38.099 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55934 code=\"closed\"\n[17:51:38.100 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[17:51:38.100 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:38.100 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:38.100 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:38.100 INFO  billow_kernel::engine] message=billow-kernel stopped instance=083f05dc-5634-44f0-bc34-7ff6f9cab994 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -67,7 +67,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54205\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55936\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -77,8 +77,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54209\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:35.817 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=a72cbd7e-4c16-4df2-832c-2efe8911793c pid=9507 version=\"0.1.0\" listen=127.0.0.1:54209\n[02:52:35.907 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54212 code=\"closed\"\n[02:52:35.908 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN-SUFFIX,localhost -> REJECT\n[02:52:35.908 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:35.908 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:35.908 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:35.908 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a72cbd7e-4c16-4df2-832c-2efe8911793c sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55940\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:38.316 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=10bbc62a-495a-4916-8c8a-af0d69bc433f pid=91427 version=\"0.1.0\" listen=127.0.0.1:55940\n[17:51:38.410 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55943 code=\"closed\"\n[17:51:38.410 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN-SUFFIX,localhost -> REJECT\n[17:51:38.411 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:38.411 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:38.411 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:38.411 INFO  billow_kernel::engine] message=billow-kernel stopped instance=10bbc62a-495a-4916-8c8a-af0d69bc433f sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -98,11 +98,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54214\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-KEYWORD,local,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55945\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-KEYWORD,local,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -112,12 +112,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54218\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-KEYWORD,local,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:36.129 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=b53978aa-c778-4a64-93e4-2c590eb3a681 pid=9509 version=\"0.1.0\" listen=127.0.0.1:54218\n[02:52:36.221 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54221 code=\"closed\"\n[02:52:36.221 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN-KEYWORD,local -> REJECT\n[02:52:36.222 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:36.222 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:36.222 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:36.222 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b53978aa-c778-4a64-93e4-2c590eb3a681 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55949\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-KEYWORD,local,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:42.140 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=c0bc6840-bd00-4d86-9210-c6a40e08ac9c pid=91429 version=\"0.1.0\" listen=127.0.0.1:55949\n[17:51:42.226 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55952 code=\"closed\"\n[17:51:42.226 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN-KEYWORD,local -> REJECT\n[17:51:42.226 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:42.227 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:42.227 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:42.227 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c0bc6840-bd00-4d86-9210-c6a40e08ac9c sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -133,11 +133,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54223\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-WILDCARD,local*,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55954\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-WILDCARD,local*,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -147,12 +147,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54227\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-WILDCARD,local*,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:39.968 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=187b3107-d526-49e2-b905-ef6144a828c6 pid=9512 version=\"0.1.0\" listen=127.0.0.1:54227\n[02:52:40.046 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54230 code=\"closed\"\n[02:52:40.046 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN-WILDCARD,local* -> REJECT\n[02:52:40.046 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:40.046 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:40.046 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:40.047 INFO  billow_kernel::engine] message=billow-kernel stopped instance=187b3107-d526-49e2-b905-ef6144a828c6 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55958\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-WILDCARD,local*,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:42.443 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=41e38713-b413-4cc7-a948-535ff940ed18 pid=91431 version=\"0.1.0\" listen=127.0.0.1:55958\n[17:51:42.536 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55961 code=\"closed\"\n[17:51:42.536 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN-WILDCARD,local* -> REJECT\n[17:51:42.537 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:42.537 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:42.537 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:42.537 INFO  billow_kernel::engine] message=billow-kernel stopped instance=41e38713-b413-4cc7-a948-535ff940ed18 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -168,11 +168,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54232\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-REGEX,^localho.*$,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55963\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-REGEX,^localho.*$,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -182,12 +182,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54236\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-REGEX,^localho.*$,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:40.264 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=202c2d51-c8ac-4b4c-960d-81773fe48538 pid=9514 version=\"0.1.0\" listen=127.0.0.1:54236\n[02:52:40.357 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54239 code=\"closed\"\n[02:52:40.357 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN-REGEX,^localho.*$ -> REJECT\n[02:52:40.357 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:40.357 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:40.357 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:40.357 INFO  billow_kernel::engine] message=billow-kernel stopped instance=202c2d51-c8ac-4b4c-960d-81773fe48538 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55967\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN-REGEX,^localho.*$,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:46.272 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=47ed445a-4730-4345-ad71-3e4fbe8fb330 pid=91438 version=\"0.1.0\" listen=127.0.0.1:55967\n[17:51:46.355 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55970 code=\"closed\"\n[17:51:46.356 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN-REGEX,^localho.*$ -> REJECT\n[17:51:46.356 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:46.356 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:46.356 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:46.356 INFO  billow_kernel::engine] message=billow-kernel stopped instance=47ed445a-4730-4345-ad71-3e4fbe8fb330 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -208,7 +208,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54241\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,not-localhost,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55972\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,not-localhost,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -219,8 +219,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54246\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,not-localhost,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=378ca79c-c071-4f57-8a26-4253fff70cd5 pid=9517 version=\"0.1.0\" listen=127.0.0.1:54246\n[02:52:41.171 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54249 code=\"closed\"\n[02:52:41.172 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:0d44b2252191c69a5a591cd76c653b503570ac786e92430a236c53da78ecdff4\n[02:52:41.194 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:54194 bytes_up=94 bytes_down=127\n[02:52:41.695 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:41.695 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:41.695 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:41.695 INFO  billow_kernel::engine] message=billow-kernel stopped instance=378ca79c-c071-4f57-8a26-4253fff70cd5 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55977\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,not-localhost,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e41e9066-ce7f-4727-be91-291654607768 pid=91440 version=\"0.1.0\" listen=127.0.0.1:55977\n[17:51:47.166 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55980 code=\"closed\"\n[17:51:47.166 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:c3f8b4c37a3e688aa9835852e40f2dee143a4470c8aa64babc948c0f72c3e684\n[17:51:47.187 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:55925 bytes_up=94 bytes_down=127\n[17:51:47.691 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:47.691 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:47.691 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:47.692 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e41e9066-ce7f-4727-be91-291654607768 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -240,11 +240,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54256\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,54194,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55983\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,55925,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -254,12 +254,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54260\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,54194,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:45.444 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=382f438a-92c1-4020-8177-10ae2b4e8aef pid=9523 version=\"0.1.0\" listen=127.0.0.1:54260\n[02:52:45.528 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54263 code=\"closed\"\n[02:52:45.529 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=DST-PORT,54194 -> REJECT\n[02:52:45.529 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:45.529 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:45.529 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:45.529 INFO  billow_kernel::engine] message=billow-kernel stopped instance=382f438a-92c1-4020-8177-10ae2b4e8aef sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55987\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,55925,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:47.922 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=b4472c83-eb15-448b-90b4-249bf7f70fa0 pid=91445 version=\"0.1.0\" listen=127.0.0.1:55987\n[17:51:48.006 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:55990 code=\"closed\"\n[17:51:48.006 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=DST-PORT,55925 -> REJECT\n[17:51:48.007 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:48.007 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:48.007 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:48.007 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b4472c83-eb15-448b-90b4-249bf7f70fa0 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -280,7 +280,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54265\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,54195,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 55992\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,55926,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -291,8 +291,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54270\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,54195,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=6e02fdf0-3a2e-4969-9858-325689c81c2c pid=9525 version=\"0.1.0\" listen=127.0.0.1:54270\n[02:52:46.361 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54273 code=\"closed\"\n[02:52:46.362 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:9453b2f01a058495300581dccb8949e219bc6cbdaf827433c1c9d6204454b0bd\n[02:52:46.383 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:52:46.886 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:46.886 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:46.886 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:46.886 INFO  billow_kernel::engine] message=billow-kernel stopped instance=6e02fdf0-3a2e-4969-9858-325689c81c2c sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 55997\nmode: rule\nlog-level: info\nrules:\n  - DST-PORT,55926,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=eacf2f31-c155-43f5-878c-474d4ee14647 pid=91447 version=\"0.1.0\" listen=127.0.0.1:55997\n[17:51:48.822 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56000 code=\"closed\"\n[17:51:48.823 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:7037a089d8248ed44ee7af3b42816ce1183b802627c8d212c2a86efbbff3c0b1\n[17:51:48.824 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:51:49.328 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:49.328 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:49.328 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:49.328 INFO  billow_kernel::engine] message=billow-kernel stopped instance=eacf2f31-c155-43f5-878c-474d4ee14647 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -316,7 +316,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54276\nmode: rule\nlog-level: info\nrules:\n  - NETWORK,TCP,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56003\nmode: rule\nlog-level: info\nrules:\n  - NETWORK,TCP,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -326,8 +326,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54280\nmode: rule\nlog-level: info\nrules:\n  - NETWORK,TCP,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:47.117 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=4b695f37-36f8-4d3d-9538-12b7b9895a6f pid=9527 version=\"0.1.0\" listen=127.0.0.1:54280\n[02:52:47.200 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54283 code=\"closed\"\n[02:52:47.200 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=NETWORK,TCP -> REJECT\n[02:52:47.200 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:47.200 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:47.200 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:47.200 INFO  billow_kernel::engine] message=billow-kernel stopped instance=4b695f37-36f8-4d3d-9538-12b7b9895a6f sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56007\nmode: rule\nlog-level: info\nrules:\n  - NETWORK,TCP,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:49.550 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=2be7e9f2-39b0-4c9e-bdb0-9d42c2acad59 pid=91449 version=\"0.1.0\" listen=127.0.0.1:56007\n[17:51:49.638 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56010 code=\"closed\"\n[17:51:49.638 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=NETWORK,TCP -> REJECT\n[17:51:49.638 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:49.638 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:49.638 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:49.638 INFO  billow_kernel::engine] message=billow-kernel stopped instance=2be7e9f2-39b0-4c9e-bdb0-9d42c2acad59 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -351,7 +351,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54285\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTPS,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56012\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTPS,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -361,8 +361,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54289\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTPS,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:47.421 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=29145835-1670-43bd-8439-3cf29b1ddd7a pid=9529 version=\"0.1.0\" listen=127.0.0.1:54289\n[02:52:47.510 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54292 code=\"closed\"\n[02:52:47.510 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=IN-TYPE,HTTPS -> REJECT\n[02:52:47.511 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:47.511 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:47.511 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:47.511 INFO  billow_kernel::engine] message=billow-kernel stopped instance=29145835-1670-43bd-8439-3cf29b1ddd7a sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56016\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTPS,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:49.857 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=b8b3d4bc-bdf5-44f4-9914-eb537f9dfe6e pid=91451 version=\"0.1.0\" listen=127.0.0.1:56016\n[17:51:49.949 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56019 code=\"closed\"\n[17:51:49.949 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=IN-TYPE,HTTPS -> REJECT\n[17:51:49.949 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:49.949 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:49.949 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:49.949 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b8b3d4bc-bdf5-44f4-9914-eb537f9dfe6e sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -387,7 +387,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54294\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,SOCKS5,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56021\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,SOCKS5,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -398,8 +398,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54301\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,SOCKS5,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=485a879c-aad9-4293-ab15-a80d62415a6b pid=9531 version=\"0.1.0\" listen=127.0.0.1:54301\n[02:52:48.329 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54304 code=\"closed\"\n[02:52:48.329 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:98df2f24836f89dce0424e51f365b05ff3473a52ed8b465da207475f153b1b58\n[02:52:48.331 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:52:48.851 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:48.852 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:48.852 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:48.852 INFO  billow_kernel::engine] message=billow-kernel stopped instance=485a879c-aad9-4293-ab15-a80d62415a6b sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56026\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,SOCKS5,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=01f21820-f172-4c5a-a8b0-7e61ea63ec13 pid=91453 version=\"0.1.0\" listen=127.0.0.1:56026\n[17:51:50.762 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56029 code=\"closed\"\n[17:51:50.763 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:376c8630740bfe8e6f1a850e7530e12100b8f69d0523ccd2701dccf5c86c7885\n[17:51:50.764 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:51:51.267 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:51.267 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:51.267 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:51.267 INFO  billow_kernel::engine] message=billow-kernel stopped instance=01f21820-f172-4c5a-a8b0-7e61ea63ec13 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -424,7 +424,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54308\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTP,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56032\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTP,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -435,8 +435,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54313\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTP,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=4831f85c-6be8-4509-8044-d433231d71e9 pid=9534 version=\"0.1.0\" listen=127.0.0.1:54313\n[02:52:49.701 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54316 code=\"closed\"\n[02:52:49.701 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:fccce3370700d7e9da73d21b288a5dccf315ebef307d82dc80794befcf45e6e1\n[02:52:49.703 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:52:50.205 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:50.205 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:50.205 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:50.206 INFO  billow_kernel::engine] message=billow-kernel stopped instance=4831f85c-6be8-4509-8044-d433231d71e9 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56037\nmode: rule\nlog-level: info\nrules:\n  - IN-TYPE,HTTP,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=f25a331a-9995-46c3-b0df-ea2f77a35dd4 pid=91455 version=\"0.1.0\" listen=127.0.0.1:56037\n[17:51:52.082 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56040 code=\"closed\"\n[17:51:52.083 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:c63be6c3978446d8f4238515519e59950f7d35e5cfad28fe96db29425a8ff733\n[17:51:52.084 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:51:52.586 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:52.586 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:52.586 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:52.586 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f25a331a-9995-46c3-b0df-ea2f77a35dd4 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -460,7 +460,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54319\nmode: rule\nlog-level: info\nrules:\n  - IN-PORT,54319,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56043\nmode: rule\nlog-level: info\nrules:\n  - IN-PORT,56043,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -470,8 +470,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54323\nmode: rule\nlog-level: info\nrules:\n  - IN-PORT,54323,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:50.436 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=c8c7315c-6598-44e9-8e6c-5fae9b85e762 pid=9536 version=\"0.1.0\" listen=127.0.0.1:54323\n[02:52:50.518 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54326 code=\"closed\"\n[02:52:50.519 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=IN-PORT,54323 -> REJECT\n[02:52:50.519 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:50.519 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:50.519 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:50.519 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c8c7315c-6598-44e9-8e6c-5fae9b85e762 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56047\nmode: rule\nlog-level: info\nrules:\n  - IN-PORT,56047,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:52.805 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=3129df68-ee2c-4767-8130-477156ef6ea3 pid=91457 version=\"0.1.0\" listen=127.0.0.1:56047\n[17:51:52.895 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56050 code=\"closed\"\n[17:51:52.896 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=IN-PORT,56047 -> REJECT\n[17:51:52.896 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:52.896 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:52.896 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:52.896 INFO  billow_kernel::engine] message=billow-kernel stopped instance=3129df68-ee2c-4767-8130-477156ef6ea3 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -495,7 +495,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54328\nmode: rule\nlog-level: info\nrules:\n  - SRC-PORT,1-65535,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56052\nmode: rule\nlog-level: info\nrules:\n  - SRC-PORT,1-65535,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -505,8 +505,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54332\nmode: rule\nlog-level: info\nrules:\n  - SRC-PORT,1-65535,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:50.739 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=198b3769-22c9-455e-ae58-0100add7a84c pid=9538 version=\"0.1.0\" listen=127.0.0.1:54332\n[02:52:50.826 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54335 code=\"closed\"\n[02:52:50.827 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=SRC-PORT,1-65535 -> REJECT\n[02:52:50.827 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:50.827 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:50.827 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:50.827 INFO  billow_kernel::engine] message=billow-kernel stopped instance=198b3769-22c9-455e-ae58-0100add7a84c sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56056\nmode: rule\nlog-level: info\nrules:\n  - SRC-PORT,1-65535,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:53.114 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=f1cec62f-9981-44b6-9531-42cb691b7233 pid=91459 version=\"0.1.0\" listen=127.0.0.1:56056\n[17:51:53.205 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56059 code=\"closed\"\n[17:51:53.205 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=SRC-PORT,1-65535 -> REJECT\n[17:51:53.205 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:53.205 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:53.205 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:53.206 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f1cec62f-9981-44b6-9531-42cb691b7233 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -526,11 +526,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54337\nmode: rule\nlog-level: info\nrules:\n  - SRC-IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56061\nmode: rule\nlog-level: info\nrules:\n  - SRC-IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -540,12 +540,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54341\nmode: rule\nlog-level: info\nrules:\n  - SRC-IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:51.043 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=cb918630-8b5e-420a-ac34-8322ee1d554a pid=9541 version=\"0.1.0\" listen=127.0.0.1:54341\n[02:52:51.135 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54344 code=\"closed\"\n[02:52:51.135 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=SRC-IP-CIDR,127.0.0.0/8,no-resolve -> REJECT\n[02:52:51.135 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:51.135 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:51.135 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:51.135 INFO  billow_kernel::engine] message=billow-kernel stopped instance=cb918630-8b5e-420a-ac34-8322ee1d554a sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56065\nmode: rule\nlog-level: info\nrules:\n  - SRC-IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:56.939 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=2c892ad9-93cc-4490-8e87-5995ae387bc9 pid=91461 version=\"0.1.0\" listen=127.0.0.1:56065\n[17:51:57.027 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56068 code=\"closed\"\n[17:51:57.028 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=SRC-IP-CIDR,127.0.0.0/8,no-resolve -> REJECT\n[17:51:57.028 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:57.028 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:57.028 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:57.028 INFO  billow_kernel::engine] message=billow-kernel stopped instance=2c892ad9-93cc-4490-8e87-5995ae387bc9 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -565,7 +565,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54346\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56070\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -575,8 +575,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54350\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:51.354 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e6302ae0-aeca-465b-9d1d-ec45088c5244 pid=9543 version=\"0.1.0\" listen=127.0.0.1:54350\n[02:52:51.447 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54353 code=\"closed\"\n[02:52:51.447 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=IP-CIDR,127.0.0.1/32 -> REJECT\n[02:52:51.447 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:51.447 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:51.447 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:51.448 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e6302ae0-aeca-465b-9d1d-ec45088c5244 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56074\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:57.243 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=17d16752-d8be-4bc3-8a24-6c3a1b7fe6f8 pid=91463 version=\"0.1.0\" listen=127.0.0.1:56074\n[17:51:57.339 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56077 code=\"closed\"\n[17:51:57.339 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=IP-CIDR,127.0.0.1/32 -> REJECT\n[17:51:57.340 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:57.340 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:57.340 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:57.340 INFO  billow_kernel::engine] message=billow-kernel stopped instance=17d16752-d8be-4bc3-8a24-6c3a1b7fe6f8 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -601,7 +601,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54355\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,10.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56079\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,10.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -612,8 +612,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54360\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,10.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=fd43b78f-bb92-4e73-a843-e1bc9ade08d9 pid=9545 version=\"0.1.0\" listen=127.0.0.1:54360\n[02:52:52.264 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54363 code=\"closed\"\n[02:52:52.264 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:5f5a8c198e1afc3ae5472f7aaa130251ffccd50c3f1c942483ebe01b03460e47\n[02:52:52.286 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:52:52.788 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:52.789 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:52.789 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:52.789 INFO  billow_kernel::engine] message=billow-kernel stopped instance=fd43b78f-bb92-4e73-a843-e1bc9ade08d9 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56084\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,10.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=36224d56-f0ea-48a5-8534-1052013fdf09 pid=91465 version=\"0.1.0\" listen=127.0.0.1:56084\n[17:51:58.155 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56087 code=\"closed\"\n[17:51:58.156 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:175d6ae84c15d44e0429d7d5d0cdc6c57eff947b3987fadedd8bbaeaf334c655\n[17:51:58.157 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:51:58.658 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:58.658 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:58.658 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:58.659 INFO  billow_kernel::engine] message=billow-kernel stopped instance=36224d56-f0ea-48a5-8534-1052013fdf09 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -633,11 +633,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54366\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT,no-resolve\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56090\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT,no-resolve\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -647,12 +647,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54370\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT,no-resolve\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:56.533 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=31322719-fade-4ab6-84d1-ceb126b760ed pid=9550 version=\"0.1.0\" listen=127.0.0.1:54370\n[02:52:56.614 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54373 code=\"closed\"\n[02:52:56.614 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=IP-CIDR,127.0.0.1/32,no-resolve -> REJECT\n[02:52:56.614 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:56.614 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:56.614 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:56.615 INFO  billow_kernel::engine] message=billow-kernel stopped instance=31322719-fade-4ab6-84d1-ceb126b760ed sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56094\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR,127.0.0.1/32,REJECT,no-resolve\n  - MATCH,DIRECT\n",
+          "stderr": "[17:51:58.877 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=a1c5a03f-14cb-4a79-8878-3105746feb50 pid=91467 version=\"0.1.0\" listen=127.0.0.1:56094\n[17:51:58.969 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56097 code=\"closed\"\n[17:51:58.970 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=IP-CIDR,127.0.0.1/32,no-resolve -> REJECT\n[17:51:58.970 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:51:58.970 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:51:58.970 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:51:58.970 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a1c5a03f-14cb-4a79-8878-3105746feb50 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -668,11 +668,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54375\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR6,::1/128,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56099\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR6,::1/128,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -682,12 +682,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54379\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR6,::1/128,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:56.834 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=08d1eb83-debc-4e9f-83ce-ad652f2d6397 pid=9552 version=\"0.1.0\" listen=127.0.0.1:54379\n[02:52:56.925 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54382 code=\"closed\"\n[02:52:56.925 WARN  billow_kernel::engine] message=handshake failed: bad HTTP request: IPv6 literal must be bracketed session=2 peer=127.0.0.1:54383 code=\"bad_http\"\n[02:52:56.925 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:56.925 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:56.925 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:56.925 INFO  billow_kernel::engine] message=billow-kernel stopped instance=08d1eb83-debc-4e9f-83ce-ad652f2d6397 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56106\nmode: rule\nlog-level: info\nrules:\n  - IP-CIDR6,::1/128,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:02.711 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=94c6c152-39ec-4fb8-b039-465b287b731d pid=91480 version=\"0.1.0\" listen=127.0.0.1:56106\n[17:52:02.802 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56109 code=\"closed\"\n[17:52:02.802 WARN  billow_kernel::engine] message=handshake failed: bad HTTP request: IPv6 literal must be bracketed session=2 peer=127.0.0.1:56110 code=\"bad_http\"\n[17:52:02.802 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:02.802 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:02.802 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:02.802 INFO  billow_kernel::engine] message=billow-kernel stopped instance=94c6c152-39ec-4fb8-b039-465b287b731d sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -707,7 +707,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54384\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.1/8,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56111\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.1/8,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -717,8 +717,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54388\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.1/8,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:52:57.147 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=58a478e6-fce6-4363-8514-f64e698f12c2 pid=9554 version=\"0.1.0\" listen=127.0.0.1:54388\n[02:52:57.238 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54391 code=\"closed\"\n[02:52:57.238 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=IP-SUFFIX,0.0.0.1/8 -> REJECT\n[02:52:57.238 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:57.238 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:57.238 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:57.238 INFO  billow_kernel::engine] message=billow-kernel stopped instance=58a478e6-fce6-4363-8514-f64e698f12c2 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56115\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.1/8,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:03.020 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=769f5dcf-d411-4da1-bdcf-282c8d6add62 pid=91482 version=\"0.1.0\" listen=127.0.0.1:56115\n[17:52:03.111 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56118 code=\"closed\"\n[17:52:03.111 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=IP-SUFFIX,0.0.0.1/8 -> REJECT\n[17:52:03.111 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:03.111 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:03.111 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:03.111 INFO  billow_kernel::engine] message=billow-kernel stopped instance=769f5dcf-d411-4da1-bdcf-282c8d6add62 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -743,7 +743,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54393\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.2/8,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56120\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.2/8,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -754,8 +754,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54398\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.2/8,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=86b66a18-4b13-4d47-9636-0a6965f8f94b pid=9556 version=\"0.1.0\" listen=127.0.0.1:54398\n[02:52:58.076 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54401 code=\"closed\"\n[02:52:58.077 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:354d284aa502260942f34ad196f0b8611b1ae703f9bce488192e9c30db50fc6e\n[02:52:58.078 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:52:58.582 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:58.582 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:58.582 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:58.582 INFO  billow_kernel::engine] message=billow-kernel stopped instance=86b66a18-4b13-4d47-9636-0a6965f8f94b sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56125\nmode: rule\nlog-level: info\nrules:\n  - IP-SUFFIX,0.0.0.2/8,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=c96c24fb-fb7a-494e-8ce1-ca28fd051ea6 pid=91484 version=\"0.1.0\" listen=127.0.0.1:56125\n[17:52:03.945 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56128 code=\"closed\"\n[17:52:03.945 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:4c7324cfb975e817d1ce6992a38970ccc493880bd4c1efdccdf88c9db9ac64cf\n[17:52:03.965 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:52:04.467 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:04.467 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:04.467 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:04.467 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c96c24fb-fb7a-494e-8ce1-ca28fd051ea6 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -780,7 +780,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54405\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,DIRECT\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,REJECT\n",
+          "config": "mixed-port: 56131\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,DIRECT\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,REJECT\n",
           "stderr": ""
         },
         "rust": {
@@ -791,8 +791,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54411\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,DIRECT\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,REJECT\n",
-          "stderr": "(3 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=8cf92455-890a-41b0-ae4d-5bbc5ef4dbb9 pid=9558 version=\"0.1.0\" listen=127.0.0.1:54411\n[02:52:59.401 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54414 code=\"closed\"\n[02:52:59.401 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:54194 protocol=\"http-connect\" rule=DOMAIN,localhost -> DIRECT outbound=127.0.0.1:54194 config=sha256:b804c3bbe7c76861e609cdcb6f3e481659f7b4dc5d4bad9a7396559f36a3ba3d\n[02:52:59.421 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:54194 bytes_up=94 bytes_down=127\n[02:52:59.941 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:52:59.941 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:52:59.941 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:52:59.942 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8cf92455-890a-41b0-ae4d-5bbc5ef4dbb9 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56136\nmode: rule\nlog-level: info\nrules:\n  - DOMAIN,localhost,DIRECT\n  - DOMAIN-SUFFIX,localhost,REJECT\n  - MATCH,REJECT\n",
+          "stderr": "3 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=663901be-a811-43ee-b247-5eb611636c69 pid=91486 version=\"0.1.0\" listen=127.0.0.1:56136\n[17:52:05.279 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56139 code=\"closed\"\n[17:52:05.279 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:55925 protocol=\"http-connect\" rule=DOMAIN,localhost -> DIRECT outbound=127.0.0.1:55925 config=sha256:2329396555eda3e0582877827a53e10a6a00e9b9a52159530a0137ab2a0c47c6\n[17:52:05.299 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:55925 bytes_up=94 bytes_down=127\n[17:52:05.802 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:05.802 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:05.802 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:05.802 INFO  billow_kernel::engine] message=billow-kernel stopped instance=663901be-a811-43ee-b247-5eb611636c69 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -816,7 +816,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54418\nmode: rule\nlog-level: info\nrule-providers:\n  inline:\n    type: inline\n    behavior: domain\n    payload: ['+.localhost']\nrules:\n  - RULE-SET,inline,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56142\nmode: rule\nlog-level: info\nrule-providers:\n  inline:\n    type: inline\n    behavior: domain\n    payload: ['+.localhost']\nrules:\n  - RULE-SET,inline,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -826,8 +826,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54422\nmode: rule\nlog-level: info\nrule-providers:\n  inline:\n    type: inline\n    behavior: domain\n    payload: ['+.localhost']\nrules:\n  - RULE-SET,inline,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:00.172 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e005ee18-c085-4fa4-b0c3-e797fe5da661 pid=9563 version=\"0.1.0\" listen=127.0.0.1:54422\n[02:53:00.254 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54425 code=\"closed\"\n[02:53:00.255 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=RULE-SET,inline -> REJECT\n[02:53:00.255 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:00.255 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:00.255 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:00.255 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e005ee18-c085-4fa4-b0c3-e797fe5da661 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56146\nmode: rule\nlog-level: info\nrule-providers:\n  inline:\n    type: inline\n    behavior: domain\n    payload: ['+.localhost']\nrules:\n  - RULE-SET,inline,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:06.026 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=4469b6e7-4669-4c06-b9f4-7dd4c8ec2716 pid=91488 version=\"0.1.0\" listen=127.0.0.1:56146\n[17:52:06.108 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56149 code=\"closed\"\n[17:52:06.108 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=RULE-SET,inline -> REJECT\n[17:52:06.108 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:06.108 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:06.108 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:06.108 INFO  billow_kernel::engine] message=billow-kernel stopped instance=4469b6e7-4669-4c06-b9f4-7dd4c8ec2716 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -851,7 +851,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54427\nmode: rule\nlog-level: info\nrule-providers:\n  wild:\n    type: inline\n    behavior: domain\n    payload: ['sub.*.example.com']\nrules:\n  - RULE-SET,wild,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56151\nmode: rule\nlog-level: info\nrule-providers:\n  wild:\n    type: inline\n    behavior: domain\n    payload: ['sub.*.example.com']\nrules:\n  - RULE-SET,wild,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -861,8 +861,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54431\nmode: rule\nlog-level: info\nrule-providers:\n  wild:\n    type: inline\n    behavior: domain\n    payload: ['sub.*.example.com']\nrules:\n  - RULE-SET,wild,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:00.478 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e6683149-ea08-433f-86c4-bc90b5c9da7e pid=9565 version=\"0.1.0\" listen=127.0.0.1:54431\n[02:53:00.567 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54434 code=\"closed\"\n[02:53:00.567 INFO  billow_kernel::engine] message=REJECT session=2 target=sub.a.example.com:54194 protocol=\"http-connect\" rule=RULE-SET,wild -> REJECT\n[02:53:00.567 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:00.567 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:00.567 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:00.568 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e6683149-ea08-433f-86c4-bc90b5c9da7e sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56155\nmode: rule\nlog-level: info\nrule-providers:\n  wild:\n    type: inline\n    behavior: domain\n    payload: ['sub.*.example.com']\nrules:\n  - RULE-SET,wild,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:06.329 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=634becee-0357-4e70-bfe9-9d40a8bbdc9c pid=91490 version=\"0.1.0\" listen=127.0.0.1:56155\n[17:52:06.417 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56158 code=\"closed\"\n[17:52:06.417 INFO  billow_kernel::engine] message=REJECT session=2 target=sub.a.example.com:55925 protocol=\"http-connect\" rule=RULE-SET,wild -> REJECT\n[17:52:06.417 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:06.417 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:06.417 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:06.417 INFO  billow_kernel::engine] message=billow-kernel stopped instance=634becee-0357-4e70-bfe9-9d40a8bbdc9c sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -886,7 +886,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54436\nmode: rule\nlog-level: info\nrule-providers:\n  text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules:\n  - RULE-SET,text,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56160\nmode: rule\nlog-level: info\nrule-providers:\n  text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules:\n  - RULE-SET,text,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -896,8 +896,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54440\nmode: rule\nlog-level: info\nrule-providers:\n  text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules:\n  - RULE-SET,text,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:00.781 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=8757ca09-8141-4da3-b671-23e66d575b7d pid=9567 version=\"0.1.0\" listen=127.0.0.1:54440\n[02:53:00.878 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54443 code=\"closed\"\n[02:53:00.878 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=RULE-SET,text -> REJECT\n[02:53:00.879 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:00.879 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:00.879 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:00.879 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8757ca09-8141-4da3-b671-23e66d575b7d sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56164\nmode: rule\nlog-level: info\nrule-providers:\n  text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/domain.txt\nrules:\n  - RULE-SET,text,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:06.641 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=589f63ce-5b95-4aa4-9495-55c30ae8cd34 pid=91492 version=\"0.1.0\" listen=127.0.0.1:56164\n[17:52:06.725 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56167 code=\"closed\"\n[17:52:06.725 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=RULE-SET,text -> REJECT\n[17:52:06.725 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:06.725 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:06.725 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:06.725 INFO  billow_kernel::engine] message=billow-kernel stopped instance=589f63ce-5b95-4aa4-9495-55c30ae8cd34 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -917,11 +917,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54445\nmode: rule\nlog-level: info\nrule-providers:\n  yamlip:\n    type: file\n    behavior: ipcidr\n    format: yaml\n    path: providers/ip.yaml\nrules:\n  - RULE-SET,yamlip,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56169\nmode: rule\nlog-level: info\nrule-providers:\n  yamlip:\n    type: file\n    behavior: ipcidr\n    format: yaml\n    path: providers/ip.yaml\nrules:\n  - RULE-SET,yamlip,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -931,12 +931,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54453\nmode: rule\nlog-level: info\nrule-providers:\n  yamlip:\n    type: file\n    behavior: ipcidr\n    format: yaml\n    path: providers/ip.yaml\nrules:\n  - RULE-SET,yamlip,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:04.621 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=a50dc08d-bb10-4304-afaf-af9a4670e5b1 pid=9573 version=\"0.1.0\" listen=127.0.0.1:54453\n[02:53:04.698 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54456 code=\"closed\"\n[02:53:04.698 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=RULE-SET,yamlip -> REJECT\n[02:53:04.698 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:04.698 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:04.698 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:04.698 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a50dc08d-bb10-4304-afaf-af9a4670e5b1 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56173\nmode: rule\nlog-level: info\nrule-providers:\n  yamlip:\n    type: file\n    behavior: ipcidr\n    format: yaml\n    path: providers/ip.yaml\nrules:\n  - RULE-SET,yamlip,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:06.951 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=96c8260b-a140-433c-a53e-4ee0e5a0f733 pid=91494 version=\"0.1.0\" listen=127.0.0.1:56173\n[17:52:07.035 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56176 code=\"closed\"\n[17:52:07.036 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=RULE-SET,yamlip -> REJECT\n[17:52:07.036 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:07.036 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:07.036 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:07.036 INFO  billow_kernel::engine] message=billow-kernel stopped instance=96c8260b-a140-433c-a53e-4ee0e5a0f733 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -956,7 +956,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54458\nmode: rule\nlog-level: info\nrule-providers:\n  mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rules.mrs\nrules:\n  - RULE-SET,mrs,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56178\nmode: rule\nlog-level: info\nrule-providers:\n  mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rules.mrs\nrules:\n  - RULE-SET,mrs,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -966,8 +966,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54462\nmode: rule\nlog-level: info\nrule-providers:\n  mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rules.mrs\nrules:\n  - RULE-SET,mrs,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:04.918 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e5743853-a076-4ff4-8874-71824a7b9fee pid=9575 version=\"0.1.0\" listen=127.0.0.1:54462\n[02:53:05.009 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54465 code=\"closed\"\n[02:53:05.009 INFO  billow_kernel::engine] message=REJECT session=2 target=www.google.com:54194 protocol=\"http-connect\" rule=RULE-SET,mrs -> REJECT\n[02:53:05.009 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:05.009 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:05.009 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:05.009 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e5743853-a076-4ff4-8874-71824a7b9fee sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56182\nmode: rule\nlog-level: info\nrule-providers:\n  mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rules.mrs\nrules:\n  - RULE-SET,mrs,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:07.284 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=1b6bd317-f0af-4b06-886a-7d8e2171b573 pid=91496 version=\"0.1.0\" listen=127.0.0.1:56182\n[17:52:07.346 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56185 code=\"closed\"\n[17:52:07.346 INFO  billow_kernel::engine] message=REJECT session=2 target=www.google.com:55925 protocol=\"http-connect\" rule=RULE-SET,mrs -> REJECT\n[17:52:07.346 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:07.346 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:07.346 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:07.346 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1b6bd317-f0af-4b06-886a-7d8e2171b573 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -991,7 +991,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54467\nmode: rule\nlog-level: info\nrule-providers:\n  remote:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:54195/rules.yaml\nrules:\n  - RULE-SET,remote,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56187\nmode: rule\nlog-level: info\nrule-providers:\n  remote:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:55926/rules.yaml\nrules:\n  - RULE-SET,remote,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1001,8 +1001,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54472\nmode: rule\nlog-level: info\nrule-providers:\n  remote:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:54195/rules.yaml\nrules:\n  - RULE-SET,remote,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:05.232 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=0e578ab7-a7e2-47be-9072-c7174111cf81 pid=9577 version=\"0.1.0\" listen=127.0.0.1:54472\n[02:53:05.321 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54476 code=\"closed\"\n[02:53:05.321 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=RULE-SET,remote -> REJECT\n[02:53:05.321 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:05.321 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:05.321 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:05.321 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0e578ab7-a7e2-47be-9072-c7174111cf81 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56192\nmode: rule\nlog-level: info\nrule-providers:\n  remote:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:55926/rules.yaml\nrules:\n  - RULE-SET,remote,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:07.590 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=1; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=6d36622b-d78d-43a8-8d70-4eeb98609657 pid=91498 version=\"0.1.0\" listen=127.0.0.1:56192\n[17:52:07.657 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56196 code=\"closed\"\n[17:52:07.657 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=RULE-SET,remote -> REJECT\n[17:52:07.658 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:07.658 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:07.658 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:07.658 INFO  billow_kernel::engine] message=billow-kernel stopped instance=6d36622b-d78d-43a8-8d70-4eeb98609657 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -1022,11 +1022,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54478\nmode: rule\nlog-level: info\nrules:\n  - AND,((NETWORK,TCP),(DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56198\nmode: rule\nlog-level: info\nrules:\n  - AND,((NETWORK,TCP),(DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1036,12 +1036,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54482\nmode: rule\nlog-level: info\nrules:\n  - AND,((NETWORK,TCP),(DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:05.543 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9e611a5d-bd3c-4e13-9317-32fb6310883e pid=9579 version=\"0.1.0\" listen=127.0.0.1:54482\n[02:53:05.634 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54486 code=\"closed\"\n[02:53:05.634 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=AND,(NETWORK,TCP,DOMAIN,localhost) -> REJECT\n[02:53:05.634 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:05.634 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:05.634 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:05.634 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9e611a5d-bd3c-4e13-9317-32fb6310883e sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56202\nmode: rule\nlog-level: info\nrules:\n  - AND,((NETWORK,TCP),(DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:11.399 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=51f004ba-86ad-4ed9-aad6-1e126d2a117e pid=91500 version=\"0.1.0\" listen=127.0.0.1:56202\n[17:52:11.486 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56205 code=\"closed\"\n[17:52:11.486 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=AND,(NETWORK,TCP,DOMAIN,localhost) -> REJECT\n[17:52:11.486 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:11.486 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:11.486 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:11.486 INFO  billow_kernel::engine] message=billow-kernel stopped instance=51f004ba-86ad-4ed9-aad6-1e126d2a117e sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -1062,7 +1062,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54488\nmode: rule\nlog-level: info\nrules:\n  - NOT,((DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56207\nmode: rule\nlog-level: info\nrules:\n  - NOT,((DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1073,8 +1073,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54493\nmode: rule\nlog-level: info\nrules:\n  - NOT,((DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "ules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=395a0dfd-6c72-4d5a-87cd-a94105770425 pid=9581 version=\"0.1.0\" listen=127.0.0.1:54493\n[02:53:06.473 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54496 code=\"closed\"\n[02:53:06.473 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:54194 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:54194 config=sha256:c71993366ef1aa25886b3f92202bc3e1a0c888b7a66071e92221f777249515ef\n[02:53:06.494 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:54194 bytes_up=94 bytes_down=127\n[02:53:06.996 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:06.996 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:06.996 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:06.997 INFO  billow_kernel::engine] message=billow-kernel stopped instance=395a0dfd-6c72-4d5a-87cd-a94105770425 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56212\nmode: rule\nlog-level: info\nrules:\n  - NOT,((DOMAIN,localhost)),REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "les=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9076d2e3-197d-4103-9953-eb739b14b5bc pid=91502 version=\"0.1.0\" listen=127.0.0.1:56212\n[17:52:12.299 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56215 code=\"closed\"\n[17:52:12.299 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=localhost:55925 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:55925 config=sha256:0a48585f87736e57079a4cc5825757bce31ff1095ec6bc36e50239624474895a\n[17:52:12.301 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:55925 bytes_up=94 bytes_down=127\n[17:52:12.804 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:12.804 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:12.804 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:12.804 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9076d2e3-197d-4103-9953-eb739b14b5bc sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -1094,11 +1094,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "closed",
-            "connectStatus": 0,
-            "error": "connection closed before the response head"
+            "category": "timeout",
+            "connectStatus": 200,
+            "error": "no response within 3000 ms"
           },
-          "config": "mixed-port: 54500\nmode: rule\nlog-level: info\nsub-rules:\n  branch:\n    - DOMAIN,localhost,REJECT\n    - MATCH,DIRECT\nrules:\n  - SUB-RULE,(NETWORK,TCP),branch\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56218\nmode: rule\nlog-level: info\nsub-rules:\n  branch:\n    - DOMAIN,localhost,REJECT\n    - MATCH,DIRECT\nrules:\n  - SUB-RULE,(NETWORK,TCP),branch\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1108,12 +1108,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54505\nmode: rule\nlog-level: info\nsub-rules:\n  branch:\n    - DOMAIN,localhost,REJECT\n    - MATCH,DIRECT\nrules:\n  - SUB-RULE,(NETWORK,TCP),branch\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:07.231 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=1; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=250b7403-421e-4da1-a513-e21413949ad3 pid=9583 version=\"0.1.0\" listen=127.0.0.1:54505\n[02:53:07.312 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54510 code=\"closed\"\n[02:53:07.312 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=SUB-RULE,(NETWORK,TCP),branch -> REJECT\n[02:53:07.312 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:07.312 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:07.312 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:07.312 INFO  billow_kernel::engine] message=billow-kernel stopped instance=250b7403-421e-4da1-a513-e21413949ad3 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56222\nmode: rule\nlog-level: info\nsub-rules:\n  branch:\n    - DOMAIN,localhost,REJECT\n    - MATCH,DIRECT\nrules:\n  - SUB-RULE,(NETWORK,TCP),branch\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:16.546 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=1; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=161e48d1-c965-4690-b4d4-c4ce02bf5bf2 pid=91536 version=\"0.1.0\" listen=127.0.0.1:56222\n[17:52:16.638 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56225 code=\"closed\"\n[17:52:16.638 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=SUB-RULE,(NETWORK,TCP),branch -> REJECT\n[17:52:16.638 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:16.638 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:16.638 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:16.638 INFO  billow_kernel::engine] message=billow-kernel stopped instance=161e48d1-c965-4690-b4d4-c4ce02bf5bf2 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "closed",
+        "mihomo": "timeout",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -1129,11 +1129,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54512\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,test,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56227\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,test,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1143,12 +1143,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54528\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,test,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:11.058 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=00e0451a-2fb7-4379-bea8-3331e7dd4308 pid=9685 version=\"0.1.0\" listen=127.0.0.1:54528\n[02:53:11.136 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54531 code=\"closed\"\n[02:53:11.137 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=GEOSITE,test -> REJECT\n[02:53:11.137 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:11.137 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:11.137 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:11.137 INFO  billow_kernel::engine] message=billow-kernel stopped instance=00e0451a-2fb7-4379-bea8-3331e7dd4308 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56231\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,test,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:16.857 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=28bbdd5e-44ae-4065-8c56-b67273fedb09 pid=91538 version=\"0.1.0\" listen=127.0.0.1:56231\n[17:52:16.949 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56234 code=\"closed\"\n[17:52:16.949 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=GEOSITE,test -> REJECT\n[17:52:16.949 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:16.949 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:16.949 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:16.949 INFO  billow_kernel::engine] message=billow-kernel stopped instance=28bbdd5e-44ae-4065-8c56-b67273fedb09 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -1164,11 +1164,11 @@
         "mihomo": {
           "ready": true,
           "observation": {
-            "category": "timeout",
-            "connectStatus": 200,
-            "error": "no response within 3000 ms"
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54533\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,TEST,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56236\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,TEST,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1178,12 +1178,12 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54537\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,TEST,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:14.873 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=de0a0d96-15c9-4c95-b855-d21e26fcecf1 pid=9695 version=\"0.1.0\" listen=127.0.0.1:54537\n[02:53:14.956 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54540 code=\"closed\"\n[02:53:14.956 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:54194 protocol=\"http-connect\" rule=GEOSITE,TEST -> REJECT\n[02:53:14.956 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:14.956 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:14.956 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:14.956 INFO  billow_kernel::engine] message=billow-kernel stopped instance=de0a0d96-15c9-4c95-b855-d21e26fcecf1 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56240\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOSITE,TEST,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:17.165 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=e65a50f9-76f5-4c61-aac1-d88d6b82fdcd pid=91540 version=\"0.1.0\" listen=127.0.0.1:56240\n[17:52:17.259 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56243 code=\"closed\"\n[17:52:17.259 INFO  billow_kernel::engine] message=REJECT session=2 target=localhost:55925 protocol=\"http-connect\" rule=GEOSITE,TEST -> REJECT\n[17:52:17.259 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:17.259 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:17.259 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:17.260 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e65a50f9-76f5-4c61-aac1-d88d6b82fdcd sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
-        "mihomo": "timeout",
+        "mihomo": "closed",
         "rust": "closed",
         "normalized": {
           "mihomo": "blocked",
@@ -1203,7 +1203,7 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54542\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,zz,REJECT\n  - MATCH,DIRECT\n",
+          "config": "mixed-port: 56245\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,zz,REJECT\n  - MATCH,DIRECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1213,8 +1213,8 @@
             "connectStatus": 0,
             "error": "connection closed before the response head"
           },
-          "config": "mixed-port: 54546\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,zz,REJECT\n  - MATCH,DIRECT\n",
-          "stderr": "[02:53:15.177 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=7be3a51f-8442-4ba5-a9bb-84632dde58c5 pid=9700 version=\"0.1.0\" listen=127.0.0.1:54546\n[02:53:15.265 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54549 code=\"closed\"\n[02:53:15.265 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=GEOIP,zz -> REJECT\n[02:53:15.265 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:15.265 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:15.265 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:15.265 INFO  billow_kernel::engine] message=billow-kernel stopped instance=7be3a51f-8442-4ba5-a9bb-84632dde58c5 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56249\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,zz,REJECT\n  - MATCH,DIRECT\n",
+          "stderr": "[17:52:17.476 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=c57baa00-2ab5-48ef-8e50-c28125d231da pid=91542 version=\"0.1.0\" listen=127.0.0.1:56249\n[17:52:17.566 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56252 code=\"closed\"\n[17:52:17.566 INFO  billow_kernel::engine] message=REJECT session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=GEOIP,zz -> REJECT\n[17:52:17.566 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:17.566 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:17.566 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:17.566 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c57baa00-2ab5-48ef-8e50-c28125d231da sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -1239,7 +1239,7 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54551\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,lan,DIRECT\n  - MATCH,REJECT\n",
+          "config": "mixed-port: 56254\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,lan,DIRECT\n  - MATCH,REJECT\n",
           "stderr": ""
         },
         "rust": {
@@ -1250,8 +1250,8 @@
             "replyBytes": 127,
             "reply": null
           },
-          "config": "mixed-port: 54564\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,lan,DIRECT\n  - MATCH,REJECT\n",
-          "stderr": "=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=890593ec-77a9-483e-90fa-fe40e2655608 pid=9750 version=\"0.1.0\" listen=127.0.0.1:54564\n[02:53:16.117 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:54567 code=\"closed\"\n[02:53:16.118 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:54194 protocol=\"http-connect\" rule=GEOIP,lan -> DIRECT outbound=127.0.0.1:54194 config=sha256:c1793e97b760e0174a0fedf4836359530c32d0ae0f0e0dd057c815bb2331b882\n[02:53:16.119 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:54194 bytes_up=94 bytes_down=127\n[02:53:16.621 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[02:53:16.621 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[02:53:16.621 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[02:53:16.621 INFO  billow_kernel::engine] message=billow-kernel stopped instance=890593ec-77a9-483e-90fa-fe40e2655608 sessions=2 active=0 finished=2\n"
+          "config": "mixed-port: 56259\nmode: rule\nlog-level: info\ngeodata-mode: true\nrules:\n  - GEOIP,lan,DIRECT\n  - MATCH,REJECT\n",
+          "stderr": "inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=aff75494-9884-4710-ae7c-dabd27f1f3e7 pid=91544 version=\"0.1.0\" listen=127.0.0.1:56259\n[17:52:18.378 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:56262 code=\"closed\"\n[17:52:18.378 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=127.0.0.1:55925 protocol=\"http-connect\" rule=GEOIP,lan -> DIRECT outbound=127.0.0.1:55925 config=sha256:722bd29e868ad4699ed47480836cb777c9019a00e5787dcad9e3557484efefdc\n[17:52:18.380 INFO  billow_kernel::engine] message=session closed session=2 target=127.0.0.1:55925 bytes_up=94 bytes_down=127\n[17:52:18.902 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[17:52:18.902 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[17:52:18.902 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[17:52:18.902 INFO  billow_kernel::engine] message=billow-kernel stopped instance=aff75494-9884-4710-ae7c-dabd27f1f3e7 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {

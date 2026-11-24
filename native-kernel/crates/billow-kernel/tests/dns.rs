@@ -104,7 +104,7 @@ struct UdpDns {
 }
 
 fn spawn_udp_dns(map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> UdpDns {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind udp dns");
+    let socket = common::bind_loopback_udp();
     socket.set_nonblocking(true).expect("nonblocking");
     let port = socket.local_addr().unwrap().port();
     let queries = Arc::new(AtomicU64::new(0));
@@ -134,7 +134,7 @@ fn spawn_udp_dns(map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> UdpDns 
 
 /// A UDP DNS fixture that accepts queries and never answers (timeout case).
 fn spawn_silent_udp() -> u16 {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind silent udp");
+    let socket = common::bind_loopback_udp();
     socket.set_nonblocking(true).expect("nonblocking");
     let port = socket.local_addr().unwrap().port();
     std::mem::forget(tokio::spawn(async move {
@@ -150,7 +150,7 @@ fn spawn_silent_udp() -> u16 {
 /// NXDOMAIN with an authority record (TTL 45): the pinned cache keeps the
 /// negative answer for the SOA TTL.
 fn spawn_negative_cache_dns() -> (u16, Arc<AtomicU64>) {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind negative dns");
+    let socket = common::bind_loopback_udp();
     socket.set_nonblocking(true).expect("nonblocking");
     let port = socket.local_addr().unwrap().port();
     let queries = Arc::new(AtomicU64::new(0));
@@ -188,7 +188,7 @@ fn spawn_negative_cache_dns() -> (u16, Arc<AtomicU64>) {
 
 /// A TCP DNS fixture answering each length-prefixed query.
 fn spawn_tcp_dns(map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> u16 {
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind tcp dns");
+    let std_listener = common::bind_loopback();
     let port = std_listener.local_addr().unwrap().port();
     std_listener.set_nonblocking(true).unwrap();
     let map: AnswerMap = Arc::new(map);
@@ -351,7 +351,7 @@ fn tls_acceptor(cert: &CertPair) -> tokio_rustls::TlsAcceptor {
 }
 
 fn spawn_dot_dns(cert: &CertPair, map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> u16 {
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let std_listener = common::bind_loopback();
     let port = std_listener.local_addr().unwrap().port();
     std_listener.set_nonblocking(true).unwrap();
     let acceptor = tls_acceptor(cert);
@@ -391,7 +391,7 @@ fn spawn_dot_dns(cert: &CertPair, map: HashMap<(String, u16), (Vec<IpAddr>, u8, 
 }
 
 fn spawn_doh_dns(cert: &CertPair, map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> u16 {
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let std_listener = common::bind_loopback();
     let port = std_listener.local_addr().unwrap().port();
     std_listener.set_nonblocking(true).unwrap();
     let acceptor = tls_acceptor(cert);
@@ -449,7 +449,7 @@ fn spawn_doh_dns(cert: &CertPair, map: HashMap<(String, u16), (Vec<IpAddr>, u8, 
 }
 
 fn spawn_plain_doh_dns(map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> u16 {
-    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let std_listener = common::bind_loopback();
     let port = std_listener.local_addr().unwrap().port();
     std_listener.set_nonblocking(true).unwrap();
     let map: AnswerMap = Arc::new(map);

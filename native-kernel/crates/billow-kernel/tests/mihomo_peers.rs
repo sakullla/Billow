@@ -685,9 +685,54 @@ fn send_datagrams(relay: SocketAddr, target: SocketAddr, payloads: &[&[u8]]) {
     }
 }
 
-/// Send one SOCKS5 UDP datagram (RSV RSV FRAG ATYP ADDR PORT payload).
-fn send_datagram(relay: SocketAddr, target: SocketAddr, payload: &[u8]) {
+/// Send datagrams to two different destinations from one SOCKS5 association
+/// socket and assert both replies come back on that same socket. This is the
+/// per-destination shape the pinned anytls UoT / ss UoT v2 / vmess plain
+/// outbounds use: one packet conn per destination, read concurrently.
+fn send_two_targets(
+    relay: SocketAddr,
+    first: (SocketAddr, &[u8]),
+    second: (SocketAddr, &[u8]),
+) {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    for (target, payload) in [first, second] {
+        let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+        packet.extend_from_slice(
+            &target
+                .ip()
+                .to_string()
+                .parse::<std::net::Ipv4Addr>()
+                .unwrap()
+                .octets(),
+        );
+        packet.extend_from_slice(&target.port().to_be_bytes());
+        packet.extend_from_slice(payload);
+        socket.send_to(&packet, relay).unwrap();
+    }
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut buffer = [0u8; 65535];
+    let mut seen: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+    for _ in 0..2 {
+        let (read, _) = socket
+            .recv_from(&mut buffer)
+            .expect("both destinations must answer through the kernel");
+        let (host, offset) = parse_udp_reply(&buffer[..read]);
+        seen.push((host, buffer[offset..read].to_vec()));
+    }
+    for (target, payload) in [first, second] {
+        assert!(
+            seen.iter()
+                .any(|(host, packet)| *host == target && packet == payload),
+            "the kernel did not return the reply from {target} (payload {:?}); got {seen:?}",
+            String::from_utf8_lossy(payload)
+        );
+    }
+}
+
+/// Send one SOCKS5 UDP datagram (RSV RSV FRAG ATYP ADDR PORT payload).
+fn send_datagram(relay: SocketAddr, target: SocketAddr, payload: &[u8]) {    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let mut packet = vec![0u8, 0u8, 0u8, 0x01];
     packet.extend_from_slice(&target.ip().to_string().parse::<std::net::Ipv4Addr>().unwrap().octets());
     packet.extend_from_slice(&target.port().to_be_bytes());
@@ -1368,6 +1413,78 @@ fn chained_trojan_udp_rejected_by_the_hop_never_reaches_the_echo() {
             assert!(
                 echo.received().is_empty(),
                 "the echo must not be reached: the trojan stream went through the hop"
+            );
+        },
+    );
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn chained_anytls_udp_with_a_dead_hop_never_reaches_the_echo() {
+    // The anytls UoT stream must ride the `dialer-proxy` hop like the TCP
+    // path; a kernel that dialled the anytls listener directly would reach the
+    // echo despite the dead hop. The hop port is closed, so the association
+    // must fail and no reply may come back.
+    let anytls_port = free_port();
+    let dead_port = free_port();
+    let listeners = listener(
+        "anytls",
+        anytls_port,
+        &format!(
+            ", certificate: CERT, private-key: KEY, users: {{user1: \"{ANYTLS_PASSWORD}\"}}"
+        ),
+    );
+    with_udp_peer_on(
+        "anytls-udp-dead-hop",
+        &listeners,
+        "MATCH,sink-direct",
+        None,
+        |_mihomo, _| {
+            let echo = UdpEcho::start();
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {anytls_port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {dead_port}}}\n"
+            ));
+            let (_control, relay) = udp_associate(running.proxy);
+            let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+            assert!(
+                try_datagram(relay, target, b"must-not-bypass-the-dead-hop").is_none(),
+                "the dead hop must fail the anytls UoT association, so no reply may come back"
+            );
+            assert!(
+                echo.received().is_empty(),
+                "the echo must not be reached: the anytls UoT stream went through the hop"
+            );
+        },
+    );
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo() {
+    // Same proof for vmess plain `command 2`: the vmess server connection must
+    // go through the hop, never directly.
+    let vmess_port = free_port();
+    let dead_port = free_port();
+    let listeners = vmess_listener(vmess_port, UUID, 0);
+    with_udp_peer_on(
+        "vmess-udp-dead-hop",
+        &listeners,
+        "MATCH,sink-direct",
+        None,
+        |_mihomo, _| {
+            let echo = UdpEcho::start();
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {vmess_port}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true, dialer-proxy: hop}}\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {dead_port}}}\n"
+            ));
+            let (_control, relay) = udp_associate(running.proxy);
+            let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+            assert!(
+                try_datagram(relay, target, b"must-not-bypass-the-dead-hop").is_none(),
+                "the dead hop must fail the vmess UDP association, so no reply may come back"
+            );
+            assert!(
+                echo.received().is_empty(),
+                "the echo must not be reached: the vmess connection went through the hop"
             );
         },
     );
@@ -2876,5 +2993,92 @@ fn vmess_udp_modes_reach_the_echo_through_mihomo() {
                 "the UDP echo must receive the datagram for vmess{extra}"
             );
         }
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_udp_reaches_two_destinations_from_one_association() {
+    // The pinned anytls outbound opens one UoT stream per destination. One
+    // SOCKS5 UDP association that sends to A then B must receive both replies;
+    // binding the association to the first destination loses B.
+    let port = free_port();
+    let listeners = listener(
+        "anytls",
+        port,
+        &format!(", certificate: CERT, private-key: KEY, users: {{user1: \"{ANYTLS_PASSWORD}\"}}"),
+    );
+    with_udp_peer("anytls-udp-two-targets", &listeners, |_mihomo, _| {
+        let first = UdpEcho::start();
+        let second = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let first_target: SocketAddr = format!("127.0.0.1:{}", first.port).parse().unwrap();
+        let second_target: SocketAddr = format!("127.0.0.1:{}", second.port).parse().unwrap();
+        send_two_targets(
+            relay,
+            (first_target, b"marker-anytls-target-a"),
+            (second_target, b"marker-anytls-target-b"),
+        );
+        assert_eq!(first.received(), vec![b"marker-anytls-target-a".to_vec()]);
+        assert_eq!(second.received(), vec![b"marker-anytls-target-b".to_vec()]);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowsocks_uot_v2_reaches_two_destinations_from_one_association() {
+    // ss UoT v2 binds its request to one destination; the pinned outbound
+    // opens one stream per destination, so both targets must answer.
+    let port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer("ss-uot-v2-two-targets", &listeners, |_mihomo, _| {
+        let first = UdpEcho::start();
+        let second = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, cipher: aes-256-gcm, password: \"{SS_PASSWORD}\", udp-over-tcp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let first_target: SocketAddr = format!("127.0.0.1:{}", first.port).parse().unwrap();
+        let second_target: SocketAddr = format!("127.0.0.1:{}", second.port).parse().unwrap();
+        send_two_targets(
+            relay,
+            (first_target, b"marker-ss-uot-target-a"),
+            (second_target, b"marker-ss-uot-target-b"),
+        );
+        assert_eq!(first.received(), vec![b"marker-ss-uot-target-a".to_vec()]);
+        assert_eq!(second.received(), vec![b"marker-ss-uot-target-b".to_vec()]);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_plain_udp_reaches_two_destinations_from_one_association() {
+    // Plain `command 2` binds the vmess request to one destination; the pinned
+    // outbound opens one packet connection per destination.
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_udp_peer("vmess-plain-two-targets", &listeners, |_mihomo, _| {
+        let first = UdpEcho::start();
+        let second = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let first_target: SocketAddr = format!("127.0.0.1:{}", first.port).parse().unwrap();
+        let second_target: SocketAddr = format!("127.0.0.1:{}", second.port).parse().unwrap();
+        send_two_targets(
+            relay,
+            (first_target, b"marker-vmess-plain-target-a"),
+            (second_target, b"marker-vmess-plain-target-b"),
+        );
+        assert_eq!(first.received(), vec![b"marker-vmess-plain-target-a".to_vec()]);
+        assert_eq!(second.received(), vec![b"marker-vmess-plain-target-b".to_vec()]);
     });
 }

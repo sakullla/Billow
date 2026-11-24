@@ -744,6 +744,7 @@ const header = [
   `# rust: ${binary}`,
   `# mihomo: ${mihomo ?? '(not provided: only the Rust verdict was checked)'}`,
   `# no-op cases: ${noops.length}, implemented cases: ${implemented.length}, enabled cases: ${allEnabled.length}, problems: ${problems.length}`,
+  '# note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.',
   '# command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>',
   ...skipped.map(([type, reason]) => `# skipped: ${type} (- ${reason})`),
   '',

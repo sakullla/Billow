@@ -1,7 +1,8 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t30-release/release/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t30-a2-target/debug/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
 # no-op cases: 289, implemented cases: 75, enabled cases: 131, problems: 0
+# note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept

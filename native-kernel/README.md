@@ -314,7 +314,9 @@ certificate pin (a leaf match is accepted, a non-leaf match verifies the chain
 with the pinned certificate as the anchor), `name-cert-verify` verifies the
 chain against a name that differs from SNI, and `certificate`/`private-key`
 add a client certificate from inline PEM or a file loaded at handshake time.
-`client-fingerprint` (uTLS) stays a named gap. The private-CA case is covered
+`client-fingerprint` is accepted as an approximation only (the closest rustls
+profile; no uTLS ClientHello, so it is counted as a residual, not parity). The
+private-CA case is covered
 by `tests/protocols.rs::custom_ca_roots_are_installed_for_outbound_tls`; the
 T27 identity cases are `fingerprint_pins_the_leaf_certificate` and
 `name_cert_verify_checks_the_configured_name`.
@@ -629,11 +631,11 @@ identities of the servers are logged as the session exit.
 | --- | --- | --- | --- |
 | `socks5` | plain, `tls: true` (+ `sni`, `skip-cert-verify`, `alpn`), RFC 1929 auth; the server socket is dialled by the shared dialer so `BasicOption` knobs apply | `udp: true`: RFC 1928 `UDP ASSOCIATE` (mixed inbound and TUN data plane) | `listeners: type: socks` (with users), wrong password |
 | `http` | plain, `tls: true`, Basic auth, extra `headers` | no | `listeners: type: http` (with users) |
-| `ss` | AEAD 2017 `aes-128-gcm`, `aes-192-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`; every other name the pinned ss outbound (`sing-shadowsocks2`) accepts is rejected by name (the shadowstream list, ChaCha8/CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon AEADs, `none`, and `2022-blake3-aes-128-gcm`/`2022-blake3-aes-256-gcm`/`2022-blake3-chacha20-poly1305`/`2022-blake3-chacha8-poly1305`/`2022-blake3-aes-128-ccm`/`2022-blake3-aes-256-ccm` — full list in `tool/kernel-compat/evidence/t28-option-parity.md`) | `udp: true`: AEAD-2017 datagrams; `udp-over-tcp: true` (v1 or v2 UoT) | `listeners: type: shadowsocks`, wrong password (TCP, AEAD UDP, UoT v1/v2) |
+| `ss` | AEAD 2017 `aes-128-gcm`, `aes-192-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`; every other name the pinned ss outbound (`sing-shadowsocks2`) accepts is rejected by name (the shadowstream list, ChaCha8/CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon AEADs, `none`, and `2022-blake3-aes-128-gcm`/`2022-blake3-aes-256-gcm`/`2022-blake3-chacha20-poly1305`/`2022-blake3-chacha8-poly1305`/`2022-blake3-aes-128-ccm`/`2022-blake3-aes-256-ccm` — full list in `tool/kernel-compat/evidence/t28-option-parity.md`) | `udp: true`: AEAD-2017 datagrams; `udp-over-tcp: true` (v1 or v2 UoT, one stream per destination) | `listeners: type: shadowsocks`, wrong password (TCP, AEAD UDP, UoT v1/v2, one association with two destinations) |
 | `trojan` | TLS, `network: tcp` / `ws` (`ws-opts.path`, `headers`, `v2ray-http-upgrade`), optional `ss-opts` Shadowsocks AEAD layer (`aes-128/192/256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`; every other name the pinned `core.PickCipher` accepts, including `DUMMY`, is rejected by name; the legacy AEAD names it does not accept are rejected by both engines) | `udp: true`: `addr|len|CRLF|payload` frames over the TLS stream | `listeners: type: trojan`, wrong password, untrusted certificate (TCP and UDP) |
 | `vless` | `tls: true`, `network: tcp` / `ws` (`ws-opts.path`), `encryption: none`, `udp` with XUDP (pinned default) or `packet-encoding: packetaddr\|packet` | `udp: true`: XUDP mux frames, packet-addr records; `udp: false` is TCP-only | `listeners: type: vless` (tcp, `ws-path`, XUDP and packet-addr UDP echo), wrong uuid |
-| `anytls` | TLS, protocol version 2, idle-session pool (`client-metadata`, `idle-session-*`, `min-idle-session`, `disable-reuse`) | `udp: true`: UoT over a dedicated AnyTLS stream (`u16 length \|\| payload`) | `listeners: type: anytls` TCP/UoT echo, wrong password, untrusted certificate |
-| `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `network: tcp`/`ws` (`ws-opts.path`, `headers`), `sni`/`servername`, `udp` with plain `command 2`, packet-addr or XUDP | `udp: true`: one record per datagram in all three pinned modes | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target, plain/packet-addr/XUDP UDP echo), wrong uuid |
+| `anytls` | TLS, protocol version 2, idle-session pool (`client-metadata`, `idle-session-*`, `min-idle-session`, `disable-reuse`) | `udp: true`: UoT over a dedicated AnyTLS stream (`u16 length \|\| payload`), one stream per destination; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP | `listeners: type: anytls` TCP/UoT echo, one association with two destinations, dead-hop chain, wrong password, untrusted certificate |
+| `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `network: tcp`/`ws` (`ws-opts.path`, `headers`), `sni`/`servername`, `udp` with plain `command 2`, packet-addr or XUDP | `udp: true`: one record per datagram in all three pinned modes; plain `command 2` opens one association per destination and the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target, plain/packet-addr/XUDP UDP echo, one association with two destinations, dead-hop chain), wrong uuid |
 | `snell` | v1 (chacha20-poly1305) / v2 / v3 (aes-128-gcm), Argon2id KDF, `obfs-opts: {mode: http, host}` | no | `listeners: type: snell` v1/v2/v3, v3 + http obfs, wrong psk |
 | `trusttunnel` | TLS + HTTP/2 `CONNECT`, Basic `Proxy-Authorization`, ALPN `h2`, `sni`, `skip-cert-verify` | no | `listeners: type: trusttunnel` (`network: [tcp]`), wrong password |
 | `gost-relay` | relay v2 over TCP, `tls: true` (`sni`, `skip-cert-verify`), `username`/`password`, `forward` (no address feature), `mux` (smux v1 session, one stream per dial) | `udp: true`: one association bound to the target, `length(u16 BE) || payload` frames | controlled relay-v2 server (header vectors, auth/forward/TLS/status, UDP and smux cases); no Mihomo listener exists |
@@ -706,9 +708,9 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 | `trojan` with `udp: true` | command `3` over TLS (the server connection is established through the `dialer-proxy` chain like TCP), `addr|length|CRLF|payload` frames both ways |
 | `socks5` with `udp: true` | RFC 1928 `UDP ASSOCIATE`: the control connection stays open and datagrams travel through the server relay (also the TUN data-plane transport); a `dialer-proxy` chain is rejected at load time because the association dials the server directly |
 | `vless` with `udp: true` | XUDP mux frames (default) or packet-addr records over the TLS/WS stream |
-| `anytls` with `udp: true` | UoT v2 over a dedicated AnyTLS stream |
-| `vmess` with `udp: true` | plain `command 2`, packet-addr or XUDP, one record per datagram |
-| `ss` with `udp-over-tcp: true` | sing UoT v2 (or legacy v1) inside the Shadowsocks AEAD stream |
+| `anytls` with `udp: true` | UoT v2 over a dedicated AnyTLS stream per destination; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
+| `vmess` with `udp: true` | plain `command 2` (one association per destination), packet-addr or XUDP, one record per datagram; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
+| `ss` with `udp-over-tcp: true` | sing UoT v2 (or legacy v1) inside the Shadowsocks AEAD stream, one stream per destination |
 | `http` | **no association**: `udp: true` is not an http option |
 
 `vless`, `anytls` and `vmess` UDP are implemented as above; the Hysteria2 UDP
@@ -725,9 +727,12 @@ from another of its addresses) is accepted, while a reply from an address the
 name did not resolve to is dropped. A resolver that returns only one family
 (`AI_ADDRCONFIG` on a host without global IPv6, for example) yields a
 single-entry set, which is what this host does for `localhost`. Memory per association is bounded: one 64 KiB client
-datagram buffer plus one 64 KiB reply buffer per transport actually used, and
-the association ends with its control connection or after
-`Limits.udp_idle_timeout` (default 60 s).
+datagram buffer and one 64 KiB reply buffer per active transport; the
+destination-bound UoT/plain families (`anytls`, `ss` UoT, `vmess` plain) hold one
+64 KiB reader buffer per open destination rather than one per session, as the
+pinned outbound does. The association ends with its control connection or after
+`Limits.udp_idle_timeout` (default 60 s), and closing it aborts every
+per-destination reader task.
 
 ### Protocol families outside this slice
 
@@ -925,8 +930,8 @@ With the pinned option tables that means the trojan/vless `smux` block,
 `ech-opts`,
 `shadow-tls-opts`, `restls-opts`, `jls-opts`, `reality-opts`, `grpc-opts`,
 `http-opts`, `h2-opts`, `xhttp-opts`, a non-AEAD `ss-opts.method`, `plugin`/`plugin-opts`, ws
-early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint` (accepted
-with a documented rustls approximation), vless `flow`/`reality-opts`/`shadow-tls-opts`/
+early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint` (accepted as a documented rustls approximation, counted as
+a residual rather than parity), vless `flow`/`reality-opts`/`shadow-tls-opts`/
 `restls-opts`/`jls-opts`, anytls `shadow-tls-opts`/`restls-opts`/`jls-opts`, vmess
 `alterId > 0`/`global-padding`/`authenticated-length` and the vmess
 mkcp/mekya/TLS-mirror blocks, snell
@@ -934,8 +939,8 @@ mkcp/mekya/TLS-mirror blocks, snell
 `udp`/`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
 `congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
 `client-fingerprint`, ssh private-key file paths, and `udp: true` on
-`vless`/`anytls`/`vmess`/`snell`/`trusttunnel` (no UDP association for those
-families; socks5 UDP is implemented). T10's families reject the options
+`snell`/`trusttunnel` (no UDP association for those two families; vless, anytls,
+vmess and socks5 UDP are implemented). T10's families reject the options
 they do not implement by name: `tuic` `token` (v4/BLAKE3), `udp-relay-mode:
 quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, the meta BBR v1 controller and the
 UDP datagram sizing; the cubic/new_reno/bbr/bbr_meta_v2 controller (v2 is the pinned alias of bbr), `cwnd`, receive

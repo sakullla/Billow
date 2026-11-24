@@ -515,6 +515,112 @@ impl VmessPacket {
             Err(error) => Err(error),
         }
     }
+
+    /// Split a plain (`command 2`) association into independent read and write
+    /// halves so one destination's replies can be read while another
+    /// destination is being written. The pinned outbound opens one packet
+    /// connection per destination; the engine keeps those halves per target.
+    pub fn into_halves(self) -> (VmessPacketReader, VmessPacketWriter) {
+        let VmessPacket { stream, response } = self;
+        let VmessStream {
+            inner,
+            read_cipher,
+            write_cipher,
+            read_iv,
+            write_iv,
+            read_count,
+            write_count,
+            ..
+        } = stream;
+        let (read, write) = tokio::io::split(inner);
+        (
+            VmessPacketReader {
+                inner: read,
+                read_cipher,
+                read_iv,
+                read_count,
+                response,
+            },
+            VmessPacketWriter {
+                inner: write,
+                write_cipher,
+                write_iv,
+                write_count,
+            },
+        )
+    }
+}
+
+/// Read half of one plain VMess UDP association (one destination).
+pub struct VmessPacketReader {
+    inner: tokio::io::ReadHalf<BoxStream>,
+    read_cipher: BodyCipher,
+    read_iv: [u8; 16],
+    read_count: u16,
+    response: Option<ResponseState>,
+}
+
+impl VmessPacketReader {
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        if let Some(response) = self.response.take() {
+            // The server writes its response header with the first reply, as
+            // the pinned packet connection reads it lazily.
+            read_response(&mut self.inner, &response.key, &response.iv, response.v).await?;
+        }
+        let mut length = [0u8; 2];
+        match self.inner.read_exact(&mut length).await {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let length = u16::from_be_bytes(length) as usize;
+        if length > MAX_RECORD || length < self.read_cipher.overhead() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vmess UDP record length out of range",
+            ));
+        }
+        let mut sealed = vec![0u8; length];
+        self.inner.read_exact(&mut sealed).await?;
+        let nonce = chunk_nonce(self.read_count, &self.read_iv);
+        self.read_count = self.read_count.wrapping_add(1);
+        let plain = self.read_cipher.open(&nonce, &sealed)?;
+        if plain.len() > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vmess UDP datagram larger than the buffer",
+            ));
+        }
+        buffer[..plain.len()].copy_from_slice(&plain);
+        Ok(Some(plain.len()))
+    }
+}
+
+/// Write half of one plain VMess UDP association (one destination).
+pub struct VmessPacketWriter {
+    inner: tokio::io::WriteHalf<BoxStream>,
+    write_cipher: BodyCipher,
+    write_iv: [u8; 16],
+    write_count: u16,
+}
+
+impl VmessPacketWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > CHUNK_SIZE - self.write_cipher.overhead() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "vmess UDP datagram exceeds one record",
+            ));
+        }
+        let nonce = chunk_nonce(self.write_count, &self.write_iv);
+        self.write_count = self.write_count.wrapping_add(1);
+        let sealed = self.write_cipher.seal(&nonce, payload)?;
+        let mut framed = Vec::with_capacity(2 + sealed.len());
+        framed.extend_from_slice(&(sealed.len() as u16).to_be_bytes());
+        framed.extend_from_slice(&sealed);
+        self.inner.write_all(&framed).await?;
+        self.inner.flush().await
+    }
 }
 
 impl<S: AsyncWrite + Unpin> VmessStream<S> {
@@ -759,9 +865,11 @@ async fn read_response<S: AsyncRead + Unpin>(
 pub async fn dial(
     option: &VmessOutbound,
     target: &Target,
+    via: &[&crate::proxies::Proxy],
+    timeout: std::time::Duration,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
-    let (stream, server, _) = dial_command(option, target, tls, COMMAND_TCP).await?;
+    let (stream, server, _) = dial_command(option, target, via, timeout, tls, COMMAND_TCP).await?;
     Ok(Dialed {
         stream: Box::new(stream),
         server,
@@ -774,9 +882,12 @@ pub async fn dial(
 pub async fn dial_packet(
     option: &VmessOutbound,
     target: &Target,
+    via: &[&crate::proxies::Proxy],
+    timeout: std::time::Duration,
     tls: &ClientTls,
 ) -> Result<VmessPacket, DialError> {
-    let (stream, _server, response) = dial_command(option, target, tls, COMMAND_UDP).await?;
+    let (stream, _server, response) =
+        dial_command(option, target, via, timeout, tls, COMMAND_UDP).await?;
     Ok(VmessPacket { stream, response })
 }
 
@@ -784,41 +895,58 @@ pub async fn dial_packet(
 pub async fn dial_mux(
     option: &VmessOutbound,
     target: &Target,
+    via: &[&crate::proxies::Proxy],
+    timeout: std::time::Duration,
     tls: &ClientTls,
 ) -> Result<VmessPacket, DialError> {
-    let (stream, _server, response) = dial_command(option, target, tls, COMMAND_MUX).await?;
+    let (stream, _server, response) =
+        dial_command(option, target, via, timeout, tls, COMMAND_MUX).await?;
     Ok(VmessPacket { stream, response })
 }
 
 async fn dial_command(
     option: &VmessOutbound,
     target: &Target,
+    via: &[&crate::proxies::Proxy],
+    timeout: std::time::Duration,
     tls: &ClientTls,
     command: u8,
 ) -> Result<(VmessStream<BoxStream>, std::net::SocketAddr, Option<ResponseState>), DialError> {
-    let tcp = connect_tcp(&option.server, option.port).await?;
-    let server = tcp.peer_addr().map_err(|e| handshake("vmess", e))?;
+    // `via[0]` is this vmess outbound; `via[1]` is the single socks5 hop a
+    // `dialer-proxy` chain may carry (validated at load). The server socket is
+    // either direct or the hop tunnel, never a silent bypass.
+    let (stream, server): (BoxStream, std::net::SocketAddr) = match via.len() {
+        0 | 1 => {
+            let tcp = connect_tcp(&option.server, option.port).await?;
+            let server = tcp.peer_addr().map_err(|e| handshake("vmess", e))?;
+            (Box::new(tcp), server)
+        }
+        _ => (
+            super::udp::server_stream(&option.server, option.port, via, timeout, tls).await?,
+            super::peer_of(via[0]),
+        ),
+    };
     let mut stream: BoxStream = match &option.network {
         VmessNetwork::Tcp => {
             if option.tls {
                 Box::new(
-                    tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+                    tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
                         .await
                         .map_err(|e| handshake("vmess tls", e))?,
                 )
             } else {
-                Box::new(tcp)
+                stream
             }
         }
         VmessNetwork::Ws(ws_settings) => {
             let stream: BoxStream = if option.tls {
                 Box::new(
-                    tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+                    tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
                         .await
                         .map_err(|e| handshake("vmess tls", e))?,
                 )
             } else {
-                Box::new(tcp)
+                stream
             };
             let host = option
                 .tls_settings

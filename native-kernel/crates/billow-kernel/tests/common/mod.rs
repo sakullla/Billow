@@ -50,6 +50,21 @@ pub fn bind_loopback() -> std::net::TcpListener {
     panic!("no unused loopback port in 64 attempts");
 }
 
+/// Like [`bind_loopback`] for a UDP fixture. TCP and UDP share a port number
+/// space here, so an unreserved UDP bind can be handed back by [`free_port`]
+/// (which probes with a TCP listener) and then collide with another test's
+/// fixed `dns.listen`/mixed port.
+pub fn bind_loopback_udp() -> std::net::UdpSocket {
+    for _ in 0..64 {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind ephemeral udp port");
+        let port = socket.local_addr().expect("local addr").port();
+        if reserve_port(port) {
+            return socket;
+        }
+    }
+    panic!("no unused loopback udp port in 64 attempts");
+}
+
 /// A loopback echo server that replies `banner + payload` for every connection,
 /// or a custom mode. Returns its bound port and a task handle.
 pub enum EchoMode {
