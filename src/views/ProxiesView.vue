@@ -1208,47 +1208,51 @@ onBeforeUnmount(() => {
       >
         <div
           v-if="quickFilters.length || (compact && failedNodeCount > 0)"
-          class="proxy-quick-filters"
-          role="group"
-          :aria-label="tr('筛选')"
-          data-testid="proxy-quick-filters"
+          class="proxy-quick-row"
         >
-          <span class="drawer-row-label">{{ tr('标签') }}</span>
-          <button
-            v-if="compact && failedNodeCount > 0"
-            type="button"
-            class="chip-btn proxy-quick-chip hide-failed-chip"
-            :class="{ active: hideFailed }"
-            :aria-pressed="hideFailed"
-            data-testid="hide-failed-nodes"
-            @click="hideFailed = !hideFailed"
+          <span v-if="!compact" class="drawer-row-label">{{ tr('标签') }}</span>
+          <div
+            class="proxy-quick-filters"
+            role="group"
+            :aria-label="tr('筛选')"
+            data-testid="proxy-quick-filters"
           >
-            <span>{{ tr('隐藏超时') }}</span>
-            <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
-          </button>
-          <button
-            v-for="chip in quickFilters"
-            :key="chip.id"
-            type="button"
-            class="chip-btn proxy-quick-chip"
-            :class="{ active: activeTag === chip.id }"
-            :aria-pressed="activeTag === chip.id"
-            :data-testid="`quick-filter-${chip.id}`"
-            @click="toggleQuickTag(chip.id)"
-          >
-            <span>{{ chip.label }}</span>
-            <span class="proxy-quick-count mono">{{ chip.count }}</span>
-          </button>
-          <button
-            v-if="hasActiveFilter"
-            type="button"
-            class="btn ghost sm proxy-quick-reset"
-            data-testid="clear-proxy-quick-filters"
-            @click="resetFilters"
-          >
-            <Icon name="x" :size="13" />
-            {{ tr('重置筛选') }}
-          </button>
+            <button
+              v-if="compact && failedNodeCount > 0"
+              type="button"
+              class="chip-btn proxy-quick-chip hide-failed-chip"
+              :class="{ active: hideFailed }"
+              :aria-pressed="hideFailed"
+              data-testid="hide-failed-nodes"
+              @click="hideFailed = !hideFailed"
+            >
+              <span>{{ tr('隐藏超时') }}</span>
+              <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
+            </button>
+            <button
+              v-for="chip in quickFilters"
+              :key="chip.id"
+              type="button"
+              class="chip-btn proxy-quick-chip"
+              :class="{ active: activeTag === chip.id }"
+              :aria-pressed="activeTag === chip.id"
+              :data-testid="`quick-filter-${chip.id}`"
+              @click="toggleQuickTag(chip.id)"
+            >
+              <span>{{ chip.label }}</span>
+              <span class="proxy-quick-count mono">{{ chip.count }}</span>
+            </button>
+            <button
+              v-if="hasActiveFilter"
+              type="button"
+              class="btn ghost sm proxy-quick-reset"
+              data-testid="clear-proxy-quick-filters"
+              @click="resetFilters"
+            >
+              <Icon name="x" :size="13" />
+              {{ tr('重置筛选') }}
+            </button>
+          </div>
           <button
             v-if="!compact"
             type="button"
@@ -1263,7 +1267,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="groups.length > 2 && !hasSearchOrTag" class="proxy-group-nav-row">
-          <span class="drawer-row-label">{{ tr('分组') }}</span>
+          <span v-if="!compact" class="drawer-row-label">{{ tr('分组') }}</span>
           <nav
             ref="groupPillsEl"
             class="group-pills"
@@ -1631,6 +1635,10 @@ onBeforeUnmount(() => {
 
 .proxy-filter-drawer {
   flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   order: 4;
   display: flex;
   flex-direction: column;
@@ -1640,16 +1648,27 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
 }
 
-.proxy-quick-filters,
+.proxy-quick-row,
 .proxy-group-nav-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 
 .proxy-quick-filters {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
   scrollbar-width: none;
   padding: 1px 0;
 }
@@ -1659,8 +1678,13 @@ onBeforeUnmount(() => {
 }
 
 .proxy-group-nav-row .group-pills {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
   order: 0;
   margin: 0;
   padding: 1px 0;

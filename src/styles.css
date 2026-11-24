@@ -513,8 +513,10 @@ hr {
 
 .shell.compact {
   position: relative;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  max-width: 100%;
+  overflow-x: clip;
   background: var(--bg);
   background-image: var(--bg-glow);
   padding: var(--safe-top) var(--safe-right) 0 var(--safe-left);
@@ -939,7 +941,10 @@ hr {
 
 .main {
   overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
   min-height: 0;
+  max-width: 100%;
 }
 
 .loading {
@@ -1062,7 +1067,9 @@ hr {
 
 /* ───────────── Page Layout ───────────── */
 .page {
+  width: 100%;
   max-width: 1120px;
+  min-width: 0;
   margin: 0 auto;
   padding: var(--page-pad) var(--page-pad-x) calc(var(--page-pad) + var(--space-4));
   display: flex;
@@ -3074,6 +3081,7 @@ button.delay:hover:not(:disabled) {
   position: sticky;
   top: 0;
   z-index: 4;
+  min-width: 0;
   margin: 0 calc(var(--page-pad-x) * -1);
   padding: 10px var(--page-pad-x);
   background: color-mix(in srgb, var(--bg) 88%, transparent);

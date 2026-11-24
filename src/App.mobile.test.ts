@@ -258,6 +258,16 @@ describe('phone layout', () => {
     expect(redesignCss).toMatch(/\.shell\.compact::after\s*\{/)
     // Mobile group-now strips leading airport 【PREFIX】 tags so server names stay readable
     expect(stylesCss).toMatch(/\.compact\s+\.group-now\s+\.chain-exit-prefix\s*\{\s*display:\s*none;/)
+    // Mobile shell & main container clamp horizontal width so wide filter/group strips never scroll the whole page sideways
+    expect(stylesCss).toMatch(/\.shell\.compact\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+    expect(stylesCss).toMatch(/\.main\s*\{[^}]*overflow-x:\s*hidden;/)
+    expect(stylesCss).toMatch(/\.main\s*\{[^}]*min-width:\s*0;/)
+
+    const proxiesVue = readFileSync(resolve(process.cwd(), 'src/views/ProxiesView.vue'), 'utf8')
+    expect(proxiesVue).toMatch(/\.proxy-filter-drawer\s*\{[^}]*min-width:\s*0;/)
+    expect(proxiesVue).toMatch(/\.proxy-filter-drawer\s*\{[^}]*max-width:\s*100%;/)
+    expect(proxiesVue).toMatch(/\.proxy-quick-filters\s*\{[^}]*flex:\s*1\s+1\s+0;/)
+    expect(proxiesVue).toMatch(/\.proxy-group-nav-row\s+\.group-pills\s*\{[^}]*flex:\s*1\s+1\s+0;/)
 
     const { wrapper } = await mountPhone()
     await connect(wrapper)
