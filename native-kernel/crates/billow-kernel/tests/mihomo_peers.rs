@@ -2463,6 +2463,49 @@ fn hysteria2_udp_fragments_a_large_datagram_through_mihomo() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
+fn hysteria2_udp_wrong_password_never_reaches_the_echo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("hysteria2-udp-wrong", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {}, password: \"wrong-password\", skip-cert-verify: true}}\n",
+            ports[0]
+        ));
+        let echo = UdpEcho::start();
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let (_control, relay) = udp_associate(running.proxy);
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut buffer = [0u8; 65535];
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+            packet.extend_from_slice(&[127, 0, 0, 1]);
+            packet.extend_from_slice(&target.port().to_be_bytes());
+            packet.extend_from_slice(b"must-not-arrive");
+            socket.send_to(&packet, relay).unwrap();
+            if let Ok((read, _)) = socket.recv_from(&mut buffer) {
+                panic!(
+                    "a wrong hysteria2 password produced a UDP reply: {:?}",
+                    &buffer[..read]
+                );
+            }
+        }
+        // The echo would have answered a DIRECT fallback, so this proves the
+        // datagram never reached the target through any path.
+        assert!(
+            echo.received().is_empty(),
+            "a wrong hysteria2 password must not deliver the datagram to the echo"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
 fn hysteria2_wrong_password_never_reaches_the_sink() {
     let port = free_port();
     let listeners = format!(

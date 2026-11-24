@@ -1065,7 +1065,8 @@ pub struct GostRelayOutbound {
 /// authentication then one bidirectional QUIC stream per TCP session, or one
 /// QUIC datagram session for UDP (always enabled, as the pinned outbound sets
 /// `UDP: true`). Port hopping, the Salamander/Gecko obfuscators and realm are
-/// implemented; `ech-opts` and a `dialer-proxy` chain are rejected by name.
+/// implemented; `ech-opts` is rejected at load, and a `dialer-proxy` chain is
+/// refused by name at dial/association time (never bypassed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hysteria2Outbound {
     pub server: String,
@@ -1557,22 +1558,18 @@ pub fn parse_proxies(value: &serde_yaml::Value) -> Result<Vec<Proxy>, ConfigErro
 /// Mihomo's `proxydialer.ListenPacket` uses. Rejecting anything else here makes
 /// the limitation visible in `--check` instead of letting a UDP association
 /// dial the server directly while TCP goes through the chain.
+///
+/// Hysteria2 is exempt: its UDP association is a QUIC socket that cannot ride
+/// any hop, and [`crate::outbound::udp::Hysteria2Udp::connect`] refuses a chain
+/// by name at association time. The pinned client accepts the configuration,
+/// and rejecting it here would reject the whole file (every unrelated proxy)
+/// even when the chained proxy is never used, so the limitation stays a
+/// per-association error instead of a load-time one.
 fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
     let index = |name: &str| proxies.iter().position(|proxy| proxy.name == name);
     for (i, proxy) in proxies.iter().enumerate() {
-        if !proxy.udp_enabled() {
+        if !proxy.udp_enabled() || matches!(proxy.protocol, Protocol::Hysteria2(_)) {
             continue;
-        }
-        // Hysteria2 UDP rides QUIC over the association's own UDP socket; a
-        // SOCKS5 hop can only carry a SOCKS5 UDP association, so a chain would
-        // be silently bypassed. Refuse it by name at load time.
-        if matches!(proxy.protocol, Protocol::Hysteria2(_)) {
-            if let Some(hop) = proxy.dialer_proxy() {
-                return Err(ConfigError::Unsupported(format!(
-                    "proxies[{i}] (name={}, type=hysteria2): 'dialer-proxy' '{hop}' is not implemented: the QUIC UDP session cannot be carried through a SOCKS5 hop, and the association is never dialled around the chain",
-                    proxy.name
-                )));
-            }
         }
         let mut hops: Vec<&Proxy> = vec![proxy];
         while hops.len() < 9 {

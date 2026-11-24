@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t31-a3-target/debug/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t31-a6-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 291, implemented cases: 87, enabled cases: 119, problems: 0
+# no-op cases: 291, implemented cases: 88, enabled cases: 119, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -378,6 +378,7 @@ impl    hysteria2 bbr-profile                  rust=accept mihomo=accept
 impl    vmess   mkcp-opts                    rust=accept mihomo=accept
 impl    vmess   mekya-opts                   rust=accept mihomo=accept
 impl    vmess   tlsmirror-opts               rust=accept mihomo=accept
+impl    hysteria2 dialer-proxy                 rust=accept mihomo=accept
 impl    mieru   basic-options                rust=accept mihomo=accept
 impl    sudoku  basic-options                rust=accept mihomo=accept
 impl    shadowquic basic-options                rust=accept mihomo=accept

@@ -1606,7 +1606,8 @@ pub struct Hysteria2Udp {
 impl Hysteria2Udp {
     /// `via` is the `dialer-proxy` chain of the matched proxy. A QUIC socket
     /// cannot be carried through a SOCKS5 UDP hop here, so any hop is refused
-    /// by name (the configuration is also refused at load time).
+    /// by name before the QUIC handshake; the configuration itself still loads
+    /// (the pinned client accepts it).
     pub async fn connect(
         option: &crate::proxies::Hysteria2Outbound,
         via: &[&crate::proxies::Proxy],
@@ -1844,14 +1845,33 @@ struct Hysteria2Pending {
     address: String,
     parts: Vec<Option<Vec<u8>>>,
     received: u8,
+    /// Monotonic time of the last fragment, so an incomplete message ages out
+    /// like the pinned `newUDPDefragger` (a 10-second LRU refreshed on get).
+    last_seen: std::time::Instant,
 }
 
 impl Hysteria2Fragments {
     const MAX_PENDING: usize = 64;
+    /// The pinned `newUDPDefragger` drops an entry after 10 s without a
+    /// fragment; without an age an abandoned message would live until 64 newer
+    /// packet ids evicted it.
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(10);
 
     /// Feed one datagram; returns the address and payload once complete.
     fn feed(
         &mut self,
+        packet: u16,
+        fragment: u8,
+        total: u8,
+        address: String,
+        data: Vec<u8>,
+    ) -> Option<(String, Vec<u8>)> {
+        self.feed_at(std::time::Instant::now(), packet, fragment, total, address, data)
+    }
+
+    fn feed_at(
+        &mut self,
+        now: std::time::Instant,
         packet: u16,
         fragment: u8,
         total: u8,
@@ -1864,6 +1884,7 @@ impl Hysteria2Fragments {
         if fragment >= total {
             return None;
         }
+        self.expire(now);
         let entry = match self.pending.get_mut(&packet) {
             Some(entry) if entry.total == total => entry,
             _ => {
@@ -1882,11 +1903,13 @@ impl Hysteria2Fragments {
                         address: address.clone(),
                         parts: vec![None; usize::from(total)],
                         received: 0,
+                        last_seen: now,
                     },
                 );
                 self.pending.get_mut(&packet).expect("inserted above")
             }
         };
+        entry.last_seen = now;
         let slot = entry.parts.get_mut(usize::from(fragment))?;
         if slot.is_some() {
             return None;
@@ -1903,6 +1926,17 @@ impl Hysteria2Fragments {
             payload.extend_from_slice(&part?);
         }
         Some((entry.address, payload))
+    }
+
+    /// Drop incomplete messages that no fragment refreshed within `MAX_AGE`.
+    fn expire(&mut self, now: std::time::Instant) {
+        if self.pending.is_empty() {
+            return;
+        }
+        self.pending.retain(|_, pending| {
+            now.saturating_duration_since(pending.last_seen) < Self::MAX_AGE
+        });
+        self.order.retain(|id| self.pending.contains_key(id));
     }
 }
 
@@ -2044,6 +2078,77 @@ mod tests {
         assert_eq!(name.host, "example.org");
         assert_eq!(name.port, 443);
         assert!(parse_authority("no-port").is_none());
+    }
+
+    #[test]
+    fn hysteria2_fragments_expire_incomplete_messages_like_the_pinned_lru() {
+        let mut fragments = Hysteria2Fragments::default();
+        let start = std::time::Instant::now();
+        assert!(fragments
+            .feed_at(start, 9, 0, 2, "1.2.3.4:53".into(), b"hello ".to_vec())
+            .is_none());
+        // A fragment within the 10 s age completes the message.
+        let (_, payload) = fragments
+            .feed_at(
+                start + std::time::Duration::from_secs(9),
+                9,
+                1,
+                2,
+                "1.2.3.4:53".into(),
+                b"world".to_vec(),
+            )
+            .expect("completes inside the age");
+        assert_eq!(payload, b"hello world");
+        // An abandoned message is dropped after 10 s: the late fragment must
+        // start a new message instead of completing the old one.
+        assert!(fragments
+            .feed_at(start, 10, 0, 2, "1.2.3.4:53".into(), b"first".to_vec())
+            .is_none());
+        fragments.expire(start + Hysteria2Fragments::MAX_AGE + std::time::Duration::from_secs(1));
+        assert!(fragments.pending.is_empty(), "the expired entry was reaped");
+        assert!(fragments
+            .feed_at(
+                start + Hysteria2Fragments::MAX_AGE + std::time::Duration::from_secs(1),
+                10,
+                1,
+                2,
+                "1.2.3.4:53".into(),
+                b"second".to_vec(),
+            )
+            .is_none());
+        assert_eq!(
+            fragments.pending.get(&10).map(|pending| pending.received),
+            Some(1),
+            "the stale fragment did not complete the expired message"
+        );
+    }
+
+    #[test]
+    fn hysteria2_udp_through_a_hop_is_a_named_chain_error() {
+        // The point of the load-time exemption: the config loads, but the
+        // association itself refuses the hop by name before any QUIC dial.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - {name: q, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\n",
+        )
+        .expect("yaml");
+        let proxies = crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+            .expect("a hysteria2 chain still loads");
+        let option = match &proxies[0].protocol {
+            crate::proxies::Protocol::Hysteria2(option) => option,
+            other => panic!("expected hysteria2, got {other:?}"),
+        };
+        let via: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+        let error = match futures_block_on(Hysteria2Udp::connect(
+            option,
+            &via,
+            std::time::Duration::from_secs(1),
+            &crate::outbound::tls::ClientTls::new(&[]),
+        )) {
+            Ok(_) => panic!("a chain must be refused"),
+            Err(error) => error,
+        };
+        let text = error.to_string();
+        assert!(text.contains("hysteria2 udp through hop"), "{text}");
     }
 
     /// A tiny block_on so the unit tests do not need a tokio test runtime.

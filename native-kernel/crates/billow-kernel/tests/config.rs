@@ -2067,7 +2067,7 @@ fn t27_socks5_udp_is_accepted_and_chain_is_named() {
 }
 
 #[test]
-fn t31_hysteria2_udp_is_always_enabled_and_a_chain_is_refused() {
+fn t31_hysteria2_udp_is_always_enabled_and_a_chain_loads() {
     // The pinned Hysteria2Option has no `udp` field: `udp: true` and
     // `udp: false` are tolerated no-ops and UDP stays enabled (the outbound
     // sets `UDP: true` in its Base). Traffic must never be accepted and then
@@ -2085,13 +2085,17 @@ fn t31_hysteria2_udp_is_always_enabled_and_a_chain_is_refused() {
             "hysteria2 UDP is unconditionally enabled ({flag})"
         );
     }
-    // A QUIC UDP session cannot be carried through a SOCKS5 hop, so the chain
-    // is refused by name instead of dialling the server around it.
-    let error = proxy_err(
-        "proxies:\n  - {name: q, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\nrules: ['MATCH,q']\n",
-    );
-    assert!(error.contains("hysteria2"), "{error}");
-    assert!(error.contains("SOCKS5"), "{error}");
+    // A QUIC UDP session cannot be carried through a hop, but the pinned
+    // client accepts the configuration and the runtime refuses only the
+    // association (a named `DialError::Chain`). The rule is DIRECT, so the
+    // chained proxy is unused: rejecting the whole file would take down every
+    // unrelated proxy with it.
+    let chained = load_config(
+        "proxies:\n  - {name: q, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\nrules: ['MATCH,DIRECT']\n",
+        "t",
+    )
+    .expect("a hysteria2 chain loads");
+    assert_eq!(chained.config.proxies[0].dialer_proxy(), Some("hop"));
 }
 
 #[test]

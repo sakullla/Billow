@@ -2,9 +2,17 @@
 
 Baseline: `evidence/t30-option-closure.md` (11 residual rows inside anytls,
 hysteria2 and vmess: hy2 6, anytls 2, vmess 3). Matrix:
-`evidence/option-matrix.txt` — **291 no-op / 87 implemented / 119 enabled,
+`evidence/option-matrix.txt` — **291 no-op / 88 implemented / 119 enabled,
 0 problems**. All T31 target-family rows are implemented/impl rows, including
 `hysteria2 obfs: gecko` and `realm-opts` at dial time.
+
+T31-A6 repair: the A5 load-time rejection of a hysteria2 `dialer-proxy` config
+was removed (baseline and pinned accept it); the limitation is now the named
+runtime `DialError::Chain` from the association only, a config test proves the
+file loads, and the option matrix carries `hysteria2 dialer-proxy` as an
+implemented row. Incomplete Hysteria2 UDP fragment reassembly now expires after
+10 s like the pinned `newUDPDefragger`, and a pinned UDP wrong-password case
+proves the datagram is not delivered by a DIRECT fallback.
 
 ## anytls — implemented and verified
 
@@ -38,7 +46,7 @@ AnyTLS password never reaches the sink.
 | `obfs: salamander` | `src/outbound/quic.rs::LayeredSocket` wraps the runtime's `quinn::AsyncUdpSocket`: each datagram gets an 8-byte random salt and is XORed with BLAKE2b-256(password ‖ salt), and replies are decoded before quinn sees them. | `tests/mihomo_peers.rs::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo`, `outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port` |
 | `ports`, `hop-interval` | The same wrapper rewrites the destination port to a randomly selected entry of the expanded `ports` range set, and maps replies from that port back to the configured base address (quinn drops a client packet from a changed remote address). A tokio task changes the port every `hop-interval` (pinned defaults: 30 s, minimum 5 s, reversed range collapses to its start). | `tests/mihomo_peers.rs::hysteria2_port_pool_selects_the_listed_port_through_mihomo`, `outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port`, `outbound::quic::tests::hop_interval_is_clamped_and_randomised` |
 | `up` (Brutal) | `src/outbound/quic.rs::Brutal` implements the pinned `transport/hysteria2/congestion/brutal.go` window: `bps * smoothed_rtt * 2 / ack_rate`, with the five one-second ACK/loss slots and the 0.8 ACK-rate floor, exposed through quinn's `Controller::window` (quinn has no separate pacing callback). | `tests/mihomo_peers.rs::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo` |
-| `udp` (QUIC datagram session) | `src/outbound/udp.rs::Hysteria2Udp` implements the pinned `sing-quic/hysteria2` datagram session (not the legacy `0x403` stream): `session id (u32 BE) \| packet id (u16 BE) \| fragment id \| fragment count \| varint address length \| "host:port" \| data`, one session id per association, where the server routes each message by its own destination. Replies are reassembled by packet id. `Proxy::udp_enabled()` reports hysteria2 as UDP-capable unconditionally (the pinned outbound sets `UDP: true` and has no `udp` field), and the mixed SOCKS5 path and the TUN path both relay through it. A `dialer-proxy` chain is refused by name because a QUIC socket cannot ride a SOCKS5 UDP hop. | `tests/mihomo_peers.rs::hysteria2_udp_reaches_the_receiving_side_through_mihomo`, `tests/mihomo_peers.rs::hysteria2_udp_fragments_a_large_datagram_through_mihomo`, `tests/config.rs::t31_hysteria2_udp_is_always_enabled_and_a_chain_is_refused`, `outbound::udp::tests::{hysteria2_datagram_layout_matches_the_pinned_udpmessage,hysteria2_fragments_reassemble_by_packet_id,hysteria2_authority_round_trips_ipv4_and_ipv6}` |
+| `udp` (QUIC datagram session) | `src/outbound/udp.rs::Hysteria2Udp` implements the pinned `sing-quic/hysteria2` datagram session (not the legacy `0x403` stream): `session id (u32 BE) \| packet id (u16 BE) \| fragment id \| fragment count \| varint address length \| "host:port" \| data`, one session id per association, where the server routes each message by its own destination. Replies are reassembled by packet id, and an incomplete message is dropped after 10 s without a fragment, matching the pinned `newUDPDefragger` LRU (plus the 64-entry bound). `Proxy::udp_enabled()` reports hysteria2 as UDP-capable unconditionally (the pinned outbound sets `UDP: true` and has no `udp` field), and the mixed SOCKS5 path and the TUN path both relay through it. A `dialer-proxy` chain is accepted at load (the pinned client accepts it); the association then refuses it by name (`DialError::Chain`) because a QUIC socket cannot ride a SOCKS5 UDP hop, so the rest of the configuration stays usable. | `tests/mihomo_peers.rs::hysteria2_udp_reaches_the_receiving_side_through_mihomo`, `tests/mihomo_peers.rs::hysteria2_udp_fragments_a_large_datagram_through_mihomo`, `tests/mihomo_peers.rs::hysteria2_udp_wrong_password_never_reaches_the_echo`, `tests/config.rs::t31_hysteria2_udp_is_always_enabled_and_a_chain_loads`, `outbound::udp::tests::{hysteria2_datagram_layout_matches_the_pinned_udpmessage,hysteria2_fragments_reassemble_by_packet_id,hysteria2_fragments_expire_incomplete_messages_like_the_pinned_lru,hysteria2_udp_through_a_hop_is_a_named_chain_error,hysteria2_authority_round_trips_ipv4_and_ipv6}` |
 | `udp-mtu` | Applied both as the QUIC initial path MTU (`udp_mtu + 3`, clamped to 1200..1452; the pinned default 1197 is 1200 - 3) and as the Hysteria2 session fragmentation bound: each datagram that exceeds `udp-mtu - header` is split into `fragment count` messages and reassembled by `packet id`. The effective limit is `min(udp-mtu, quinn max_datagram_size)`. | `tests/mihomo_peers.rs::hysteria2_udp_fragments_a_large_datagram_through_mihomo`, `tests/quic_peers.rs::hysteria2_transport_options_are_parsed` |
 | `obfs: gecko` | `quic.rs::Gecko` wraps Salamander and fragments every QUIC long-header packet into 2..8 padded chunks (`0x80 \| msg id \| index<<4 \| total \| pad length \| pad \| chunk`), each inside its own Salamander frame; replies are reassembled with the pinned 8 s TTL, per-source (8) and global (4096) caps. `obfs-min-packet-size`/`obfs-max-packet-size` select the on-wire range (defaults 512/1200, validated like the pinned client). | `tests/mihomo_peers.rs::hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo`, `outbound::quic::tests::gecko_fragments_long_headers_and_reassembles_them` |
 | `bbr-profile` | quinn's BBR has no upstream profile selector; the profile maps to the BBR initial window (conservative/standard/aggressive = 24/32/40 packets) and now takes precedence over `cwnd` in the BBR arm. A2 set `cwnd` unconditionally, which made the profile branch unreachable; the mapping is still a recorded approximation, not gain parity. | `tests/mihomo_peers.rs::hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo`, `outbound::quic::tests::bbr_profile_selects_the_initial_window` |
@@ -93,8 +101,13 @@ listener accepts the configured client identity. Evidence:
 ## hysteria2 — named residuals
 
 - `ech-opts` is rejected by both engines.
-- A `dialer-proxy` chain is refused by name for hysteria2 (QUIC over a SOCKS5
-  UDP hop is not implemented); the association is never dialled around it.
+- A `dialer-proxy` chain is a per-association runtime limitation, not a load
+  restriction: the configuration loads exactly as the pinned client accepts it,
+  and only the UDP association refuses the hop by name (QUIC over a SOCKS5 UDP
+  hop is not implemented); the association is never dialled around it. The
+  TCP-side chain is likewise refused at dial time. The option matrix carries a
+  `hysteria2 dialer-proxy` `impl` row so a regression to load-time rejection is
+  visible.
 
 ## vmess — implemented and verified
 
@@ -132,8 +145,8 @@ Evidence: `tests/mihomo_peers.rs::vmess_over_tlsmirror_reaches_the_receiving_sid
 
 ## Verification
 
-- `cargo test --manifest-path native-kernel/Cargo.toml --locked`: all default suites pass (189 lib + 1 ignored, 53 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 96 ignored mihomo peer cases).
-- `tool/kernel-compat/peer-tests.sh`: **96 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 gecko, hy2 bbr-profile, hy2 realm, hy2 realm fingerprint pin (matching and wrong), hy2 realm control mTLS (present and missing), hy2 port pool, vmess mkcp/mekya/tlsmirror, and the two hysteria2 UDP cases).
-- `node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>`: 291 / 87 / 119, 0 problems (re-run on this build; the matrix is byte-identical apart from the rust binary path comment); no T31 target row remains as an enabled rejection.
+- `cargo test --manifest-path native-kernel/Cargo.toml --locked`: all default suites pass (191 lib + 1 ignored, 53 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 97 ignored mihomo peer cases).
+- `tool/kernel-compat/peer-tests.sh`: **97 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 gecko, hy2 bbr-profile, hy2 realm, hy2 realm fingerprint pin (matching and wrong), hy2 realm control mTLS (present and missing), hy2 port pool, vmess mkcp/mekya/tlsmirror, and the three hysteria2 UDP cases including the wrong-password negative).
+- `node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>`: 291 / 88 / 119, 0 problems (re-run on this build; the new `hysteria2 dialer-proxy` row is `rust=accept mihomo=accept`); no T31 target row remains as an enabled rejection.
 - `node --test tool/kernel-compat/runner.test.mjs`: 10 passed.
 - Differentials against the same pinned binary: t22 22 pass / 1 skipped / 0 differ; t23 28 pass / 1 persistence / 0 differ; t24 36 pass / 2 skipped / 0 differ / 0 unexpected (8 recorded inbound framing differences on this run; one initial-attempt timeout-vs-close normalization differs from the previous 7, with no outcome difference); t25 47/49 equal / 2 recorded divergences / 0 unexpected; t5 12/12 scenarios / 0 differ.

@@ -637,6 +637,17 @@ for (const [type, key, base, option] of [
   implemented.push({ type, key, base, option })
 }
 
+// T31 repair: a hysteria2 `dialer-proxy` chain is accepted at load (the pinned
+// client accepts it) and refused only by the association at dial time, so the
+// config must load; a load-time rejection here would hide that regression.
+implemented.push({
+  type: 'hysteria2',
+  key: 'dialer-proxy',
+  base: bases.hysteria2.on,
+  option: 'dialer-proxy: hop',
+  extra: '  - {name: hop, type: socks5, server: 127.0.0.1, port: 1080}\n',
+})
+
 // T28 second batch: the shared stream dialer families (mieru/sudoku) now take
 // the BasicOption knobs, the shadowquic QUIC endpoint applies the UDP-relevant
 // ones, masque maps its QUIC controller, and trojan implements `ss-opts`.
@@ -715,11 +726,11 @@ function runCase({ type, key, base, option }, expectReject, group) {
   lines.push(`${label} ${verdict}${rustRejected && rustNamed ? '' : expectReject ? '' : ''}`)
 }
 
-function runImplemented({ type, key, base, option }) {
+function runImplemented({ type, key, base, option, extra = '' }) {
   const config = join(dir, `impl-${type}-${key}.yaml`.replace(/[^a-z0-9.-]/gi, '-'))
   writeFileSync(
     config,
-    `mixed-port: 1\nproxies:\n  - {name: p, type: ${type}, ${base}, ${option}}\nrules:\n  - 'MATCH,p'\n`,
+    `mixed-port: 1\nproxies:\n  - {name: p, type: ${type}, ${base}, ${option}}\n${extra}rules:\n  - 'MATCH,p'\n`,
   )
   rustPort = rustPort === 17991 ? 17992 : 17991
   const rust = spawnSync(binary, [config, '--check', '--port', String(rustPort)], { encoding: 'utf8' })
