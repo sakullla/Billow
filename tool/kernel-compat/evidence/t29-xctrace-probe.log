@@ -1,0 +1,15 @@
+Starting recording with the Allocations template and VM Tracker Instrument. Attaching to: sleep (40501). Time limit: 3.0 s
+Ctrl-C to stop the recording
+Run issues were detected (trace is still ready to be viewed):
+* [Error] Failed to start the recording: _lockKPerf: could not lock kperf. Likely another session just started.
+
+* [Error] Failed to attach to target: Target process is marked restricted and cannot be traced while System Integrity Protection is enabled.
+
+* [Error] Failed to attach to target process
+
+	* [Error] Target process is marked restricted and cannot be traced while System Integrity Protection is enabled.
+
+		* [Error] Recovery Suggestion: Please refer to csrutil documentation for instructions on how to disable System Integrity Protection.
+
+Recording failed with errors. Saving output file...
+Output file saved as: probe2.trace

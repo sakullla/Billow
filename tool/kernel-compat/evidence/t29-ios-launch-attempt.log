@@ -1,0 +1,31 @@
+== listapps after install
+{
+    "app.billow.client.rust" =     {
+        ApplicationType = User;
+        Bundle = "file:///Users/yanggeng/Library/Developer/CoreSimulator/Devices/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01/data/Containers/Bundle/Application/DCB03C2F-0B9C-45D5-8854-3741163A5EDF/BillowRust.appex.app/";
+        BundleContainer = "file:///Users/yanggeng/Library/Developer/CoreSimulator/Devices/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01/data/Containers/Bundle/Application/DCB03C2F-0B9C-45D5-8854-3741163A5EDF/";
+        CFBundleDisplayName = BillowRust;
+        CFBundleExecutable = BillowRust;
+        CFBundleIdentifier = "app.billow.client.rust";
+        CFBundleName = BillowRust;
+        CFBundleShortVersionString = "1.0";
+        CFBundleVersion = 1;
+        DataContainer = "file:///Users/yanggeng/Library/Developer/CoreSimulator/Devices/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01/data/Containers/Data/Application/41CC6D34-D01D-48C5-B7A3-B7056ACF9652/";
+        GroupContainers =         {
+        };
+        IsAppClip = 0;
+--
+        IsHidden = 0;
+        IsRemovable = 1;
+        Path = "/Users/yanggeng/Library/Developer/CoreSimulator/Devices/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01/data/Containers/Bundle/Application/DCB03C2F-0B9C-45D5-8854-3741163A5EDF/BillowRust.appex.app";
+        SBAppTags =         (
+        );
+    };
+    "com.apple.Bridge" =     {
+        ApplicationType = System;
+        Bundle = "file:///private/var/run/com.apple.security.cryptexd/mnt/com.apple.iPhoneOS.SimulatorRuntime-v24.1.434.0.h1xHcy/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS%2027.0.simruntime/Contents/Resources/RuntimeRoot/Applications/Bridge.app/";
+== process
+(no billow launchctl job)
+== last crash
+BillowRust-2026-11-24-090712.ips
+billow-2026-11-17-202506.ips

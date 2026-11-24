@@ -1,0 +1,9 @@
+== host (BILLOW_ENGINE_HOST): billed target Sources = Shared + Host
+   ok
+== BillowMihomo (BILLOW_ENGINE_MIHOMO): Shared + MihomoExtension
+   ok
+== BillowRust (BILLOW_ENGINE_RUST): Shared + RustExtension
+   ok
+== host non-Swift entry (Sources/billow/main.mm)
+   ok
+ok: all three iOS Swift targets type-check with their own condition

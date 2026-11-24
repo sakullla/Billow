@@ -1,8 +1,16 @@
-# Device verification entry (T3 / T7) — NOT EXECUTED
+# Device verification entry (T3 / T7 / T29) — NOT EXECUTED
 
 T3 ran on macOS 27.2 / Xcode 27.2 / Go 1.26.2 with no Apple signing identity
 assigned to a Team, no provisioned device and no controlled remote endpoint.
-Everything below needs that environment.
+
+T29 re-ran the unsigned/simulator side on 2026-11-24 (macOS 27.0, Xcode 27.2,
+iOS 27.2 SDK, candidate `billow-kernel 0.1.0` sha256
+`be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521`):
+`tool/ios/verify-rust-kernel.sh` passed, `tool/ios/verify-host-sources.sh`
+passed, and all four `BillowRust`/`BillowMihomo` simulator/device builds
+succeeded with `CODE_SIGNING_ALLOWED=NO`. The physical iPhone 15 Pro Max and
+iPad are still `unavailable` in `xcrun devicectl list devices`, so every device
+step below remains unexecuted. Simulator results are not R3/R4 evidence.
 
 ## Prerequisites
 
@@ -32,20 +40,31 @@ Everything below needs that environment.
    version `v1.19.34`; after **连接** the VPN system icon appears and
    `ios_vpn_status("mihomo")` reports
    `extensionId == app.billow.client.mihomo`. Select Rust and **连接** again:
-   with `Externals/arm64/rust/libapp.a` linked, `ios_vpn_status("rust")`
-   reports `billow-rust 0.1.0` and `stats.peakRssBytes`; without the archive
-   the row shows code 4 (`engineNotAvailable`) from `status/rust.json`.
-   Each connect must produce exactly one completion: connected, or the mapped
-   error (4, 10 `hostNotReady`, or 2 with the Rust message).
+   with `Externals/arm64/device/rust/libapp.a` linked, `ios_vpn_status("rust")`
+   reports `billow-rust 0.1.0`; without the archive the row shows code 4
+   (`engineNotAvailable`) from `status/rust.json`. Each connect must produce
+   exactly one completion: connected, or the mapped error (4, 10
+   `hostNotReady`, or 2 with the Rust message).
+   **Current host surface:** `ios_vpn_status` returns only
+   `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt`.
+   The extension's `status` reply carries `stats`, but `ProviderStatus` has no
+   `stats` field and `BillowMobileBridge.statusDictionary` drops it, so
+   `ios_vpn_status("rust").stats` does not exist yet. Do not claim
+   `stats.peakRssBytes` from the host command until that product gap is fixed.
 7. Traffic: request the controlled TCP HTTP endpoint and a UDP DNS query to
    the controlled resolver from another app; confirm payloads on the server
-   side and in `ios_vpn_status("rust").stats` (`tcpOpened`, `udpReplies`,
-   `dnsQueries`). Two device sockets to the same remote must not receive each
-   other's UDP replies (per-flow NAT key).
+   side, the system VPN counters, and the extension logs. Structured
+   `tcpOpened/udpReplies/dnsQueries` live in the extension status reply's
+   `stats`; the host currently drops them, so either add the host passthrough
+   (product change) or read them with a debugger/extension log. Two device
+   sockets to the same remote must not receive each other's UDP replies
+   (per-flow NAT key).
 8. Stop/restart three times (**断开** / **连接**); each start must report a
    fresh `startedAt` and no stale error; re-check after a Wi-Fi -> cellular
    switch (path monitor re-applies settings). **重载** calls
-   `ios_vpn_reload`; `stats.generation` increments and `tcpFlows == 0`.
+   `ios_vpn_reload`; verify traffic still flows and the extension reload log is
+   present. `stats.generation == +1` and `tcpFlows == 0` require the same
+   host stats passthrough described in step 6.
 9. Failure paths: corrupt a file in `versions/<v>/` -> start must fail with
    code 1 (fileMismatch) and the previous version must stay listed; remove
    the App Group entitlement -> code 1 "App Group unavailable".
@@ -63,40 +82,63 @@ UDP exchange observed at the endpoint.
 
 ## T7 — Rust extension
 
-Build the kernel archive before the host build and keep the extension linked
-(`resolve-mihomo.sh` prints `BillowRust: linking Rust kernel <path>`):
+Build both kernel archives before the host build and keep the extension
+linked (`resolve-mihomo.sh` prints `BillowRust: linking Rust kernel <path>`):
 
 ```sh
-node tool/ios/build-rust-kernel.mjs --platform device
+node tool/ios/build-rust-kernel.mjs --platform all
+# linked.xcconfig is read at project load, so resolve the device archive
+# explicitly before a device build; otherwise a stale simulator path can be
+# linked into the device appex (observed in T29).
 (cd src-tauri/gen/apple && SRCROOT="$PWD" SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
   sh network-extension/RustExtension/resolve-mihomo.sh)
+xcodebuild -project src-tauri/gen/apple/billow.xcodeproj -scheme BillowRust \
+  -configuration release -sdk iphoneos -destination 'generic/platform=iOS' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
+
+For a simulator build, point `SDKROOT` at `iphonesimulator` (or let the
+simulator archive be selected) before `xcodebuild -sdk iphonesimulator`; the
+same toggle applies to `BillowMihomo`.
 
 Simulator smoke (no signing): `tool/ios/verify-rust-kernel.sh` — version,
 stats, missing-config error, start with a real `config.yaml`, one UDP datagram
 through DIRECT to a host echo server and back through `port->write`, reload,
 stop/restart. It proves the ABI and the data path on the simulator only.
+Installing a standalone `.appex` with `simctl` and launching its bundle id
+does **not** exercise the Packet Tunnel provider: T29's attempt crashed in
+`NSExtensionMain` (`EXC_BREAKPOINT`) because no host app activated it. A real
+check needs the signed host + provisioning profile on a device.
 
 Device checks that still need the iPhone:
 
-1. `ios_vpn_status("rust")` reports `extensionId == app.billow.client.rust`,
-   the embedded `billow-rust 0.1.0`, and `stats.peakRssBytes` once running.
+1. `ios_vpn_status("rust")` reports `extensionId == app.billow.client.rust`
+   and the embedded `billow-rust 0.1.0` once running. It currently does **not**
+   return `stats.peakRssBytes` (host passthrough gap, see step 6 above); R3
+   peak comes from Instruments.
 2. Start the Rust extension from the app's real settings screen with the same
    configuration version the Mihomo extension uses (`status/<engine>.json`
    both present, exactly one start completion).
 3. Traffic both ways: a controlled TCP HTTP request and a UDP DNS query from
-   another app; confirm the payloads at the endpoint and in
-   `status/rust.json`/`stats` (`tcpOpened`, `udpReplies`, `dnsQueries`).
-4. `reload` from the host (`ProviderCommand.reload`) returns ok and `stats`
-   shows `generation` +1, `tcpFlows == 0`.
+   another app; confirm the payloads at the endpoint and in the extension
+   logs. The `tcpOpened/udpReplies/dnsQueries` counters are in the extension
+   status reply's `stats`, which the host drops today.
+4. `reload` from the host (`ProviderCommand.reload`) returns ok and traffic
+   continues. `stats.generation` +1 / `tcpFlows == 0` need the host stats
+   passthrough; until then confirm the reload in the extension log.
 5. Memory and reclaim: follow
    `docs/testing/2026-11-23-ios-rust-extension-memory.md` (R3 ≤ 40,000,000
-   bytes `phys_footprint` per scenario, R4 repeatable idle baseline). Attach
-   `xctrace --template 'VM Tracker' --attach BillowRust`; record device model,
-   iOS version, app build, PID and the stats JSON for every scenario.
+   bytes `phys_footprint` per scenario, R4 repeatable idle baseline). Use
+   `xcrun xctrace record --template 'Allocations' --instrument 'VM Tracker'
+   --attach <BillowRust-PID>` (`VM Tracker` is an instrument, not a template);
+   record device model, iOS version, app build, PID and the raw trace. The
+   stats JSON is not host-visible yet (step 6), so R4 counters need the host
+   passthrough or a debugger read.
 6. Failure paths: missing `config.yaml` → code 2 with the path; unlinked
    archive → code 4; no `engine.json` → code 10.
 
-No device was connected during T7-A1, so none of the device items above have
-results; the simulator smoke and the host tests are recorded in
-`tool/kernel-compat/evidence/t7-ios-ffi.md`.
+No device was connected during T7-A1 or T29-A1, so none of the device items
+above have results. The T7 simulator/host records are in
+`tool/kernel-compat/evidence/t7-ios-ffi.md`; the T29 re-run, exact build
+commands, hashes and blockers are in
+`tool/kernel-compat/evidence/t29-platform-matrix.md`.

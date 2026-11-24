@@ -1,0 +1,233 @@
+{"app_name":"BillowRust","timestamp":"2026-11-24 09:07:12.00 +0800","app_version":"1.0","slice_uuid":"cfe74134-5d2c-30e0-b1b6-dcdba9a14b34","build_version":"1","platform":7,"bundleID":"app.billow.client.rust","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 27.0 (26A428)","roots_installed":0,"name":"BillowRust","incident_id":"AA74FA01-692D-49C7-95FA-6A243E5E1617"}
+{
+  "uptime" : 520000,
+  "procRole" : "Foreground",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac15,12",
+  "coalitionID" : 18021,
+  "osVersion" : {
+    "train" : "macOS 27.0",
+    "build" : "26A428",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2026-11-24 09:07:11.2156 +0800",
+  "codeSigningMonitor" : 2,
+  "incident" : "AA74FA01-692D-49C7-95FA-6A243E5E1617",
+  "pid" : 40739,
+  "translated" : false,
+  "cpuType" : "ARM-64",
+  "procLaunch" : "2026-11-24 09:07:10.7553 +0800",
+  "procStartAbsTime" : 12673067211895,
+  "procExitAbsTime" : 12673076688457,
+  "procName" : "BillowRust",
+  "procPath" : "\/Users\/USER\/Library\/Developer\/CoreSimulator\/Devices\/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01\/data\/Containers\/Bundle\/Application\/DCB03C2F-0B9C-45D5-8854-3741163A5EDF\/BillowRust.appex.app\/BillowRust",
+  "bundleInfo" : {"CFBundleShortVersionString":"1.0","CFBundleVersion":"1","CFBundleIdentifier":"app.billow.client.rust"},
+  "storeInfo" : {"deviceIdentifierForVendor":"490BEE7A-973B-5BA7-B111-EFEBE528AEA1","thirdParty":true},
+  "parentProc" : "launchd_sim",
+  "parentPid" : 11517,
+  "coalitionName" : "com.apple.CoreSimulator.SimDevice.001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01",
+  "crashReporterKey" : "7A4AE649-5257-CE9E-851B-946D381FA499",
+  "chargingStatus" : {"externalSourceConnected":true},
+  "developerMode" : 1,
+  "bootProgressRegister" : "0x2f000000",
+  "responsiblePid" : 11472,
+  "responsibleProc" : "SimulatorTrampoline",
+  "codeSigningID" : "BillowRust",
+  "codeSigningTeamID" : "",
+  "codeSigningFlags" : 570556929,
+  "codeSigningValidationCategory" : 10,
+  "codeSigningTrustLevel" : 4294967295,
+  "codeSigningAuxiliaryInfo" : 0,
+  "instructionByteStream" : {"beforePC":"CAVH+egDAPniAADQQvQqkfMjAJHgIwCRARSAUpGZAJRILTewEwkG+Q==","atPC":"IAAg1NKWAJSoFzGwCHlH+QMBQPngAADQAKgpkeEEgFIiAIBSR5gAlA=="},
+  "bootSessionUUID" : "CC65BF26-9E4F-4696-98DC-B7F402BB1DFE",
+  "sip" : "enabled",
+  "exception" : {"codes":"0x0000000000000001, 0x00000001c0122830","rawCodes":[1,7517382704],"type":"EXC_BREAKPOINT","signal":"SIGTRAP"},
+  "termination" : {"flags":0,"code":5,"namespace":"SIGNAL","indicator":"Trace\/BPT trap: 5","byProc":"exc handler","byPid":40739},
+  "os_fault" : {"process":"BillowRust"},
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":0,"task_for_pid":13},"targeted":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"warnings":0},
+  "faultingThread" : 0,
+  "threads" : [{"triggered":true,"id":31754623,"threadState":{"x":[{"value":100},{"value":7517514178},{"value":0},{"value":6156588188},{"value":1360918149},{"value":8},{"value":7305798977971385120},{"value":6156587464},{"value":9368809472,"symbolLocation":32,"symbol":"OBJC_METACLASS_$_OS_xpc_payload"},{"value":8499616236016369704},{"value":91},{"value":2340027244185872756},{"value":7885647255506088545},{"value":7305798977971385120},{"value":16},{"value":2322280104427864864},{"value":7517145600,"symbolLocation":0,"symbol":"free"},{"value":7516717748,"symbolLocation":0,"symbol":"-[NSObject dealloc]"},{"value":0},{"value":6156588088},{"value":0},{"value":0},{"value":9213405784,"symbolLocation":0,"symbol":"type metadata for OSSignpostID"},{"value":2},{"value":4332864032},{"value":9213410856,"symbolLocation":0,"symbol":"type metadata for OSSignposter"},{"value":6156589328},{"value":7539034892,"symbolLocation":0,"symbol":"swift_cvw_destroy"},{"value":8017535824,"symbolLocation":0,"symbol":"__swift_noop_void_return"}],"flavor":"ARM_THREAD_STATE64","lr":{"value":7517382696},"cpsr":{"value":1610616832},"fp":{"value":6156588272},"sp":{"value":6156588080},"esr":{"value":4060086273,"description":"(Breakpoint) brk 1"},"pc":{"value":7517382704,"matchesCrashFrame":1},"far":{"value":0}},"queue":"com.apple.main-thread","frames":[{"imageOffset":133168,"symbol":"_xpc_copy_xpcservice_dictionary","symbolLocation":216,"imageIndex":7},{"imageOffset":128360,"symbol":"_xpc_connection_create_service_listener","symbolLocation":56,"imageIndex":7},{"imageOffset":129992,"symbol":"xpc_main","symbolLocation":28,"imageIndex":7},{"imageOffset":2048732,"symbol":"-[NSXPCListener resume]","symbolLocation":256,"imageIndex":8},{"imageOffset":84864,"imageIndex":9},{"imageOffset":129660,"imageIndex":9},{"imageOffset":83856,"imageIndex":9},{"imageOffset":85672,"imageIndex":9},{"imageOffset":188340,"symbol":"EXExtensionMain(_:_:)","symbolLocation":2888,"imageIndex":10},{"imageOffset":1348696,"symbol":"NSExtensionMain","symbolLocation":172,"imageIndex":8},{"imageOffset":66384,"symbol":"start_sim","symbolLocation":20,"imageIndex":1},{"imageOffset":204416,"symbol":"start","symbolLocation":6688,"imageIndex":6}]},{"id":31754686,"frames":[],"threadState":{"x":[{"value":6157152256},{"value":3843},{"value":6156615680},{"value":0},{"value":409604},{"value":18446744073709551615},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0}],"flavor":"ARM_THREAD_STATE64","lr":{"value":0},"cpsr":{"value":4096},"fp":{"value":0},"sp":{"value":6157152256},"esr":{"value":1442840704,"description":"(Syscall)"},"pc":{"value":4314454644},"far":{"value":0}}},{"id":31754687,"frames":[],"threadState":{"x":[{"value":6157725696},{"value":8195},{"value":6157189120},{"value":0},{"value":409604},{"value":18446744073709551615},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0},{"value":0}],"flavor":"ARM_THREAD_STATE64","lr":{"value":0},"cpsr":{"value":4096},"fp":{"value":0},"sp":{"value":6157725696},"esr":{"value":1442840704,"description":"(Syscall)"},"pc":{"value":4314454644},"far":{"value":0}}}],
+  "usedImages" : [
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4310286336,
+    "CFBundleShortVersionString" : "1.0",
+    "CFBundleIdentifier" : "app.billow.client.rust",
+    "size" : 16384,
+    "uuid" : "cfe74134-5d2c-30e0-b1b6-dcdba9a14b34",
+    "path" : "\/Users\/USER\/Library\/Developer\/CoreSimulator\/Devices\/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01\/data\/Containers\/Bundle\/Application\/DCB03C2F-0B9C-45D5-8854-3741163A5EDF\/BillowRust.appex.app\/BillowRust",
+    "name" : "BillowRust",
+    "CFBundleVersion" : "1"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4312907776,
+    "size" : 376832,
+    "uuid" : "6fae6738-0877-3f55-80b9-6ae42fcb8606",
+    "path" : "\/Volumes\/VOLUME\/*\/dyld_sim",
+    "name" : "dyld_sim"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4310351872,
+    "size" : 245760,
+    "uuid" : "987879ea-86a1-3427-b452-cd3400395785",
+    "path" : "\/Users\/USER\/Library\/Developer\/CoreSimulator\/Devices\/001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01\/data\/Containers\/Bundle\/Application\/DCB03C2F-0B9C-45D5-8854-3741163A5EDF\/BillowRust.appex.app\/BillowRust.debug.dylib",
+    "name" : "BillowRust.debug.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4310974464,
+    "size" : 49152,
+    "uuid" : "284a4cd2-a934-3ba7-9277-47f5ef53d245",
+    "path" : "\/usr\/lib\/system\/libsystem_platform.dylib",
+    "name" : "libsystem_platform.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4315611136,
+    "size" : 262144,
+    "uuid" : "b07862d0-c2de-3aed-898c-88190e38064e",
+    "path" : "\/usr\/lib\/system\/libsystem_kernel.dylib",
+    "name" : "libsystem_kernel.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4314447872,
+    "size" : 65536,
+    "uuid" : "08833bec-e49c-31b7-85fd-6ef2bac2b425",
+    "path" : "\/usr\/lib\/system\/libsystem_pthread.dylib",
+    "name" : "libsystem_pthread.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64e",
+    "base" : 4311416832,
+    "size" : 786432,
+    "uuid" : "d341ddcb-7969-3a9c-8e03-0cf4751398a9",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7517249536,
+    "size" : 290924,
+    "uuid" : "9d3f74e7-3220-393a-9a25-1988de69945e",
+    "path" : "\/Volumes\/VOLUME\/*\/libxpc.dylib",
+    "name" : "libxpc.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7521136640,
+    "size" : 17443021,
+    "uuid" : "49fcda5f-a93e-3259-857c-fc75ac2c7b03",
+    "path" : "\/Volumes\/VOLUME\/*\/Foundation.framework\/Foundation",
+    "name" : "Foundation"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 8261189632,
+    "size" : 187488,
+    "uuid" : "38566753-8753-31d2-9fe7-4cc3c2386383",
+    "path" : "\/Volumes\/VOLUME\/*\/PlugInKit.framework\/PlugInKit",
+    "name" : "PlugInKit"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7623458816,
+    "size" : 1166756,
+    "uuid" : "b6e36884-66e0-3f8f-8d98-c4db4ce8dc2b",
+    "path" : "\/Volumes\/VOLUME\/*\/ExtensionFoundation.framework\/ExtensionFoundation",
+    "name" : "ExtensionFoundation"
+  },
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7516930048,
+    "size" : 315668,
+    "uuid" : "089be0c7-7dd4-37e1-9339-3db24e1716d5",
+    "path" : "\/Volumes\/VOLUME\/*\/libsystem_malloc.dylib",
+    "name" : "libsystem_malloc.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7516553216,
+    "size" : 240396,
+    "uuid" : "be39d4b4-e739-3435-a06f-6ba0855c8458",
+    "path" : "\/Volumes\/VOLUME\/*\/libobjc.A.dylib",
+    "name" : "libobjc.A.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 7539011584,
+    "size" : 4962641,
+    "uuid" : "4bac37fd-036c-3819-88c4-d0183173216a",
+    "path" : "\/Volumes\/VOLUME\/*\/libswiftCore.dylib",
+    "name" : "libswiftCore.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 8017530880,
+    "size" : 107480,
+    "uuid" : "4c5a513b-f174-3ece-9231-273fc2ff9793",
+    "path" : "\/Volumes\/VOLUME\/*\/libswiftos.dylib",
+    "name" : "libswiftos.dylib"
+  }
+],
+  "sharedCache" : {
+  "base" : 7516192768,
+  "size" : 3956064256,
+  "uuid" : "5827bb56-52e1-3d0b-ac02-7a3201246563"
+},
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "logWritingSignature" : "51fac578f951f60fe1fc3e04f91556485aa61ef1",
+  "bug_type" : "309",
+  "roots_installed" : 0,
+  "trmStatus" : 1,
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "63f9578e238e7b23a1f3030a",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000005
+    },
+    {
+      "rolloutId" : "5ffde50ce2aacd000d47a95f",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000563
+    }
+  ],
+  "experiments" : [
+
+  ]
+}
+}

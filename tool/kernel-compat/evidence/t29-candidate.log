@@ -1,0 +1,18 @@
+== sha256
+be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521  /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t29/runtime-package/billow-kernel
+== version
+billow-kernel 0.1.0
+== check (mixed-port 63810)
+[01:13:19.471 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=0f10ad40-07e8-44f5-9c42-fb4c0611996e pid=43098 version="0.1.0" listen=127.0.0.1:63810
+instance=0f10ad40-07e8-44f5-9c42-fb4c0611996e pid=43098 version=0.1.0 listen=127.0.0.1:63810 overridden_port=- config=sha256:8fed0b344d94c05304b9e7b99dac1efe639ca7d539b7ba5f868cc3e19ed9d50e rules=1 geosite_dir=- state_dir=-
+[01:13:19.471 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0
+[01:13:19.471 INFO  billow_kernel::engine] message=all session tasks joined; listener released
+[01:13:19.471 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0f10ad40-07e8-44f5-9c42-fb4c0611996e sessions=0 active=0 finished=0
+configuration accepted
+== packaged rust-kernel.json
+{
+  "version": "0.1.0",
+  "target": "darwin-aarch64",
+  "triple": "aarch64-apple-darwin",
+  "sha256": "be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521"
+}

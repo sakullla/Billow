@@ -1,9 +1,10 @@
-# iOS Rust 扩展内存与回收验证入口（R3/R4，T7）
+# iOS Rust 扩展内存与回收验证入口（R3/R4，T7 / T29）
 
-- 状态：**入口已就绪，真机测量未执行**。
+- 状态：**入口已就绪，真机测量未执行**（T29 于 2026-11-24 复核，物理 iPhone/iPad 仍为 `unavailable`）。
 - 需求：`docs/requirements/2026-11-20-native-rust-kernel.md` 的 R3（整个 VPN 系统扩展峰值 ≤ 40,000,000 字节，十进制）与 R4（重复使用后资源可回收、空闲基线稳定）。
-- 本次环境：macOS 27.2 / Xcode 27.2 / iOS 27.2 SDK。`xcrun devicectl list devices` 显示 iPhone 15 Pro Max 未连接（unavailable），模拟器 iPhone 18 Pro（iOS 27.0）已启动。
-- 因此：**没有任何真机峰值、系统终止或逐轮基线数字**。已执行的构建、宿主测试与模拟器 smoke 见 `tool/kernel-compat/evidence/t7-ios-ffi.md`；模拟器 smoke 进程的 `peakRssBytes`（约 25–28 MB）是 smoke 二进制本身的读数，不是扩展峰值，不能作为 R3 依据。
+- 本次环境（T29）：macOS 27.0 / Xcode 27.2 / iOS 27.2 SDK；模拟器 iPhone 18 Pro（iOS 27.0）已启动。`xcrun devicectl list devices` 显示 iPhone 15 Pro Max 与 iPad 均为 `unavailable`。
+- T29 复核候选：`billow-kernel 0.1.0`，sha256 `be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521`；模拟器 C ABI smoke、宿主源集 typecheck 与两个扩展的 simulator/device unsigned 构建均通过，但**仍没有真机峰值、系统终止或逐轮基线数字**。
+- 模拟器 smoke 进程的 `peakRssBytes`（T29 为 28,491,776）是 smoke 二进制本身的读数，不是扩展峰值，不能作为 R3 依据。已执行的构建与 smoke 见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 与 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
 
 ## 1. 被测对象与身份
 
@@ -19,20 +20,22 @@
 
 记录每次测量都必须带上：iPhone 型号、iOS 版本、App 构建号、manifest 版本、PID、`billow-rust 0.1.0`、当前配置代次。
 
-## 2. 采样接口
+## 2. 采样接口（按 2026-11-24 当前代码）
 
-内核提供两条互补的采样路径，两者都要记录，因为它们回答不同问题：
+内核提供两条互补的采样路径，但**第一条的结构化计数当前尚未透传到宿主**，执行前必须先核对这一边界：
 
-1. **`billow_ios_vpn_stats`（JSON，无 Instruments 也能取）**
-   - 扩展 `handleAppMessage` 的 `status` 回复把同一对象放在 `stats` 键（`RustTunnelProvider.swift`）。
-   - 含 `peakRssBytes`（`getrusage(RUSAGE_SELF).ru_maxrss`，Darwin 为字节）、`tcpFlows/tcpFlowHigh`、`udpFlows/udpFlowHigh`、`queuedPackets/queueHigh`、`droppedInbound/droppedEgress`、`dnsQueries`、`generation/reloads`。
-   - 用途：逐轮对比空闲基线、确认连接/队列归零、关联配置代次。
+1. **`billow_ios_vpn_stats` C ABI（扩展进程内）**
+   - 头文件 `RustExtension/include/billow_ios_vpn.h`；扩展桥接层导出为 `billow_rust_kernel_stats`（`RustKernelBridge.c`），`BillowRustEngine.statsJSON()` 调用它。
+   - 返回一个 JSON 对象，当前键：`running`、`version`、`generation`、`reloads`、`peakRssBytes`（`getrusage(RUSAGE_SELF).ru_maxrss`，Darwin 为字节）、`inPackets/inBytes/outPackets/outBytes`、`tcpOpened/tcpClosed/tcpRejected/tcpFlows/tcpFlowHigh`、`udpDatagrams/udpReplies/udpFlows/udpFlowHigh`、`dnsQueries/dnsFailures`、`invalidPackets/fragments/unsupportedProtocols/icmpDropped`、`droppedInbound/droppedEgress`、`queueHigh/queuedPackets`。
+   - 扩展的 `RustTunnelProvider.handleAppMessage` 处理 `command == "status"` 时，把该对象放在回复的 `stats` 键下。
+   - **宿主透传缺口**：宿主 `BillowVPNManager.status(of:)` 用 `ProviderSupport.decodeStatus` 解码成 `ProviderStatus`，该结构没有 `stats` 字段；`BillowMobileBridge.statusDictionary` 也未输出 `stats`；`status/rust.json` 只写 `ProviderStatus`。因此 **`ios_vpn_status("rust")` 目前只返回** `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt`，**不含 `stats`**。调用方不能把本轮文档的计数器当作已经可从 Tauri 命令读取。
+   - 用途与限制：在补齐宿主透传（产品改动，见 §6）之前，`tcpFlows/queuedPackets/generation/reloads` 只能由扩展内部的 status 回复或调试器读取，不能作为宿主侧自动化证据。
 2. **系统指标 `phys_footprint`（判定 R3 的口径）**
    - 系统因内存压力终止扩展看的是该进程的 physical footprint，不是 RSS。
-   - 采集：`xcrun xctrace record --device <UDID> --template 'VM Tracker' --attach BillowRust --time-limit <N>s --output t7-<scenario>.trace`，在 Instruments 里读 `Physical Footprint` 峰值；或 Xcode Debug Navigator 的 Memory gauge（连接真机运行时）。
+   - 采集：用 Instruments 的 **VM Tracker instrument**（它属于 instrument，不是 template）配合 `Allocations` 模板；`xctrace list templates` 中没有名为 `VM Tracker` 的模板。命令见 §4，在 Instruments 里读 `Physical Footprint` 峰值；或 Xcode Debug Navigator 的 Memory gauge（连接真机运行时）。
    - 用途：每个场景的峰值与 R3 比较。
 
-不得用模拟器、宿主进程或 `.appex` 体积冒充上述指标。
+不得用模拟器、宿主进程、`.appex` 体积或 `peakRssBytes` 冒充 `phys_footprint` 的 R3 数值。
 
 ## 3. 场景表（每项都必须单独记录峰值并提交原始 trace/状态 JSON）
 
@@ -45,12 +48,15 @@
 | 5 | 网络切换与重连 | Wi-Fi ↔ 蜂窝 各 5 次 | 切换后 10 s 内 | 峰值 ≤ 40,000,000 | 重连后连接/队列归零 |
 | 6 | R4 循环 | 建连/关闭 ×50、reload ×20、断网重连 ×10，每轮回到等价空闲 | 每轮结束 | 每轮峰值 ≤ 40,000,000 | 末轮空闲与首轮空闲之差不超过测量噪声；连接列表与队列为 0 |
 
-系统终止检查：每个场景后在主机执行
+R4 列的 `tcpFlows/queuedPackets/generation` 来自扩展 status 回复的 `stats`；如 §2 所述，宿主目前**没有**把这个对象透传给 `ios_vpn_status` 或 `status/rust.json`。在执行 R4 前，需要先完成宿主透传（产品改动），否则只能用 Instruments 的分配/回收轨迹解释增长，不能声称已按表核对计数归零。
+
+系统终止检查：每个场景后在主机执行（注意 zsh 的 `log` 是内建命令，必须写 `/usr/bin/log`；`log collect` 的真机参数是 `--device-udid`）
 
 ```sh
-xcrun devicectl device info processes --device <UDID> | grep -i billowrust
-log collect --device <UDID> --last 30m --output t7-jetsam.logarchive
-log show t7-jetsam.logarchive --predicate 'eventMessage CONTAINS[c] "jetsam" AND eventMessage CONTAINS[c] "BillowRust"' --last 30m
+xcrun devicectl device info processes --device <UDID> --search BillowRust
+/usr/bin/log collect --device-udid <UDID> --last 30m --output t29-jetsam.logarchive
+/usr/bin/log show --archive t29-jetsam.logarchive \
+  --predicate 'eventMessage CONTAINS[c] "jetsam" AND eventMessage CONTAINS[c] "BillowRust"'
 ```
 
 出现超预算、因内存压力被终止，或更新/重连后无法继续转发，即 R3 失败；已结束连接、已替换规则集或缓冲区持续累积、空闲基线逐轮抬升，即 R4 失败。
@@ -58,35 +64,44 @@ log show t7-jetsam.logarchive --predicate 'eventMessage CONTAINS[c] "jetsam" AND
 ## 4. 复现命令
 
 ```sh
-# 1) 构建内核 archive（离线；Cargo.lock 为准）与扩展
-node tool/ios/build-rust-kernel.mjs --platform device
+# 1) 构建两个平台的内核 archive（离线；Cargo.lock 为准）
+node tool/ios/build-rust-kernel.mjs --platform all
 node tool/ios/build-mihomo-ios.mjs --platform device        # BillowMihomo（对照扩展）
 (cd src-tauri/gen/apple && xcodegen generate)
+
 # 2) 宿主 + 双扩展（需要 Team 与已注册的 UDID/App Group）
 npx tauri ios build --export-method debugging --ci
 xcrun devicectl device install app --device <UDID> "<ipa 或 .app>"
+
 # 3) 宿主准备资源并选择 rust 引擎（设置页或测试入口）
 #    prepare(config.yaml + geo assets) -> setSelected(rust) -> connect
-# 4) 真机采样
-xcrun xctrace record --device <UDID> --template 'VM Tracker' --attach BillowRust \
-  --time-limit 600s --output t7-scenario3.trace
-# 5) 结构化计数（status 回复里的 stats，或命令行走宿主测试入口）
+#    当前 ios_vpn_status("rust") 只返回身份/状态/错误，不含 stats（见 §2）
+
+# 4) 真机 R3 采样：VM Tracker 是 instrument，不是 template
+#    先用 devicectl 取 BillowRust 的 PID，再 attach；--attach 也接受进程名
+xcrun devicectl device info processes --device <UDID> --search BillowRust
+xcrun xctrace record --device <UDID> --template 'Allocations' --instrument 'VM Tracker' \
+  --attach <BillowRust-PID> --time-limit 600s --output t29-scenario3.trace
+
+# 5) 结构化计数：当前只有扩展内部 status 回复携带 stats；
+#    宿主需要先补 stats 透传，才能从 ios_vpn_status / status/rust.json 读取。
 ```
 
-无 Instruments 时的最小记录：`status` 回复的 `stats` JSON（含 `peakRssBytes`）+ 场景时间戳 + `generation`。有 Instruments 时以其 `Physical Footprint` 为 R3 数值，`peakRssBytes` 作为旁证。
+无 Instruments 时的最小记录：扩展 status 回复的 `stats` JSON（含 `peakRssBytes`）+ 场景时间戳 + `generation`；但宿主透传缺口未补齐前，这条路径不能由 Tauri 命令直接取得。有 Instruments 时以其 `Physical Footprint` 为 R3 数值，`peakRssBytes` 仅作旁证。
 
 ## 5. 设备要求
 
 - 物理 iPhone（本次要求的 iPhone 15 Pro Max 或同级），iOS 版本与记录一致。
 - Apple Developer Team：`packet-tunnel-provider` 能力 + App Group `group.app.billow.client` 已为 `app.billow.client`、`app.billow.client.mihomo`、`app.billow.client.rust` 注册。
 - 受控流量目标：自建 TCP/UDP echo 与 DNS 解析器（记录服务端观测到的载荷），用于确认转发未中断。
-- 每个场景的原始 trace、status JSON、jetsam 查询输出，按 `<日期>-<场景>-<PID>.trace|json` 归档，并在本文件追加结果表。
+- 每个场景的原始 trace、宿主可见的 status JSON（`ProviderStatus` 字段；`stats` 透传补齐后再含计数）、jetsam 查询输出，按 `<日期>-<场景>-<PID>.trace|json` 归档，并在本文件追加结果表。
 
 ## 6. 当前结论
 
-- R3：**未验证**（无真机数字）。
-- R4：**未验证**（无逐轮基线）。
+- R3：**未验证**（无真机数字；T29 只重跑模拟器 smoke 与 unsigned 构建）。补证责任：具备 Apple Team、签名权限与物理 iPhone 的执行者；入口为本文件 §4 与 `tool/ios/verify-device.md`。
+- R4：**未验证**（无逐轮基线）。除真机外还缺一项宿主接口：扩展 status 回复的 `stats` 未透传到 `ios_vpn_status`/`status/rust.json`，需产品改动后才能按表核对 `tcpFlows/queuedPackets/generation`。
 - 代码侧的输入已就绪：缓冲/队列上限见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 的 Bounds 表；reload 会关闭全部流与关联并递增 `generation`；`stats` 暴露高水位与丢弃计数。
 - 宿主设置入口与资源准备已接通（T7-A2）：设置 → 内核 → iOS 扩展可读取两个扩展、选择、准备当前配置、连接/断开/重载并显示错误码；`ios_vpn_prepare_active` 负责 staging，`ResourcesInstaller` 对同一版本同时保留 mihomo/rust manifest。
 - T7-A3 修正：宿主 target 使用独立条件 `BILLOW_ENGINE_HOST`，`Shared/PacketPump.swift` 只在两个扩展 target 编译；`tool/ios/verify-host-sources.sh` 用真实源集同时 typecheck 宿主/两个扩展。准备后调用 `ios_vpn_prune`（保留新版本与运行中扩展报告的版本）避免 `versions/<hash>` 累积；扩展 `installed` 改为检查 Bundle/PlugIns 中的 `.appex`，未启动时设置页显示“已安装（未启动）”；staging 也会移除 `sniffer.enable: true`（本内核未实现嗅探，域名规则退化为目标 IP/DNS 结果）。
-- 下一步只剩真机执行本表并附原始 trace/状态 JSON。
+- T29 复核（2026-11-24）：候选 `billow-kernel 0.1.0` sha256 `be00302e…`；模拟器 C ABI smoke 20/20、宿主/双扩展 typecheck、四个 unsigned 扩展构建均通过；物理设备仍 unavailable，**不能把模拟器结果当作 R3/R4**。详见 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
+- 下一步：先补宿主 stats 透传（R4 计数），再在真机执行本表并附原始 trace/状态 JSON。

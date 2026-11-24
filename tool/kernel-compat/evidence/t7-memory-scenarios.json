@@ -6,6 +6,12 @@
   "generatedAt": "2026-11-23T05:22:00Z",
   "status": "entry-only-not-measured",
   "statement": "Physical iPhone not connected (xcrun devicectl reported it unavailable). No peak, termination or reclaim number exists. The scenario table and sampling interface below are the executable entry; docs/testing/2026-11-23-ios-rust-extension-memory.md is the human-readable procedure.",
+  "supersededBy": "tool/kernel-compat/evidence/t29-platform-matrix.json",
+  "t29Corrections": {
+    "xctraceTemplate": "Xcode 27.2 has no 'VM Tracker' template; use --template 'Allocations' --instrument 'VM Tracker'.",
+    "logCollect": "log collect uses --device-udid <UDID>; in zsh invoke /usr/bin/log because `log` is a shell builtin.",
+    "statsHostPassthrough": "The extension status reply carries stats, but ProviderStatus/BillowMobileBridge.statusDictionary and status/rust.json drop it; ios_vpn_status(engine) has no stats until the host exposes it."
+  },
   "requirements": {
     "R3": "peak of the whole VPN system extension on a physical iPhone must stay within 40000000 bytes (decimal) in every scenario (startup/config, locked idle, concurrent forwarding, rule-set update, network switch/reconnect), recorded per scenario",
     "R4": "after warm-up, repeated connect/close, rule-set reloads and offline/reconnect rounds return to an equivalent idle state; invalid objects must not accumulate and the idle baseline must not climb"

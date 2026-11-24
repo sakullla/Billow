@@ -11,13 +11,17 @@ Billow 在同一安装包中分发 Mihomo 与自研 Rust 内核（`billow-kernel
   - 产物：`src-tauri/resources/runtime/kernel.br`、`billow-kernel(.exe)`、`rust-kernel.json`。
   - 交叉打包时可用 `BILLOW_RUST_KERNEL_TARGET` 指定 triple，或用 `BILLOW_RUST_KERNEL_BIN` 指向预构建二进制。
 - Android ARM64：`TAURI_ENV_PLATFORM=android node tool/prepare_android_kernel.mjs --force`
-  - 需要 `NDK_HOME`（或 `ANDROID_NDK_HOME`）与已安装的 `aarch64-linux-android` 目标。
+  - 需要 `NDK_HOME`（或 `ANDROID_NDK_HOME`）与已安装的 `aarch64-linux-android` 目标；
+    T29 复核时两者都缺失（无 `~/Library/Android/sdk`、无 `aarch64-linux-android-clang`、无 `adb`）。
   - 产物：`jniLibs/arm64-v8a/libmihomo.so` 与 `libbillow_kernel.so`（同 APK 内两个 PIE 进程）。
   - Rust 进程用 `-p billow-kernel-cli --features android-vpn` 构建，启用 `--tun-fd` 与 VpnService 数据面。
+  - 打包入口（release.yml 使用）：`npm run tauri -- android build --target aarch64 --apk --split-per-abi`；
+    构建机还需 JDK 21（T29 主机仅为 JDK 8）与 `keystore.properties` 签名材料。
 
 ## 实跑验证（可用宿主）
 
-两端都只在回环地址监听，不修改系统代理/TUN：
+两端都只在回环地址监听，不修改系统代理/TUN。先执行 `npm run prepare:runtime` 重新生成
+`src-tauri/resources/runtime`，否则打包内 `billow-kernel` 可能落后于当前源码：
 
 ```bash
 BILLOW_TEST_RESOURCES="$PWD/src-tauri/resources/runtime" \
@@ -31,8 +35,21 @@ BILLOW_TEST_RESOURCES="$PWD/src-tauri/resources/runtime" \
 3. 切回 Mihomo 后目标端记录 `mihomo-2`；
 4. 换成 Rust 不接受的配置（`sniffer.enable: true`）时，切换在释放旧会话前被拒绝，Mihomo 仍承载 `mihomo-3`。
 
-macOS 已按此入口实跑通过。Windows/Linux 由 `.github/workflows/release.yml` 在对应 runner 上执行同一命令
-（`Verify both packaged engines switch with marked traffic`）；本仓库当前未在 Windows/Linux 实跑。
+macOS 已按此入口实跑通过。T29 于 2026-11-24 用当前候选重新构建并复跑：`billow-kernel 0.1.0`
+sha256 `be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521`，
+`packaged_engines_switch_both_ways_with_a_marked_request` 与
+`desktop_packaged_runtime_starts_offline` 均为 1 passed / 0 failed；标记序列
+`mihomo-1 → rust-1 → mihomo-2 → mihomo-3` 由用例断言，原始日志见
+`tool/kernel-compat/evidence/t29-macos-switch.log`。
+
+Windows/Linux 由 `.github/workflows/release.yml` 在对应 runner 上执行同一命令
+（第 243–247 行 `Verify both packaged engines switch with marked traffic`；第 238–242 行
+另有 offline 冒烟）。负例已从旧的 proxy-groups 改为 `sniffer.enable: true`（Rust 具名拒绝），
+macOS 复跑通过，因此该 CI 命令与当前负例兼容。T29 在本机复核：Windows 缺 `cl.exe`/Windows SDK，
+`cargo check --target x86_64-pc-windows-msvc -p billow-kernel-cli` 在 `ring` 的 C 编译阶段失败
+（`assert.h` not found）；Linux 缺 `x86_64-linux-gnu-gcc`，同一 cargo check 报
+`failed to find tool "x86_64-linux-gnu-gcc"`。两项均未实跑，证据见
+`tool/kernel-compat/evidence/t29-windows-check.log`、`t29-linux-check.log`。
 
 Android 的入口为安装 APK 后在设置页切换引擎。VpnService 的 TUN 描述符由
 `BillowVpnService.establishTun` 建立并清除 `FD_CLOEXEC`，`BillowVpnBridge.nativeTunFd` 把 fd 交给宿主；
@@ -54,11 +71,33 @@ poll 宿主已释放的描述符。撤销（系统 `onRevoke`）则是系统先�
 `KernelLaunch::running()` 为真才清空待移交 fd：子进程已异常退出时也要丢弃陈旧 fd 号，避免下一次启动继承
 一个宿主已关闭的描述符；`connect_android` 的授权拒绝分支同样按“先停子进程、再关 PFD”的顺序处理。
 
+Android 真机验证预期（当前未执行）：
+
+```sh
+# 构建（需 NDK + JDK 21 + 签名）
+TAURI_ENV_PLATFORM=android node tool/prepare_android_kernel.mjs --force
+npm run tauri -- android build --target aarch64 --apk --split-per-abi
+# 安装并切换（设备已授权 adb）
+adb install -r src-tauri/gen/android/app/build/outputs/apk/arm64/release/*.apk
+adb logcat -c && adb logcat | grep -Ei 'billow|VpnService|tun'
+# 设置页：Mihomo -> Rust -> Mihomo，各方向用受控 HTTP CONNECT/标记端点核对出口
+```
+
+T29 环境复核：`aarch64-linux-android` Rust 目标已安装，但没有 NDK/SDK/adb/emulator/sdkmanager；
+`cargo check -p billow-kernel-cli --features android-vpn --target aarch64-linux-android` 在 `cc-rs`
+阶段失败：`failed to find tool "aarch64-linux-android-clang"`；因此 APK、VpnService fd 移交与双向切换
+流量均未执行。日志：`tool/kernel-compat/evidence/t29-android-check.log`、`t29-environment.log`。
+
+iOS（扩展切换，不是桌面进程）：宿主通过 `ios_vpn_prepare_active` 准备同一版本资源，设置页在两个
+`NETunnelProviderManager` 之间选择 `app.billow.client.mihomo` / `app.billow.client.rust`；连接后
+`ios_vpn_status(engine)` 报告扩展身份与运行状态。当前宿主不透传扩展的 `stats`，且无签名真机，
+详见 `tool/ios/verify-device.md` 与 `docs/testing/2026-11-23-ios-rust-extension-memory.md`。
+
 验证边界：本仓库当前环境没有 Android NDK（`aarch64-linux-android-clang` 缺失）也没有设备，因此
 `aarch64-linux-android` 交叉编译与真机双向切换流量均未执行；宿主单测用 `UnixDatagram` 模拟 TUN fd 覆盖
 TCP/UDP/DNS、启停、reload、撤销后泵停止与错误路径，`src-tauri` 单测覆盖“断开先停子进程再关 fd”、
 “从 Rust 切走先停子进程”、无变化的分流保存不杀进程、真实变化时“先停后换”的事件顺序、子进程退出后的
 陈旧 fd 清理，以及授权拒绝重连的停止顺序。命令、退出码与错误原文见
-`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`，真机结果保持待验。桌面 Rust 引擎不接管 TUN
-（`tun` 块在所有平台都被移除，桌面 TUN 属 T6/Mihomo 路径），因此 Rust 桌面会话只走 mixed 监听器，快照不得
-据此声称桌面 TUN 已支持。
+`tool/kernel-compat/evidence/t26-android-tunnel.{json,md}` 与 `t29-platform-matrix.{json,md}`，真机结果保持待验。
+桌面 Rust 引擎不接管 TUN（`tun` 块在所有平台都被移除，桌面 TUN 属 T6/Mihomo 路径），因此 Rust 桌面会话
+只走 mixed 监听器，快照不得据此声称桌面 TUN 已支持。

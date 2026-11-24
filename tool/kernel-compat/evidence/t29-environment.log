@@ -1,0 +1,60 @@
+== date
+2026-11-24T01:07:45Z
+
+== host
+Darwin yanggengdeMacBook-Air.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:41 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T8122 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A428
+
+== xcode
+Xcode 27.2
+Build version 27B52
+simulator SDK: 27.2
+device SDK: 27.2
+
+== rust
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+rustc 1.98.1 (48a229cea 2026-09-01)
+targets:
+aarch64-apple-darwin
+aarch64-apple-ios
+aarch64-apple-ios-sim
+aarch64-linux-android
+x86_64-apple-ios
+x86_64-pc-windows-msvc
+x86_64-unknown-linux-gnu
+
+== android
+ANDROID_HOME=<unset> ANDROID_NDK_HOME=<unset> NDK_HOME=<unset>
+adb: missing
+emulator: missing
+sdkmanager: missing
+aarch64-linux-android-clang: missing
+gradle: missing
+java: openjdk version "1.8.0_492"
+ls: /Users/yanggeng/Library/Android/sdk: No such file or directory
+
+== windows/linux cross tools
+cl: missing
+cl.exe: missing
+x86_64-w64-mingw32-gcc: /opt/homebrew/bin/x86_64-w64-mingw32-gcc
+x86_64-linux-gnu-gcc: missing
+aarch64-linux-gnu-gcc: missing
+zig: missing
+cross: missing
+cargo-xwin: missing
+docker: /opt/homebrew/bin/docker
+
+== physical devices
+Name            Hostname   Identifier                                    State         Model                                            Reality  
+-------------   --------   -------------------------------------------   -----------   ----------------------------------------------   ---------
+iPhone 17                  4C5EEF8F-C6E8-4D8C-97D5-8D8D6C465BF3 (UDID)   shutdown      iPhone 17 (iPhone18,3)                           simulated
+iPhone 18 Pro              001995E7-7E3B-4C2A-9B0E-11C9CE4DCC01 (UDID)   connected     iPhone 18 Pro (iPhone19,2)                       simulated
+??iPhone                   00008130-000E65482883401C (UDID)              unavailable   iPhone 15 Pro Max (iPhone16,2)                   physical 
+???iPad                    00008112-000959682203401E (UDID)              unavailable   iPad Pro (11-inch) (4th generation) (iPad14,3)   physical 
+
+== release workflow switch commands
+242:        run: cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture
+243:      - name: Verify both packaged engines switch with marked traffic
+247:        run: cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture

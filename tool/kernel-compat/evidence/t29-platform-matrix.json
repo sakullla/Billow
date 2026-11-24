@@ -1,0 +1,236 @@
+{
+  "format": "kernel-t29-platform-matrix",
+  "version": 1,
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T29",
+  "attempt": "T29-A1",
+  "messageId": "T29-A1-M1",
+  "generatedAt": "2026-11-24T01:10:25Z",
+  "candidate": {
+    "gitHead": "39df43851e32cb78b51d76ecfa42f10fc3ff1082",
+    "branch": "feat/native-rust-kernel",
+    "workingTree": "no product source changes; pre-existing workflow docs modifications only",
+    "host": "macOS 27.0 (26A428), arm64, Xcode 27.2 (27B52), iOS 27.2 SDK, cargo/rustc 1.98.1",
+    "rustKernel": {
+      "version": "billow-kernel 0.1.0",
+      "sha256": "be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521",
+      "sizeBytes": 11345584,
+      "buildCommand": "CARGO_TARGET_DIR=<t29>/target cargo build --release --locked -p billow-kernel-cli --manifest-path native-kernel/Cargo.toml --target aarch64-apple-darwin",
+      "log": "tool/kernel-compat/evidence/t29-macos-build.log",
+      "identityLog": "tool/kernel-compat/evidence/t29-candidate.log"
+    },
+    "mihomoBaseline": {
+      "version": "v1.19.34",
+      "packed": "src-tauri/resources/runtime/kernel.br",
+      "unpackedSha256": "a55a9073f9b7b1fa596a82c034d2dae3407ec34732102b6e42c5513ce3033f34",
+      "source": "src-tauri/resources/runtime/kernel.json (unchanged since T8)"
+    },
+    "iosKernelArchives": {
+      "device": {
+        "path": "src-tauri/gen/apple/Externals/arm64/device/rust/libapp.a",
+        "sha256": "c220ffec20a036fb7d5fd46cdcdfd371129b854b359ae9459b4a2d24b96221eb",
+        "sizeBytes": 93494456
+      },
+      "simulator": {
+        "path": "src-tauri/gen/apple/Externals/arm64/simulator/rust/libapp.a",
+        "sha256": "c41516427a45e4de3058daea5afe4b88ae7ec30912dbf41bf0004c3f7cf96e34",
+        "sizeBytes": 93444304
+      },
+      "buildCommand": "CARGO_TARGET_DIR=<t29>/ios-target node tool/ios/build-rust-kernel.mjs --platform all",
+      "log": "tool/kernel-compat/evidence/t29-ios-build.log"
+    }
+  },
+  "packagedResources": {
+    "path": "<temp>/t29/runtime-package",
+    "contents": "kernel.br, kernel.json, geo/, mihomo-LICENSE from src-tauri/resources/runtime plus the freshly built billow-kernel and a generated rust-kernel.json",
+    "note": "The test consumes the same layout tool/prepare_desktop_runtime.mjs writes; no tracked product file was modified."
+  },
+  "platforms": {
+    "macOS": {
+      "status": "passed",
+      "environment": "macOS 27.0 arm64, Xcode 27.2, rustc 1.98.1",
+      "commands": [
+        "CARGO_TARGET_DIR=<t29>/target cargo build --release --locked -p billow-kernel-cli --manifest-path native-kernel/Cargo.toml --target aarch64-apple-darwin",
+        "CARGO_TARGET_DIR=<t29>/src-tauri-target BILLOW_TEST_RESOURCES=<t29>/runtime-package cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture",
+        "CARGO_TARGET_DIR=<t29>/src-tauri-target BILLOW_TEST_RESOURCES=<t29>/runtime-package cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture"
+      ],
+      "results": {
+        "switchAcceptance": "passed: 1 passed, 0 failed (7.37s); marker sequence mihomo-1 -> rust-1 -> mihomo-2 -> mihomo-3 asserted by the test before and after each switch",
+        "offlinePackagedRuntime": "passed: 1 passed, 0 failed (6.29s)",
+        "negativeCase": "passed: sniffer.enable=true is refused before the live Mihomo session is released; snapshot stays mihomo and mihomo-3 still reaches the target"
+      },
+      "logs": [
+        "tool/kernel-compat/evidence/t29-macos-build.log",
+        "tool/kernel-compat/evidence/t29-candidate.log",
+        "tool/kernel-compat/evidence/t29-macos-switch.log",
+        "tool/kernel-compat/evidence/t29-macos-offline.log"
+      ],
+      "missingOrLimits": [
+        "Full .app/DMG bundle was not built; the test uses the packaged resource layout and loopback listeners only (no system proxy/TUN).",
+        "This proves the desktop engine switch with marked traffic on macOS; it does not prove Windows/Linux runtime."
+      ],
+      "responsibility": "none for the documented macOS scope"
+    },
+    "iOS": {
+      "status": "blocked",
+      "environment": "Xcode 27.2 / iOS 27.2 SDK; simulator iPhone 18 Pro (iOS 27.0) booted; physical iPhone 15 Pro Max and iPad report unavailable; no Apple Developer Team/signing profile",
+      "simulator": {
+        "hostSourceTypecheck": "passed: tool/ios/verify-host-sources.sh (host + BillowMihomo + BillowRust + main.mm)",
+        "cAbiSmoke": "passed: tool/ios/verify-rust-kernel.sh; 20/20 checks; peakRssBytes 28491776 is the smoke process, not R3",
+        "billowRustSimulatorBuild": "passed: xcodebuild -scheme BillowRust -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO; linked simulator archive",
+        "billowMihomoSimulatorBuild": "passed: xcodebuild -scheme BillowMihomo -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO",
+        "billowRustDeviceBuild": "passed: xcodebuild -scheme BillowRust -sdk iphoneos CODE_SIGNING_ALLOWED=NO after resolving the device archive; linked device archive",
+        "billowMihomoDeviceBuild": "passed: xcodebuild -scheme BillowMihomo -sdk iphoneos CODE_SIGNING_ALLOWED=NO",
+        "standaloneExtensionLaunch": "not valid: simctl installed the .appex as an app and launching app.billow.client.rust crashed in NSExtensionMain (EXC_BREAKPOINT); a Packet Tunnel provider needs the signed host app"
+      },
+      "commands": [
+        "node tool/ios/build-rust-kernel.mjs --platform all",
+        "tool/ios/verify-host-sources.sh",
+        "tool/ios/verify-rust-kernel.sh",
+        "xcodebuild -project src-tauri/gen/apple/billow.xcodeproj -scheme BillowRust -configuration debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build",
+        "xcodebuild -project src-tauri/gen/apple/billow.xcodeproj -scheme BillowMihomo -configuration debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build",
+        "(cd src-tauri/gen/apple && SRCROOT=$PWD SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) sh network-extension/RustExtension/resolve-mihomo.sh)",
+        "xcodebuild -project src-tauri/gen/apple/billow.xcodeproj -scheme BillowRust -configuration release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build",
+        "xcodebuild -project src-tauri/gen/apple/billow.xcodeproj -scheme BillowMihomo -configuration release -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build"
+      ],
+      "logs": [
+        "tool/kernel-compat/evidence/t29-ios-build.log",
+        "tool/kernel-compat/evidence/t29-ios-host-typecheck.log",
+        "tool/kernel-compat/evidence/t29-ios-simulator-smoke.log",
+        "tool/kernel-compat/evidence/t29-ios-xcodebuild-rust-sim.log",
+        "tool/kernel-compat/evidence/t29-ios-xcodebuild-mihomo-sim.log",
+        "tool/kernel-compat/evidence/t29-ios-xcodebuild-rust-device.log",
+        "tool/kernel-compat/evidence/t29-ios-xcodebuild-rust-device-stale.log",
+        "tool/kernel-compat/evidence/t29-ios-xcodebuild-mihomo-device.log",
+        "tool/kernel-compat/evidence/t29-ios-launch-attempt.log",
+        "tool/kernel-compat/evidence/t29-ios-BillowRust-crash.ips"
+      ],
+      "missingOrLimits": [
+        "Physical iPhone/iPad unavailable; no Team/provisioning, so no signed host install, no extension start, no controlled traffic.",
+        "R3 peak (phys_footprint) and R4 per-round reclaim are not measured; simulator/smoke numbers are explicitly excluded.",
+        "Host does not surface the extension's stats JSON: ProviderStatus/BillowMobileBridge.statusDictionary omit it, so ios_vpn_status('rust') has no tcpFlows/queuedPackets/generation/peakRssBytes.",
+        "The tracked build/rust-kernel/linked.xcconfig is shared between SDKs and read at project load; the first device build linked the simulator archive until resolve-mihomo.sh was run for iphoneos. Pre-resolve or rerun for reproducible device builds."
+      ],
+      "responsibility": [
+        "Apple Developer Team + signed host + physical iPhone: T3/T7/T29 device owner",
+        "Host stats passthrough (product change): T7 owner before R4 sampling",
+        "Device build flow pre-resolve: T3/T7 tooling owner"
+      ]
+    },
+    "Android": {
+      "status": "blocked",
+      "environment": "macOS host; aarch64-linux-android Rust target installed; ANDROID_HOME/ANDROID_NDK_HOME/NDK_HOME unset; no ~/Library/Android/sdk; no adb/emulator/sdkmanager/aarch64-linux-android-clang; JDK 8 only; no keystore.properties",
+      "commands": [
+        "CARGO_TARGET_DIR=<t29>/android-target cargo check --locked -p billow-kernel-cli --features android-vpn --target aarch64-linux-android --manifest-path native-kernel/Cargo.toml",
+        "TAURI_ENV_PLATFORM=android node tool/prepare_android_kernel.mjs --force",
+        "npm run tauri -- android build --target aarch64 --apk --split-per-abi"
+      ],
+      "results": {
+        "cargoCheck": "failed: cc-rs could not find aarch64-linux-android-clang (no NDK)",
+        "apk": "not attempted: no SDK/NDK/platform-tools",
+        "runtimeSwitch": "not attempted: no device/emulator"
+      },
+      "logs": [
+        "tool/kernel-compat/evidence/t29-android-check.log",
+        "tool/kernel-compat/evidence/t29-environment.log"
+      ],
+      "missingOrLimits": [
+        "Android NDK 28.2.13676358 (or equivalent) with aarch64-linux-android-clang",
+        "Android SDK platform 36 / build-tools 36.0.0 / platform-tools (adb) / emulator or physical device",
+        "JDK 21 (host has 8) and signing keystore.properties",
+        "A real VpnService TUN fd and a controlled traffic endpoint for the marked switch"
+      ],
+      "responsibility": "Android environment owner or release CI (release.yml android job installs NDK/SDK and signs the APK)"
+    },
+    "Windows": {
+      "status": "blocked",
+      "environment": "macOS host; x86_64-pc-windows-msvc Rust target installed; no cl/cl.exe or Windows SDK; x86_64-w64-mingw32-gcc present but no windows-gnu Rust target; no cargo-xwin/zig",
+      "commands": [
+        "rustup target list --installed",
+        "CARGO_TARGET_DIR=<t29>/win-target cargo check --locked -p billow-kernel-cli --target x86_64-pc-windows-msvc --manifest-path native-kernel/Cargo.toml"
+      ],
+      "results": {
+        "cargoCheck": "failed: ring's C build cannot find assert.h because no MSVC headers/Windows SDK are installed",
+        "packagedSwitch": "not executed; release.yml runs it on a Windows runner"
+      },
+      "logs": [
+        "tool/kernel-compat/evidence/t29-windows-check.log",
+        "tool/kernel-compat/evidence/t29-environment.log"
+      ],
+      "missingOrLimits": [
+        "MSVC cl.exe + Windows SDK headers/libs or a Windows runner",
+        "Packaged runtime and a controlled traffic endpoint on Windows"
+      ],
+      "ciEntry": {
+        "workflow": ".github/workflows/release.yml",
+        "steps": "Verify packaged desktop kernel and GEO work offline (238-242); Verify both packaged engines switch with marked traffic (243-247)",
+        "condition": "matrix.platform != 'android' && !matrix.prebuiltMacos (covers windows and linux)",
+        "negativeCaseCompatibility": "test now rejects sniffer.enable=true; macOS T29 run passed with the same command"
+      },
+      "responsibility": "Windows release runner/CI (release.yml); local macOS host cannot produce Windows runtime evidence"
+    },
+    "Linux": {
+      "status": "blocked",
+      "environment": "macOS host; x86_64-unknown-linux-gnu Rust target installed; no x86_64-linux-gnu-gcc/aarch64-linux-gnu-gcc/zig/cross; Docker present but not used for this task",
+      "commands": [
+        "rustup target list --installed",
+        "CARGO_TARGET_DIR=<t29>/linux-target cargo check --locked -p billow-kernel-cli --target x86_64-unknown-linux-gnu --manifest-path native-kernel/Cargo.toml"
+      ],
+      "results": {
+        "cargoCheck": "failed: cc-rs could not find x86_64-linux-gnu-gcc",
+        "packagedSwitch": "not executed; release.yml runs it on ubuntu-22.04"
+      },
+      "logs": [
+        "tool/kernel-compat/evidence/t29-linux-check.log",
+        "tool/kernel-compat/evidence/t29-environment.log"
+      ],
+      "missingOrLimits": [
+        "Linux cross C toolchain (gcc or clang target) or an ubuntu runner",
+        "Packaged runtime and a controlled traffic endpoint on Linux"
+      ],
+      "ciEntry": {
+        "workflow": ".github/workflows/release.yml",
+        "steps": "Verify packaged desktop kernel and GEO work offline (238-242); Verify both packaged engines switch with marked traffic (243-247)",
+        "condition": "matrix.platform != 'android' && !matrix.prebuiltMacos (covers windows and linux)",
+        "negativeCaseCompatibility": "test now rejects sniffer.enable=true; macOS T29 run passed with the same command"
+      },
+      "responsibility": "Linux release runner/CI (release.yml); local macOS host cannot produce Linux runtime evidence"
+    }
+  },
+  "requirements": {
+    "R1": {
+      "status": "partial",
+      "verdict": "macOS packaged both-way switch with marked traffic passed on the current candidate; Windows/Linux/Android runtime and iOS device switching remain blocked/unverified.",
+      "passed": ["macOS packaged engine switch (mihomo -> rust -> mihomo) plus refused-config recovery"],
+      "blocked": ["Windows", "Linux", "Android", "iOS device"],
+      "evidenceRefs": ["tool/kernel-compat/evidence/t29-macos-switch.log", "tool/kernel-compat/evidence/t29-platform-matrix.md"]
+    },
+    "R2": {
+      "status": "not_assessed",
+      "verdict": "T29 is a platform-evidence task; it adds no new full-surface compatibility result. The macOS switch uses MATCH,DIRECT only, so it does not re-judge R2.",
+      "evidenceRefs": ["tool/kernel-compat/evidence/t29-platform-matrix.md", "tool/kernel-compat/evidence/t28-option-parity.md"]
+    },
+    "R3": {
+      "status": "unverified",
+      "verdict": "No physical iPhone measurement exists. The 28,491,776-byte simulator smoke peakRssBytes is the smoke process, not the extension phys_footprint and is not used as R3 evidence.",
+      "evidenceRefs": ["docs/testing/2026-11-23-ios-rust-extension-memory.md", "tool/kernel-compat/evidence/t29-ios-simulator-smoke.log"]
+    },
+    "R4": {
+      "status": "unverified",
+      "verdict": "No device per-round baseline. In addition, the extension stats (tcpFlows/queuedPackets/generation/reloads) are not surfaced to the host, so the R4 table cannot be sampled through ios_vpn_status until a product change lands.",
+      "evidenceRefs": ["docs/testing/2026-11-23-ios-rust-extension-memory.md", "src-tauri/gen/apple/network-extension/Shared/ProviderSupport.swift", "src-tauri/gen/apple/network-extension/Host/BillowMobileBridge.swift"]
+    }
+  },
+  "ciCompatibility": {
+    "releaseWorkflow": ".github/workflows/release.yml",
+    "switchCommand": "cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture",
+    "offlineCommand": "cargo test --manifest-path src-tauri/Cargo.toml --locked desktop_packaged_runtime_starts_offline -- --ignored --nocapture",
+    "negativeCase": "src-tauri/src/profile.rs: sniffer.enable=true is the named rejection; proxy groups are no longer used as the negative case",
+    "verdict": "compatible: both macOS commands passed with the current candidate; Windows/Linux use the same test name and receive the runtime bundle from tauri build's set TAURI_ENV_PLATFORM beforeBuildCommand"
+  },
+  "documentationUpdated": [
+    "docs/testing/2026-11-23-ios-rust-extension-memory.md",
+    "tool/ios/verify-device.md",
+    "tool/engine-switch.md"
+  ]
+}
