@@ -137,6 +137,15 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Register the stop handlers before the kernel binds anything, so a signal
+    // that arrives during startup is still observed instead of killing the
+    // process through the default disposition.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut stop = runtime.block_on(StopSignals::install())?;
+
     let (mut kernel, _) = start(
         &billow_kernel::LoadedConfig {
             config,
@@ -161,11 +170,7 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         }
     }
 
-    let reason = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?
-        .block_on(wait_for_stop());
+    let reason = runtime.block_on(stop.wait());
     tracing::info!(reason, "stop requested");
     kernel.stop().map_err(|e| e.to_string())?;
     let stats = kernel.stats();
@@ -198,6 +203,13 @@ fn run_android_tunnel(
         },
         ..AndroidVpnOptions::default()
     };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    // Same startup-race guard as the plain runner: install the handlers before
+    // the engine starts.
+    let mut stop = runtime.block_on(StopSignals::install())?;
     let vpn = AndroidVpn::start(fd, yaml, base_dir.to_path_buf(), options)
         .map_err(|error| format!("android-vpn: {error}"))?;
     let identity = vpn
@@ -207,11 +219,7 @@ fn run_android_tunnel(
     println!("features: {}", identity.features);
     println!("tun_fd: {fd}");
 
-    let reason = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?
-        .block_on(wait_for_android_stop(&vpn));
+    let reason = runtime.block_on(wait_for_android_stop(&vpn, &mut stop));
     let fd_lost = reason == FD_LOST;
     tracing::info!(reason, "stop requested");
     vpn.stop();
@@ -251,11 +259,14 @@ fn run_android_tunnel(
 const FD_LOST: &str = "tun-fd closed";
 
 #[cfg(feature = "android-vpn")]
-async fn wait_for_android_stop(vpn: &billow_kernel::android_vpn::AndroidVpn) -> &'static str {
+async fn wait_for_android_stop(
+    vpn: &billow_kernel::android_vpn::AndroidVpn,
+    stop: &mut StopSignals,
+) -> &'static str {
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     loop {
         tokio::select! {
-            reason = wait_for_stop() => return reason,
+            reason = stop.wait() => return reason,
             _ = ticker.tick() => {
                 if !vpn.stats().running {
                     return FD_LOST;
@@ -377,23 +388,48 @@ fn start(
     Ok((kernel, warnings))
 }
 
-async fn wait_for_stop() -> &'static str {
+/// Stop signals, installed before the kernel starts so a signal that arrives
+/// during startup is not handled by the default (process-killing) disposition.
+struct StopSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut interrupt = signal(SignalKind::interrupt()).expect("SIGINT handler");
-        let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = interrupt.recv() => "SIGINT",
-            _ = terminate.recv() => "SIGTERM",
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    async fn install() -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(Self {
+                interrupt: signal(SignalKind::interrupt())
+                    .map_err(|e| format!("SIGINT handler: {e}"))?,
+                terminate: signal(SignalKind::terminate())
+                    .map_err(|e| format!("SIGTERM handler: {e}"))?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {})
         }
     }
-    #[cfg(not(unix))]
-    {
-        // Windows/Linux hosts drive lifecycle through the library API (T6);
-        // this fallback only covers Ctrl+C in a console.
-        let _ = tokio::signal::ctrl_c().await;
-        "ctrl_c"
+
+    async fn wait(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.interrupt.recv() => "SIGINT",
+                _ = self.terminate.recv() => "SIGTERM",
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows/Linux hosts drive lifecycle through the library API (T6);
+            // this fallback only covers Ctrl+C in a console.
+            let _ = tokio::signal::ctrl_c().await;
+            "ctrl_c"
+        }
     }
 }
 

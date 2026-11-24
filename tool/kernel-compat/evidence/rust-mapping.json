@@ -408,6 +408,7 @@
         "ip-version"
       ],
       "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
+      "cipherNamedRejections": "Pinned ss accepts 39 method names; the other 34 are rejected by name (never silently accepted): legacy AEAD additions (chacha8-ietf-poly1305, xchacha8-ietf-poly1305, rabbit128-poly1305, aes-128/192/256-ccm, aes-128/256-gcm-siv, aegis-128l, aegis-256, aez-384, deoxys-ii-256-128, lea-128/192/256-gcm, ascon128, ascon128a), shadowstream (aes-128/192/256-ctr, aes-128/192/256-cfb, rc4-md5, chacha20-ietf, xchacha20, chacha20), `none`, and 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm. `DUMMY` is not an ss method in the pinned engine either. The full value matrix and the pinned `-t` verdicts are in evidence/t28-option-parity.{md,json}.",
       "notImplemented": [
         "plugin",
         "plugin-opts",
@@ -429,7 +430,7 @@
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). AEAD ciphers follow the pinned `core.PickCipher` names for aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305 (the 24-byte XChaCha nonce is honoured); the pinned stream-cipher list, ChaCha8 and AES-CCM remain named rejections (T28 parity evidence)."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). AEAD ciphers follow the pinned `core.PickCipher` names for aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305 (the 24-byte XChaCha nonce is honoured); every other pinned-accepted name (the shadowstream list, ChaCha8/AES-CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon AEADs, `none` and the `2022-blake3-*` methods) is a named rejection, enumerated value by value in evidence/t28-option-parity.{md,json}."
     },
     "trojan": {
       "status": "implemented",
@@ -458,6 +459,7 @@
         "private-key"
       ],
       "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames; the server connection is established through the `dialer-proxy` chain exactly like TCP (one socks5 hop)",
+      "ssOptsCipherNamedRejections": "Pinned `core.PickCipher` accepts 33 method names for `ss-opts.method`; the other 28 are rejected by name: legacy AEAD additions (chacha8-ietf-poly1305, xchacha8-ietf-poly1305, rabbit128-poly1305, aes-128/192/256-ccm, aes-128/256-gcm-siv, aegis-128l, aegis-256, aez-384, deoxys-ii-256-128, lea-128/192/256-gcm, ascon128, ascon128a), shadowstream (aes-128/192/256-ctr, aes-128/192/256-cfb, rc4-md5, chacha20-ietf, xchacha20, chacha20) and `DUMMY` (the pinned unencrypted passthrough). `none` and 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm are rejected by the pinned engine too. The full value matrix is in evidence/t28-option-parity.{md,json}.",
       "notImplemented": [
         "grpc-opts",
         "reality-opts",
@@ -484,7 +486,7 @@
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
-      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated; AES-128-GCM, AES-192-GCM, AES-256-GCM, CHACHA20-IETF-POLY1305 and XCHACHA20-IETF-POLY1305 are implemented, other PickCipher names are named rejections). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
+      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated; AES-128-GCM, AES-192-GCM, AES-256-GCM, CHACHA20-IETF-POLY1305 and XCHACHA20-IETF-POLY1305 are implemented; every other pinned `PickCipher` name, including `DUMMY`, is rejected by name and enumerated in evidence/t28-option-parity.{md,json}). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
     },
     "vless": {
       "status": "implemented",

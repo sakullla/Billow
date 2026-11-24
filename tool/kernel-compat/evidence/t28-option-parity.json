@@ -100,8 +100,8 @@
     "spawned TUN/mixed UDP associations re-enter the PROXY_DNS task-local scope"
   ],
   "valueLevelGaps": {
-    "note": "These are values inside an implemented option, so the option-level matrix rows stay green; they are registered here instead of being silently accepted.",
-    "ss_and_trojan_ss_opts_cipher": {
+    "note": "Values inside an implemented option, so the option-level matrix rows stay green; they are registered here instead of being silently accepted. T28-A4 re-derived the complete pinned-acceptance set value by value with the pinned v1.19.34 binary (`mihomo -t`) and the locked sing-shadowsocks2/core.PickCipher sources; the 2022 methods were probed with valid base64 PSKs.",
+    "ss_cipher": {
       "implemented": [
         "aes-128-gcm",
         "aes-192-gcm",
@@ -109,24 +109,124 @@
         "chacha20-ietf-poly1305",
         "xchacha20-ietf-poly1305"
       ],
-      "namedRejections": [
-        "chacha8-ietf-poly1305",
-        "xchacha8-ietf-poly1305",
-        "aes-128-ccm",
-        "aes-192-ccm",
-        "aes-256-ccm",
-        "rc4-md5",
-        "aes-128-ctr",
-        "aes-192-ctr",
-        "aes-256-ctr",
-        "aes-128-cfb",
-        "aes-192-cfb",
-        "aes-256-cfb",
-        "chacha20",
-        "chacha20-ietf",
-        "xchacha20"
+      "pinnedAcceptedRustRejected": {
+        "legacyAeadAdditions": [
+          "chacha8-ietf-poly1305",
+          "xchacha8-ietf-poly1305",
+          "rabbit128-poly1305",
+          "aes-128-ccm",
+          "aes-192-ccm",
+          "aes-256-ccm",
+          "aes-128-gcm-siv",
+          "aes-256-gcm-siv",
+          "aegis-128l",
+          "aegis-256",
+          "aez-384",
+          "deoxys-ii-256-128",
+          "lea-128-gcm",
+          "lea-192-gcm",
+          "lea-256-gcm",
+          "ascon128",
+          "ascon128a"
+        ],
+        "shadowstream": [
+          "aes-128-ctr",
+          "aes-192-ctr",
+          "aes-256-ctr",
+          "aes-128-cfb",
+          "aes-192-cfb",
+          "aes-256-cfb",
+          "rc4-md5",
+          "chacha20-ietf",
+          "xchacha20",
+          "chacha20"
+        ],
+        "unencrypted": [
+          "none"
+        ],
+        "aead2022": [
+          "2022-blake3-aes-128-gcm",
+          "2022-blake3-aes-256-gcm",
+          "2022-blake3-chacha20-poly1305",
+          "2022-blake3-chacha8-poly1305",
+          "2022-blake3-aes-128-ccm",
+          "2022-blake3-aes-256-ccm"
+        ]
+      },
+      "pinnedAcceptedCount": 39,
+      "rustNamedRejectionCount": 34,
+      "bothReject": [
+        "DUMMY"
       ],
-      "reason": "The remaining PickCipher entries are the shadowstream framing ciphers and the ChaCha8/AES-CCM AEADs; they need the pinned shadowstream record/padding layer or a reduced-round/CCM primitive that is not in the tree.",
+      "reason": "The remaining pinned methods need the shadowstream framing, AEAD-2017 extras (ChaCha8/CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon), an unframed `none` path, or the AEAD-2022 record layout plus a BLAKE3 KDF; none of them is silently accepted.",
+      "evidence": [
+        "tool/kernel-compat/evidence/t28-option-parity.md#sscipher--34-named-rejections",
+        "pinned `mihomo -t` verdicts for all 39 accepted names (T28-A4)",
+        "src/proxies.rs::SsCipher::from_name (single parser shared by ss and trojan ss-opts)"
+      ],
+      "owner": "requirement decision or a follow-up cipher task; R2 narrowing required if left unimplemented"
+    },
+    "trojan_ss_opts_method": {
+      "implemented": [
+        "aes-128-gcm",
+        "aes-192-gcm",
+        "aes-256-gcm",
+        "chacha20-ietf-poly1305",
+        "xchacha20-ietf-poly1305"
+      ],
+      "pinnedAcceptedRustRejected": {
+        "legacyAeadAdditions": [
+          "chacha8-ietf-poly1305",
+          "xchacha8-ietf-poly1305",
+          "rabbit128-poly1305",
+          "aes-128-ccm",
+          "aes-192-ccm",
+          "aes-256-ccm",
+          "aes-128-gcm-siv",
+          "aes-256-gcm-siv",
+          "aegis-128l",
+          "aegis-256",
+          "aez-384",
+          "deoxys-ii-256-128",
+          "lea-128-gcm",
+          "lea-192-gcm",
+          "lea-256-gcm",
+          "ascon128",
+          "ascon128a"
+        ],
+        "shadowstream": [
+          "aes-128-ctr",
+          "aes-192-ctr",
+          "aes-256-ctr",
+          "aes-128-cfb",
+          "aes-192-cfb",
+          "aes-256-cfb",
+          "rc4-md5",
+          "chacha20-ietf",
+          "xchacha20",
+          "chacha20"
+        ],
+        "unencryptedPassthrough": [
+          "DUMMY"
+        ]
+      },
+      "pinnedAcceptedCount": 33,
+      "rustNamedRejectionCount": 28,
+      "bothReject": [
+        "none",
+        "2022-blake3-aes-128-gcm",
+        "2022-blake3-aes-256-gcm",
+        "2022-blake3-chacha20-poly1305",
+        "2022-blake3-chacha8-poly1305",
+        "2022-blake3-aes-128-ccm",
+        "2022-blake3-aes-256-ccm"
+      ],
+      "reason": "`core.PickCipher` also accepts the shadowstream list, the non-standard AEAD additions and the DUMMY passthrough; the shared SsCipher parser rejects all of them by name.",
+      "evidence": [
+        "tool/kernel-compat/evidence/t28-option-parity.md#trojanss-optsmethod--28-named-rejections",
+        "pinned `mihomo -t` verdicts for all 33 accepted names (T28-A4)",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed"
+      ],
       "owner": "requirement decision or a follow-up cipher task; R2 narrowing required if left unimplemented"
     },
     "congestion_controller": {
@@ -143,7 +243,7 @@
     }
   },
   "remainingOwnership": {
-    "note": "107 enabled rows after T28-A3; no row moved in this repair round (the closed gaps are value-level or already-green rows). Owners below are the dependency that blocks the behaviour, not an implementation claim.",
+    "note": "107 enabled rows after T28-A4; no row moved in either repair round (the closed gaps are value-level or already-green rows). Owners below are the dependency that blocks the behaviour, not an implementation claim.",
     "mesh_data_plane": {
       "easytier": {
         "rows": 20,
@@ -385,10 +485,22 @@
     "defaultSuite": {
       "passed": 420,
       "failed": 0,
-      "ignored": 91,
-      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked"
+      "ignored": 92,
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
+      "ignoredBreakdown": {
+        "note": "the earlier T28-A3 text said 91; it missed the lib benchmark",
+        "libBenchmark": 1,
+        "independent_peers": 7,
+        "mesh_peers": 5,
+        "mihomo_peers": 66,
+        "openvpn_peer": 4,
+        "wireguard_peer": 5,
+        "protocols": 2,
+        "resources": 1,
+        "family_cli": 1
+      }
     },
-    "groupsUnderLoad": "32/32 x4",
+    "groupsUnderLoad": "32/32 x4 (T28-A3 flake fix unchanged; 32/32 in this attempt's default suite)",
     "optionProbe": {
       "noop": 289,
       "implemented": 55,
@@ -396,9 +508,16 @@
       "rustRejectMihomoAccept": 107,
       "problems": 0
     },
+    "bbrInitialWindow": {
+      "previous": "cwnd * 1200 for both families",
+      "tuic": "cwnd * 1280 (quic-go default InitialPacketSize)",
+      "masque": "cwnd * 1242 (the pinned masque quic.Config sets it)",
+      "test": "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr"
+    },
+    "cliStopSignals": "StopSignals::install() runs before the kernel starts, so SIGINT/SIGTERM during startup is observed; Android fd-lost loop shares the handler",
+    "valueLevelPinnedChecks": "all 39 pinned ss names and all 33 trojan.ss-opts names probed with `mihomo -t`; none/ascon128/aes-256-ctr/2022-blake3-aes-128-gcm/DUMMY spot-checked against both engines",
     "differentials": {
       "t5": "12/12",
-      "t22": "22 pass, 1 skipped",
       "t23": "28 pass",
       "t24": "36 pass, 2 skipped",
       "t25": "47/49 equal, 2 known"

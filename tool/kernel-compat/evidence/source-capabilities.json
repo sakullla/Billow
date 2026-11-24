@@ -1801,26 +1801,33 @@
         "options": [
           "server",
           "port",
-          "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
+          "cipher (aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305)",
           "password",
           "udp",
-          "dialer-proxy (one socks5 hop for UDP)"
+          "dialer-proxy (one socks5 hop for UDP)",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version"
         ],
+        "cipherNamedRejections": "The pinned ss outbound accepts 39 method names (sing-shadowsocks2's AEAD/stream registries plus `none`); this kernel implements the five AEADs above and rejects the other 34 by name: legacy AEAD additions (chacha8-ietf-poly1305, xchacha8-ietf-poly1305, rabbit128-poly1305, aes-128/192/256-ccm, aes-128/256-gcm-siv, aegis-128l, aegis-256, aez-384, deoxys-ii-256-128, lea-128/192/256-gcm, ascon128, ascon128a), shadowstream (aes-128/192/256-ctr, aes-128/192/256-cfb, rc4-md5, chacha20-ietf, xchacha20, chacha20), `none`, and six `2022-blake3-*` names (2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm; the pinned method needs a base64 PSK). The complete pinned-acceptance set is checked value by value in evidence/t28-option-parity.{md,json}; `DUMMY` is rejected by both engines.",
         "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
         "notImplemented": [
           "plugin",
           "plugin-opts",
           "udp-over-tcp",
-          "udp-over-tcp-version",
-          "ip-version",
-          "tfo",
-          "mptcp",
-          "interface-name",
-          "routing-mark"
+          "udp-over-tcp-version"
         ],
         "evidence": [
           "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
+          "tests/protocols.rs::shadowsocks_aes_192_gcm_roundtrip",
+          "tests/protocols.rs::shadowsocks_xchacha20_ietf_poly1305_roundtrip",
+          "src/outbound/shadowsocks.rs::tests::connect_layer_roundtrips_every_implemented_cipher",
+          "src/outbound/shadowsocks.rs::tests::datagram_codec_roundtrips_every_implemented_cipher",
           "tests/protocols.rs::shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead",
+          "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
+          "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
           "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo",
           "tests/mihomo_peers.rs::shadowsocks_udp_reaches_the_receiving_side_through_mihomo",
           "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo"
@@ -2127,14 +2134,15 @@
           "ws-opts.path",
           "ws-opts.headers (Host override)",
           "ws-opts.v2ray-http-upgrade",
+          "ss-opts (enabled/method/password; aes-128/192/256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305)",
           "udp",
           "dialer-proxy"
         ],
+        "ssOptsCipherNamedRejections": "Pinned `core.PickCipher` accepts 33 method names (22 AEAD + 10 shadowstream + `DUMMY`); this kernel implements the five AEADs above and rejects the other 28 by name. `DUMMY` is the pinned unencrypted passthrough; `none` and the 2022 methods (2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm) are rejected by both engines. The complete set is recorded in evidence/t28-option-parity.{md,json}",
         "udp": "implemented: command 3 over TLS with `addr|length|CRLF|payload` frames; the server connection is established through the `dialer-proxy` chain exactly like TCP (one socks5 hop)",
         "notImplemented": [
           "grpc-opts",
           "reality-opts",
-          "ss-opts",
           "ech-opts",
           "shadow-tls-opts",
           "restls-opts",
@@ -2151,6 +2159,8 @@
         "evidence": [
           "tests/protocols.rs::trojan_outbound_over_tls_sends_hash_command_address_and_payload",
           "tests/protocols.rs::trojan_over_websocket_tunnels_with_a_host_override",
+          "src/outbound/shadowsocks.rs::tests::connect_layer_roundtrips_every_implemented_cipher",
+          "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
           "tests/mihomo_peers.rs::trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo",
           "tests/mihomo_peers.rs::trojan_udp_reaches_the_receiving_side_through_mihomo",
           "tests/mihomo_peers.rs::trojan_udp_wrong_password_never_reaches_the_echo"

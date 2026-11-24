@@ -96,11 +96,20 @@ fn timeout_error(timeout: Duration) -> DialError {
     DialError::Timeout(timeout)
 }
 
-/// QUIC congestion tuning for TUIC. The pinned `SetCongestionController`
+/// QUIC congestion tuning for TUIC/masque. The pinned `SetCongestionController`
 /// accepts `cubic`, `new_reno` and `bbr`; only the BBR branch consumes `cwnd`
 /// (default 32 packets), while `cwnd` without a controller and with the other
 /// controllers is accepted and left to the library default.
-pub(crate) fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionController, Option<u64>) {
+///
+/// `packet_size` is the QUIC `InitialPacketSize` the pinned client configures:
+/// quic-go defaults to 1280 for TUIC, while masque sets 1242 explicitly. The
+/// BBR sender multiplies the packet count by that size, so the initial window
+/// differs per family.
+pub(crate) fn congestion_tuning(
+    name: Option<&str>,
+    cwnd: u32,
+    packet_size: u64,
+) -> (CongestionController, Option<u64>) {
     let controller = match name {
         Some("cubic") => CongestionController::Cubic,
         Some("new_reno") => CongestionController::NewReno,
@@ -111,7 +120,7 @@ pub(crate) fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionCon
     };
     let initial = if matches!(name, Some("bbr") | Some("bbr_meta_v2")) {
         let packets = if cwnd == 0 { 32 } else { cwnd };
-        Some(u64::from(packets) * 1200)
+        Some(u64::from(packets) * packet_size)
     } else {
         None
     };
@@ -143,9 +152,11 @@ pub async fn dial(
         quic_options.connection_receive_window = window;
     }
     if option.congestion_controller.is_some() || option.cwnd != 0 {
+        // quic-go's default InitialPacketSize for TUIC.
         let (controller, initial) = congestion_tuning(
             option.congestion_controller.as_deref(),
             option.cwnd,
+            1280,
         );
         quic_options.congestion_controller = controller;
         quic_options.initial_congestion_window = initial;
@@ -276,34 +287,40 @@ mod tests {
 
     #[test]
     fn cwnd_only_applies_to_bbr() {
+        // TUIC uses quic-go's default InitialPacketSize (1280); masque sets
+        // 1242, so the same `cwnd` yields different byte windows per family.
         assert_eq!(
-            congestion_tuning(Some("bbr"), 64),
-            (CongestionController::Bbr, Some(64 * 1200))
+            congestion_tuning(Some("bbr"), 64, 1280),
+            (CongestionController::Bbr, Some(64 * 1280))
         );
         assert_eq!(
-            congestion_tuning(Some("bbr"), 0),
-            (CongestionController::Bbr, Some(32 * 1200))
+            congestion_tuning(Some("bbr"), 0, 1280),
+            (CongestionController::Bbr, Some(32 * 1280))
+        );
+        assert_eq!(
+            congestion_tuning(Some("bbr"), 64, 1242),
+            (CongestionController::Bbr, Some(64 * 1242))
         );
         // Pinned `common.SetCongestionController`: "bbr_meta_v2" shares the
         // `bbr` branch (and the cwnd-derived initial window).
         assert_eq!(
-            congestion_tuning(Some("bbr_meta_v2"), 64),
-            (CongestionController::Bbr, Some(64 * 1200))
+            congestion_tuning(Some("bbr_meta_v2"), 64, 1280),
+            (CongestionController::Bbr, Some(64 * 1280))
         );
         assert_eq!(
-            congestion_tuning(Some("bbr_meta_v2"), 0),
-            (CongestionController::Bbr, Some(32 * 1200))
+            congestion_tuning(Some("bbr_meta_v2"), 0, 1242),
+            (CongestionController::Bbr, Some(32 * 1242))
         );
         assert_eq!(
-            congestion_tuning(Some("cubic"), 64),
+            congestion_tuning(Some("cubic"), 64, 1280),
             (CongestionController::Cubic, None)
         );
         assert_eq!(
-            congestion_tuning(Some("new_reno"), 64),
+            congestion_tuning(Some("new_reno"), 64, 1280),
             (CongestionController::NewReno, None)
         );
         assert_eq!(
-            congestion_tuning(None, 64),
+            congestion_tuning(None, 64, 1280),
             (CongestionController::Default, None)
         );
     }
