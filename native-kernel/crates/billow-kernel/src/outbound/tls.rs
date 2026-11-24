@@ -356,7 +356,7 @@ pub fn client_config(
     settings: &TlsSettings,
     tls: &ClientTls,
 ) -> io::Result<Arc<ClientConfig>> {
-    client_config_with(settings, tls, &settings.alpn, false, true)
+    client_config_with(settings, tls, &settings.alpn, Versions::Any, true)
 }
 
 /// TLS client configuration for a QUIC handshake: QUIC requires TLS 1.3 and a
@@ -368,7 +368,7 @@ pub fn quic_client_config(
     alpn: &[String],
     enable_sni: bool,
 ) -> io::Result<Arc<ClientConfig>> {
-    client_config_with(settings, tls, alpn, true, enable_sni)
+    client_config_with(settings, tls, alpn, Versions::Tls13Only, enable_sni)
 }
 
 /// ShadowQUIC's JLS client configuration: TLS 1.3 only, the recorded-random
@@ -406,23 +406,101 @@ pub fn jls_quic_client_config(
     Ok(Arc::new(config))
 }
 
+/// JLS over TCP (anytls `jls-opts`): TLS 1.3 only with the recorded-random
+/// provider, no resumption (a PSK binder would have to be recomputed after the
+/// random is replaced) and a verifier that trusts theServerHello-authenticated
+/// camouflage certificate. The certificate still has to verify on the fallback
+/// path where the ServerHello did not authenticate the account, which is the
+/// pinned client's behaviour.
+pub fn jls_tcp_client_config(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+    state: Arc<crate::outbound::jls::JlsState>,
+) -> io::Result<Arc<ClientConfig>> {
+    use rustls::client::WebPkiServerVerifier;
+
+    let provider = crate::outbound::jls::provider();
+    let inner: Arc<dyn ServerCertVerifier> = if let Some(pins) = &settings.fingerprint {
+        Arc::new(PinnedVerifier {
+            pins: vec![pins.clone()],
+            name_cert_verify: settings.name_cert_verify.clone(),
+            provider: provider.clone(),
+        })
+    } else if let Some(name) = &settings.name_cert_verify {
+        let name = ServerName::try_from(name.clone()).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid name-cert-verify '{name}': {error}"),
+            )
+        })?;
+        let inner =
+            WebPkiServerVerifier::builder_with_provider(Arc::new(tls.roots().clone()), provider)
+                .build()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        Arc::new(NameVerifier { inner, name })
+    } else if settings.skip_cert_verify {
+        Arc::new(AcceptAny { provider })
+    } else {
+        WebPkiServerVerifier::builder_with_provider(Arc::new(tls.roots().clone()), provider)
+            .build()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    };
+    let verifier = Arc::new(crate::outbound::jls::JlsVerifier::new(inner, state));
+    let builder = ClientConfig::builder_with_provider(crate::outbound::jls::provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(io::Error::other)?;
+    let mut config = builder
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    config.alpn_protocols = settings
+        .alpn
+        .iter()
+        .map(|protocol| protocol.as_bytes().to_vec())
+        .collect();
+    config.enable_sni = true;
+    config.resumption = rustls::client::Resumption::disabled();
+    Ok(Arc::new(config))
+}
+
+/// Protocol versions a caller allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Versions {
+    Any,
+    Tls13Only,
+    /// ShadowTLS v1 only works over TLS 1.2: its camouflage relay stops at a
+    /// cleartext Finished, which TLS 1.3 does not send.
+    Tls12Only,
+}
+
+/// ShadowTLS v1's camouflage handshake: TLS 1.2 only, as the pinned client sets
+/// `MaxVersion = VersionTLS12` for that version.
+pub fn client_config_tls12(
+    settings: &TlsSettings,
+    tls: &ClientTls,
+) -> io::Result<Arc<ClientConfig>> {
+    client_config_with(settings, tls, &settings.alpn, Versions::Tls12Only, true)
+}
+
 fn client_config_with(
     settings: &TlsSettings,
     tls: &ClientTls,
     alpn: &[String],
-    tls13_only: bool,
+    versions: Versions,
     enable_sni: bool,
 ) -> io::Result<Arc<ClientConfig>> {
     let provider = provider_for(settings.client_fingerprint.as_deref());
     let builder = ClientConfig::builder_with_provider(provider.clone());
-    let builder = if tls13_only {
-        builder
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(io::Error::other)?
-    } else {
-        builder
+    let builder = match versions {
+        Versions::Any => builder
             .with_safe_default_protocol_versions()
-            .map_err(io::Error::other)?
+            .map_err(io::Error::other)?,
+        Versions::Tls13Only => builder
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(io::Error::other)?,
+        Versions::Tls12Only => builder
+            .with_protocol_versions(&[&rustls::version::TLS12])
+            .map_err(io::Error::other)?,
     };
     let builder = if let Some(pins) = &settings.fingerprint {
         builder

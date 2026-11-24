@@ -1231,6 +1231,147 @@ fn anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink() {
 }
 
 
+const ANYTLS_JLS_USER: &str = "jls-user";
+const ANYTLS_JLS_PASSWORD: &str = "jls-shadow-secret";
+const ANYTLS_SHADOW_TLS_PASSWORD: &str = "shadow-tls-secret";
+
+/// The camouflage TLS endpoint a ShadowTLS/JLS listener relays the handshake to
+/// when the client is not authenticated (ShadowTLS) or as a fallback (JLS). A
+/// second pinned AnyTLS listener with a certificate and `allow-insecure` is a
+/// genuine TLS server the relay can reach.
+fn anytls_camouflage_listener(port: u16) -> String {
+    listener(
+        "anytls",
+        port,
+        ", certificate: CERT, private-key: KEY, users: {camo: camo-password}, allow-insecure: true",
+    )
+    .replace("in-anytls", "in-anytls-camo")
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_over_jls_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "anytls",
+            port,
+            &format!(
+                ", users: {{user1: \"{ANYTLS_PASSWORD}\"}}, jls-config: {{enable: true, users: [{{username: {ANYTLS_JLS_USER}, password: \"{ANYTLS_JLS_PASSWORD}\"}}], sni: localhost, dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}"
+            ),
+        )
+    );
+    with_peer("anytls-jls", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, jls-opts: {{username: {ANYTLS_JLS_USER}, password: \"{ANYTLS_JLS_PASSWORD}\"}}}}\n"
+        ));
+        let marker = "marker-anytls-jls-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("anytls-jls", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_over_jls_with_a_wrong_password_never_reaches_the_sink() {
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "anytls",
+            port,
+            &format!(
+                ", users: {{user1: \"{ANYTLS_PASSWORD}\"}}, jls-config: {{enable: true, users: [{{username: {ANYTLS_JLS_USER}, password: \"{ANYTLS_JLS_PASSWORD}\"}}], sni: localhost, dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}"
+            ),
+        )
+    );
+    with_peer("anytls-jls-wrong", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, jls-opts: {{username: {ANYTLS_JLS_USER}, password: wrong-jls-password}}}}\n"
+        ));
+        let (_, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        expect_not_reached("anytls-jls-wrong-password", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "anytls",
+            port,
+            &format!(
+                ", users: {{user1: \"{ANYTLS_PASSWORD}\"}}, shadow-tls: {{enable: true, version: 1, password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", handshake: {{dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}}}"
+            ),
+        )
+    );
+    with_peer("anytls-shadow-tls", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, shadow-tls-opts: {{password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", version: 1}}}}\n"
+        ));
+        let marker = "marker-anytls-shadow-tls-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("anytls-shadow-tls", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink() {
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "anytls",
+            port,
+            &format!(
+                ", users: {{user1: \"{ANYTLS_PASSWORD}\"}}, shadow-tls: {{enable: true, version: 1, password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", handshake: {{dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}}}"
+            ),
+        )
+    );
+    with_peer("anytls-shadow-tls-wrong", &listeners, |sink, _mihomo, _| {
+        // ShadowTLS v1 authenticates nothing itself (the pinned `serverV1`
+        // relays the handshake and splices raw traffic); the AnyTLS password is
+        // what admits the stream, so a wrong one must still be refused.
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: wrong-anytls-password, sni: localhost, skip-cert-verify: true, shadow-tls-opts: {{password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", version: 1}}}}\n"
+        ));
+        let (_, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        expect_not_reached("anytls-shadow-tls-wrong-password", sink);
+    });
+}
+
+
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
 fn shadowsocks_udp_reaches_the_receiving_side_through_mihomo() {

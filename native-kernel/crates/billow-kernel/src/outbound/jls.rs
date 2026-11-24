@@ -124,11 +124,11 @@ impl JlsState {
         self.phase.load(Ordering::Acquire) == PHASE_REJECTED
     }
 
-    fn mark_authenticated(&self) {
+    pub(crate) fn mark_authenticated(&self) {
         self.phase.store(PHASE_AUTHENTICATED, Ordering::Release);
     }
 
-    fn mark_rejected(&self) {
+    pub(crate) fn mark_rejected(&self) {
         self.phase.store(PHASE_REJECTED, Ordering::Release);
     }
 }
@@ -331,6 +331,12 @@ pub fn server_hello_auth_data(message: &[u8]) -> Option<Vec<u8>> {
     let range = random_range(&data)?;
     data[range].fill(0);
     Some(data)
+}
+
+/// The 32-byte `random` of a ServerHello message.
+pub fn server_hello_random(message: &[u8]) -> Option<&[u8]> {
+    let range = random_range(message)?;
+    message.get(range)
 }
 
 /// The pinned client regenerates a seed when the sealed value looks like a TLS
@@ -553,6 +559,107 @@ pub fn provider() -> Arc<CryptoProvider> {
     provider.kx_groups = vec![&JLS_X25519];
     provider.secure_random = &THREAD_RANDOM;
     Arc::new(provider)
+}
+
+/// A TCP TLS client whose ClientHello random is JLS-sealed.
+pub struct TcpJlsClient {
+    /// The rustls client connection that produced `hello`; every later
+    /// handshake byte is processed by it.
+    pub connection: rustls::ClientConnection,
+    /// The exact ClientHello record to put on the wire.
+    pub hello: Vec<u8>,
+}
+
+/// Split a single complete TLS record: `(handshake message, record length)`.
+fn single_handshake_record(record: &[u8]) -> Option<(&[u8], usize)> {
+    const RECORD_HEADER: usize = 5;
+    const RECORD_HANDSHAKE: u8 = 22;
+    if record.len() < RECORD_HEADER || record[0] != RECORD_HANDSHAKE {
+        return None;
+    }
+    let length = (usize::from(record[3]) << 8) | usize::from(record[4]);
+    if record.len() != RECORD_HEADER + length {
+        return None;
+    }
+    let message = &record[RECORD_HEADER..];
+    let (kind, _, total) = handshake_message(message)?;
+    if kind != HANDSHAKE_CLIENT_HELLO || total != message.len() {
+        return None;
+    }
+    Some((message, RECORD_HEADER))
+}
+
+fn new_tcp_connection(
+    config: &Arc<rustls::ClientConfig>,
+    server_name: rustls_pki_types::ServerName<'static>,
+    rng: &Arc<JlsRng>,
+) -> Result<rustls::ClientConnection, String> {
+    // The provider's `SecureRandom` reads this thread-local; it must be set
+    // only while rustls serialises the ClientHello.
+    let guard = ActiveRngGuard;
+    set_active_rng(Some(rng.clone()));
+    let connection = rustls::ClientConnection::new(config.clone(), server_name)
+        .map_err(|error| format!("rustls client connection: {error}"))?;
+    drop(guard);
+    Ok(connection)
+}
+
+/// Build a TCP TLS connection with the JLS-sealed ClientHello.
+///
+/// The same dry-run/replay construction as the QUIC path: a first connection
+/// records the randomness of the complete ClientHello, the sealed random is
+/// computed from it, and a second connection replays the exact same stream with
+/// only the random fill replaced. The replay is byte-checked against "dry
+/// ClientHello with the random substituted", so a rustls change fails loudly.
+pub fn tcp_client(
+    config: &Arc<rustls::ClientConfig>,
+    credentials: &JlsCredentials,
+    server_name: &str,
+) -> Result<TcpJlsClient, String> {
+    let name = rustls_pki_types::ServerName::try_from(server_name.to_string())
+        .map_err(|error| format!("JLS: invalid server name '{server_name}': {error}"))?
+        .to_owned();
+    for _attempt in 0..4 {
+        let dry_rng = JlsRng::recording();
+        let mut dry = new_tcp_connection(config, name.clone(), &dry_rng)?;
+        let mut dry_hello = Vec::new();
+        dry.write_tls(&mut dry_hello)
+            .map_err(|error| format!("JLS: rustls emitted no ClientHello: {error}"))?;
+        let (message, record_header) = single_handshake_record(&dry_hello)
+            .ok_or("JLS: rustls emitted no complete ClientHello record")?;
+        let auth_data = client_hello_auth_data(message)
+            .ok_or("JLS: client hello authentication data could not be built")?;
+        let range = random_range(message).ok_or("JLS: client hello random is missing")?;
+        let seed = &message[range.clone()];
+        let seed = &seed[..RANDOM_LEN / 2];
+        let sealed = seal_random(credentials, &auth_data, seed)
+            .ok_or("JLS: the client hello random could not be sealed")?;
+        if forbidden_random_suffix(&sealed) {
+            continue;
+        }
+        let calls = dry_rng.recorded_calls();
+        let override_call = calls
+            .iter()
+            .position(|call| call.as_slice() == &message[range.clone()])
+            .ok_or("JLS: the client hello random fill was not recorded")?;
+
+        let real_rng = JlsRng::replay(&dry_rng, override_call, sealed);
+        let mut real = new_tcp_connection(config, name.clone(), &real_rng)?;
+        let mut hello = Vec::new();
+        real.write_tls(&mut hello)
+            .map_err(|error| format!("JLS: replay emitted no ClientHello: {error}"))?;
+        let mut expected = dry_hello.clone();
+        let start = record_header + range.start;
+        expected[start..start + RANDOM_LEN].copy_from_slice(&sealed);
+        if hello != expected {
+            return Err("JLS: replay ClientHello differs from the dry ClientHello".to_string());
+        }
+        return Ok(TcpJlsClient {
+            connection: real,
+            hello,
+        });
+    }
+    Err("JLS: no acceptable sealed random after retries".to_string())
 }
 
 /// Certificate verifier that trusts the JLS-authenticated camouflage
@@ -1032,5 +1139,40 @@ mod tests {
             verify_random(&credentials, &server_auth, &server_hello[server_range]),
             "the Rust JLS derivation must open the pinned server random"
         );
+    }
+
+    /// The TCP path seals the random rustls actually serialises and sends it as
+    /// one TLS record, so the pinned JLS server (which authenticates the
+    /// ClientHello bytes it receives) accepts it.
+    #[test]
+    fn tcp_client_seals_the_serialised_client_hello() {
+        let config = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .expect("versions")
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let credentials = credentials();
+        let client = tcp_client(&config, &credentials, "example.com").expect("tcp client");
+
+        // One TLS handshake record: type 22, then the ClientHello.
+        assert_eq!(client.hello.first().copied(), Some(22));
+        let length = (usize::from(client.hello[3]) << 8) | usize::from(client.hello[4]);
+        assert_eq!(client.hello.len(), 5 + length);
+        let message = &client.hello[5..];
+        let auth_data = client_hello_auth_data(message).expect("auth data");
+        let range = random_range(message).expect("random range");
+        let random = &message[range];
+        assert!(
+            verify_random(&credentials, &auth_data, random),
+            "the wire ClientHello must carry a JLS-sealed random"
+        );
+        let seed = open_random(&credentials, &auth_data, random).expect("open seed");
+        assert_eq!(seed.len(), RANDOM_LEN / 2);
+
+        let mut wrong = credentials.clone();
+        wrong.password.push('x');
+        assert!(!verify_random(&wrong, &auth_data, random));
     }
 }

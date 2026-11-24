@@ -1,0 +1,113 @@
+{
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T31",
+  "attempt": "T31-A1",
+  "baseline": "evidence/t30-option-closure.md",
+  "residual_before": {
+    "anytls": 2,
+    "hysteria2": 6,
+    "vmess": 3,
+    "total": 11
+  },
+  "implemented": [
+    {
+      "family": "anytls",
+      "option": "jls-opts",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::anytls_over_jls_reaches_the_receiving_side_through_mihomo",
+        "mihomo_peers::anytls_over_jls_with_a_wrong_password_never_reaches_the_sink"
+      ],
+      "implementation": [
+        "src/outbound/jls.rs::tcp_client",
+        "src/outbound/tls_io.rs::connect_jls",
+        "src/outbound/tls.rs::jls_tcp_client_config"
+      ]
+    },
+    {
+      "family": "anytls",
+      "option": "shadow-tls-opts version 1",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo",
+        "mihomo_peers::anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink"
+      ],
+      "implementation": [
+        "src/outbound/shadow_tls.rs::wrap (Version::V1)",
+        "src/outbound/tls.rs::client_config_tls12"
+      ]
+    }
+  ],
+  "named_rejections": [
+    {
+      "family": "anytls",
+      "option": "shadow-tls-opts version 2",
+      "reason": "v2 client HMAC (SHA-1 over bytes read) did not match the pinned server's write hash: '[ShadowTLS] hashcode mismatch' in every verification run, including a 250 ms post-handshake drain that read 0 bytes; rejected rather than accepted unverified"
+    },
+    {
+      "family": "anytls",
+      "option": "shadow-tls-opts version 3",
+      "reason": "account lives in the ClientHello session id, which rustls generates internally (rewriting invalidates the transcript)"
+    },
+    {
+      "family": "hysteria2",
+      "option": "ports / hop-interval",
+      "reason": "needs a quinn AsyncUdpSocket that rewrites the send destination and maps the receive source back, plus a connection pool (one QUIC connection per dial here)"
+    },
+    {
+      "family": "hysteria2",
+      "option": "up (Brutal)",
+      "reason": "quinn has no Brutal controller; a TX-rate cap reproduces the rate but not Brutal's loss behaviour, so not claimed as parity"
+    },
+    {
+      "family": "hysteria2",
+      "option": "udp-mtu",
+      "reason": "no Hysteria2 UDP session layer exists (udp is already a registered gap), so the MTU has nothing to size"
+    },
+    {
+      "family": "hysteria2",
+      "option": "bbr-profile",
+      "reason": "quinn BbrConfig has no profile selector"
+    },
+    {
+      "family": "hysteria2",
+      "option": "realm-opts",
+      "reason": "realm HTTP rendezvous + STUN punching; pinned client lives in sing-quic, no material in this tree"
+    },
+    {
+      "family": "vmess",
+      "option": "mkcp-opts",
+      "reason": "KCP state machine + 24-byte header, seed-derived AES-128-GCM header obfuscation, header modes, session per stream"
+    },
+    {
+      "family": "vmess",
+      "option": "tlsmirror-opts",
+      "reason": "mirror/enrollment service and its own record layer (AEAD, padding, traffic shaping)"
+    },
+    {
+      "family": "vmess",
+      "option": "mekya-opts",
+      "reason": "HTTP/2-based multiplexer with the pinned pool/write-delay semantics"
+    }
+  ],
+  "matrix": {
+    "noop": 289,
+    "implemented": 77,
+    "enabled": 129,
+    "problems": 0,
+    "target_family_residual": 9
+  },
+  "verification": {
+    "cargo_test": "all suites pass (168 lib, 50 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, 1 doc-test; 81 ignored peer cases)",
+    "peer_tests": "81 passed, 0 failed (pinned Mihomo v1.19.34)",
+    "option_probe": "0 problems",
+    "runner_test": "10 passed",
+    "differentials": {
+      "t22": "22 pass / 1 skipped / 0 differ",
+      "t23": "28 pass / 1 persistence / 0 differ",
+      "t24": "36 pass / 2 skipped / 0 differ / 6 recorded framing differences",
+      "t25": "47/49 equal / 2 recorded divergences / 0 unexpected",
+      "t5": "12/12 scenarios / 0 differ"
+    }
+  }
+}

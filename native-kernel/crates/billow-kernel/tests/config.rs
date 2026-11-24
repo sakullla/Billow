@@ -713,17 +713,7 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
         (
             "anytls",
             "server: 127.0.0.1, port: 1, password: p",
-            "shadow-tls-opts: {password: p}",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
             "restls-opts: {password: p}",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "jls-opts: {password: p}",
         ),
             ];
     for (kind, base, option) in cases {
@@ -889,10 +879,12 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         // `ech-opts`/`udp-over-tcp` are not socks5 options: Mihomo ignores them
         // there (covered by the no-op list), so they cannot be "enabled".
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
-        // anytls declares these security modes and applies them, so a content
-        // block is a registered gap (not an ignored key).
+        // anytls ShadowTLS v3 carries the account in the ClientHello session
+        // id, which rustls generates internally: a named rejection.
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}"),
-        ("anytls", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {password: p, username: u}"),
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p, version: 3}"),
+        // ShadowTLS and JLS are mutually exclusive in the pinned type.
+        ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}, jls-opts: {username: u, password: p}"),
         ("ss", "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p", "plugin: obfs"),
     ];
     for (kind, base, option) in enabled {
@@ -1010,13 +1002,47 @@ fn anytls_options_are_strict() {
     .expect("anytls session/UoT/fingerprint options load");
     for (field, value) in [
         ("ech-opts", "{enable: true, config: x}"),
-        ("shadow-tls-opts", "{password: p}"),
         ("restls-opts", "{password: p}"),
-        ("jls-opts", "{password: p, username: u}"),
+        ("shadow-tls-opts", "{password: p}"),
+        ("shadow-tls-opts", "{password: p, version: 3}"),
+        ("shadow-tls-opts", "{password: p, version: 4}"),
+        ("jls-opts", "{}"),
     ] {
         let yaml = format!("proxies:\n  - {{name: at, type: anytls, server: x, port: 1, password: p, {field}: {value}}}\nrules: ['MATCH,at']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+    }
+    // ShadowTLS v1/v2 and JLS are implemented security modes: their enabled
+    // forms load with the parsed mode (behaviour is covered by the peer tests).
+    use billow_kernel::proxies::{AnytlsSecurity, Protocol};
+    for (block, want_version) in [("shadow-tls-opts: {password: p, version: 1}", 1u8)] {
+        let yaml = format!("proxies:\n  - {{name: at, type: anytls, server: 127.0.0.1, port: 1, password: p, {block}}}\nrules: ['MATCH,at']\n");
+        let loaded = load_config(&yaml, "t").expect("shadow-tls loads");
+        match &loaded.config.proxies[0].protocol {
+            Protocol::Anytls(p) => match &p.security {
+                AnytlsSecurity::ShadowTls { password, version } => {
+                    assert_eq!(password.expose(), "p");
+                    assert_eq!(*version, want_version);
+                }
+                other => panic!("expected shadow-tls, got {other:?}"),
+            },
+            other => panic!("expected anytls, got {other:?}"),
+        }
+    }
+    let loaded = load_config(
+        "proxies:\n  - {name: at, type: anytls, server: 127.0.0.1, port: 1, password: p, jls-opts: {username: u, password: jp}}\nrules: ['MATCH,at']\n",
+        "t",
+    )
+    .expect("jls loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Anytls(p) => match &p.security {
+            AnytlsSecurity::Jls { username, password } => {
+                assert_eq!(username.expose(), "u");
+                assert_eq!(password.expose(), "jp");
+            }
+            other => panic!("expected jls, got {other:?}"),
+        },
+        other => panic!("expected anytls, got {other:?}"),
     }
 }
 

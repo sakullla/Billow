@@ -618,6 +618,8 @@ for (const [type, key, base, option] of [
   ['anytls', 'min-idle-session', bases.anytls.off, 'min-idle-session: 1'],
   ['anytls', 'disable-reuse', bases.anytls.off, 'disable-reuse: true'],
   ['anytls', 'client-fingerprint', bases.anytls.off, 'client-fingerprint: chrome'],
+  ['anytls', 'jls-opts', bases.anytls.off, 'jls-opts: {username: u, password: p}'],
+  ['anytls', 'shadow-tls-opts', bases.anytls.off, 'shadow-tls-opts: {password: p, version: 1}'],
   ['ss', 'udp-over-tcp', bases.ss.off, 'udp-over-tcp: true'],
   ['ss', 'udp-over-tcp-version', bases.ss.off, 'udp-over-tcp: true, udp-over-tcp-version: 2'],
   ['vmess', 'udp', bases.vmess.off, 'udp: true'],

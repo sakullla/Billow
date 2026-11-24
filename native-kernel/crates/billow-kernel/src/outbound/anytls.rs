@@ -608,11 +608,44 @@ async fn open_session(
             super::peer_of(via[0]),
         ),
     };
-    let mut stream: BoxStream = Box::new(
-        tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
+    let mut stream: BoxStream = match &option.security {
+        crate::proxies::AnytlsSecurity::None => Box::new(
+            tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
+                .await
+                .map_err(|e| handshake("anytls tls", e))?,
+        ),
+        crate::proxies::AnytlsSecurity::ShadowTls { password, version } => {
+            // ShadowTLS replaces the TLS layer entirely: the camouflage
+            // handshake *is* the TLS session, and the AnyTLS frames then travel
+            // inside its plaintext records (pinned `StreamTLSConn` returns the
+            // ShadowTLS connection without a second handshake).
+            super::shadow_tls::wrap(
+                stream,
+                &option.server,
+                &option.tls_settings,
+                tls,
+                password.expose(),
+                *version,
+            )
             .await
-            .map_err(|e| handshake("anytls tls", e))?,
-    );
+            .map_err(|e| handshake("anytls shadow-tls", e))?
+        }
+        crate::proxies::AnytlsSecurity::Jls { username, password } => {
+            let credentials = super::jls::JlsCredentials {
+                username: username.expose().to_string(),
+                password: password.expose().to_string(),
+            };
+            super::tls_io::connect_jls(
+                stream,
+                &option.server,
+                &option.tls_settings,
+                tls,
+                &credentials,
+            )
+            .await
+            .map_err(|e| handshake("anytls jls", e))?
+        }
+    };
     let mut opening = hello(option.password.expose());
     opening.extend_from_slice(&frame(
         CMD_SETTINGS,

@@ -932,7 +932,10 @@ With the pinned option tables that means the trojan/vless `smux` block,
 `http-opts`, `h2-opts`, `xhttp-opts`, a non-AEAD `ss-opts.method`, `plugin`/`plugin-opts`, ws
 early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint` (accepted as a documented rustls approximation, counted as
 a residual rather than parity), vless `flow`/`reality-opts`/`shadow-tls-opts`/
-`restls-opts`/`jls-opts`, anytls `shadow-tls-opts`/`restls-opts`/`jls-opts`, vmess
+`restls-opts`/`jls-opts`, anytls `shadow-tls-opts: version 2/3`/`restls-opts`
+(JLS and ShadowTLS version 1 are implemented: the JLS ClientHello/ServerHello
+random is sealed and verified over a TCP rustls session, and ShadowTLS v1 runs
+the TLS 1.2 camouflage handshake and then hands the raw stream back), vmess
 `alterId > 0`/`global-padding`/`authenticated-length` and the vmess
 mkcp/mekya/TLS-mirror blocks, snell
 `version: 4-6`/`reuse`/`mode`/obfs `tls`, trusttunnel
@@ -1037,8 +1040,9 @@ is what Mihomo does with them. Three cases are rejected even when "empty":
 and `reality-opts`/`shadow-tls-opts`/`restls-opts`/`jls-opts` require
 `tls: true` (Mihomo rejects them without TLS, so they are not ignored). The
 same keys are ignored on a type whose option table does not declare them
-(`socks5`/`http`/`ss`); `anytls` does declare them and applies them as a
-security mode, so there a content block stays a registered rejection.
+(`socks5`/`http`/`ss`); `anytls` applies `jls-opts` and `shadow-tls-opts`
+`version: 1` as security modes, while ShadowTLS version 2 (the pinned default)
+and version 3 stay registered rejections with the field named.
 
 A transport block for a transport the configuration did not select
 (`grpc-opts`, `http-opts`, `h2-opts`, `xhttp-opts` with `network: tcp|ws`) is

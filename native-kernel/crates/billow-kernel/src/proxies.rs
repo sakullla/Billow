@@ -285,12 +285,30 @@ pub enum VlessNetwork {
 
 /// AnyTLS (Mihomo `adapter/outbound/anytls.go`): TLS to the server with a
 /// SHA-256 password prefix, then a session-multiplexed stream per connection.
+///
+/// The TLS-layer security mode of an AnyTLS outbound (`ShadowTLSOpts` /
+/// `JLSOpts` in the pinned type). At most one may be set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnytlsSecurity {
+    None,
+    /// `shadow-tls-opts`: a camouflage TLS handshake, then ShadowTLS framing.
+    ShadowTls {
+        password: Secret,
+        /// Pinned version number (0 is normalised to 2).
+        version: u8,
+    },
+    /// `jls-opts`: the JLS-sealed ClientHello/ServerHello.
+    Jls { username: Secret, password: Secret },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnytlsOutbound {
     pub server: String,
     pub port: u16,
     pub password: Secret,
     pub tls_settings: TlsSettings,
+    /// `shadow-tls-opts` / `jls-opts`; mutually exclusive in the pinned type.
+    pub security: AnytlsSecurity,
     /// `udp: true`: datagrams travel as UoT over a dedicated AnyTLS stream.
     pub udp: bool,
     /// `client-metadata`: the `client=` value of the session settings frame.
@@ -3129,20 +3147,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let disable_reuse = entry.bool("disable-reuse")?.unwrap_or(false);
     let udp = entry.bool("udp")?.unwrap_or(false);
     let client_metadata = entry.string("client-metadata")?.filter(|s| !s.is_empty());
-    // The pinned type applies ShadowTLS/Restls/JLS by wrapping the TLS layer;
-    // rustls cannot reproduce their ClientHello/session-id hooks, so a
-    // non-empty block is a named rejection (never accepted and ignored).
-    for key in ["shadow-tls-opts", "restls-opts", "jls-opts"] {
-        if entry
-            .mapping
-            .get(serde_yaml::Value::String(key.to_string()))
-            .is_some_and(|value| !is_noop_value(value))
-        {
-            return Err(entry.unsupported(format!(
-                "option '{key}' is not implemented: the pinned anytls outbound wraps TLS in its security mode, which rustls cannot reproduce (no ClientHello/session-id hook); reconfigure the peer without it"
-            )));
-        }
-    }
+    let security = parse_anytls_security(entry)?;
     let session_pool = crate::outbound::anytls::AnytlsPool::new(
         idle_session_check_interval,
         idle_session_timeout,
@@ -3182,6 +3187,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
         port,
         password,
         tls_settings,
+        security,
         udp,
         client_metadata,
         idle_session_check_interval,
@@ -3191,6 +3197,134 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
         session_pool,
         dialer_proxy,
     })
+}
+
+fn parse_anytls_security(entry: &mut Entry<'_>) -> Result<AnytlsSecurity, ConfigError> {
+    // ShadowTLS (pinned `ShadowTLSOptions.Parse`): both fields empty is no-op.
+    let mut shadow = None;
+    if let Some(block) = entry.block("shadow-tls-opts")? {
+        reject_block_keys(entry, "shadow-tls-opts", block, &["password", "version"])?;
+        let password = block_string(entry, "shadow-tls-opts", block, "password")?;
+        let version = block_int(entry, "shadow-tls-opts", block, "version")?;
+        if !password.is_empty() || version != 0 {
+            match version {
+                // Version 1 is a plain camouflage TLS handshake followed by the
+                // framed protocol on the raw connection; it is implemented and
+                // verified against the pinned listener.
+                1 => shadow = Some((Secret::new(password), 1u8)),
+                // Version 2 (the pinned default, `version: 0` -> 2) is
+                // implemented as a client, but the HMAC over the bytes the
+                // handshake read does not match the pinned server's write hash
+                // in verification (`[ShadowTLS] hashcode mismatch`), so it stays
+                // a named rejection instead of an unverified accept.
+                0 | 2 => {
+                    return Err(entry.unsupported(
+                        "option 'shadow-tls-opts' version 2 (the pinned default) is not implemented: the client HMAC framing did not authenticate against the pinned ShadowTLS server in verification, so it is rejected instead of silently falling back; set 'version: 1' for the implemented mode",
+                    ))
+                }
+                3 => {
+                    return Err(entry.unsupported(
+                        "option 'shadow-tls-opts' version 3 is not implemented: it carries the account in the ClientHello session id, which rustls generates internally (a rewrite would invalidate the handshake transcript); set 'version: 1' for the implemented mode",
+                    ))
+                }
+                other => {
+                    return Err(entry.invalid(format!(
+                        "option 'shadow-tls-opts' version {other} is unknown (Mihomo accepts 1, 2 or 3)"
+                    )))
+                }
+            }
+        }
+    }
+    // JLS (pinned `NewConfig`): `username` and `password` are required.
+    let mut jls = None;
+    if let Some(block) = entry.block("jls-opts")? {
+        reject_block_keys(entry, "jls-opts", block, &["username", "password"])?;
+        let username = block_string(entry, "jls-opts", block, "username")?;
+        let password = block_string(entry, "jls-opts", block, "password")?;
+        if username.is_empty() || password.is_empty() {
+            return Err(entry.unsupported(
+                "option 'jls-opts' must set its required fields 'username' and 'password' (Mihomo rejects the empty block)",
+            ));
+        }
+        jls = Some((Secret::new(username), Secret::new(password)));
+    }
+    // Restls is a different TLS camouflage implementation; it stays a named
+    // rejection rather than being accepted and ignored.
+    if entry
+        .mapping
+        .get(serde_yaml::Value::String("restls-opts".to_string()))
+        .is_some_and(|value| !is_noop_value(value))
+    {
+        return Err(entry.unsupported(
+            "option 'restls-opts' is not implemented: the pinned anytls outbound wraps TLS in Restls, which rewrites the TLS handshake bytes rustls has already authenticated",
+        ));
+    }
+    match (shadow, jls) {
+        (None, None) => Ok(AnytlsSecurity::None),
+        (Some((password, version)), None) => {
+            Ok(AnytlsSecurity::ShadowTls { password, version })
+        }
+        (None, Some((username, password))) => Ok(AnytlsSecurity::Jls { username, password }),
+        (Some(_), Some(_)) => Err(entry.unsupported(
+            "option 'shadow-tls-opts' and 'jls-opts' are mutually exclusive (Mihomo rejects the combination: security modes are mutually exclusive: ShadowTLS, JLS)",
+        )),
+    }
+}
+
+fn reject_block_keys(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+    allowed: &[&str],
+) -> Result<(), ConfigError> {
+    for key in block.keys() {
+        let Some(key) = key.as_str() else {
+            return Err(entry.invalid(format!("option '{option}' keys must be strings")));
+        };
+        let key = key.replace('_', "-");
+        if !allowed.contains(&key.as_str()) {
+            return Err(entry.unsupported(format!(
+                "option '{option}.{key}' is not implemented"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn block_string(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<String, ConfigError> {
+    match block.get(serde_yaml::Value::String(key.to_string())) {
+        None | Some(serde_yaml::Value::Null) => Ok(String::new()),
+        Some(serde_yaml::Value::String(value)) => Ok(value.clone()),
+        Some(other) => Err(entry.invalid(format!(
+            "option '{option}.{key}' must be a string, found {}",
+            crate::config::kind_name(other)
+        ))),
+    }
+}
+
+fn block_int(
+    entry: &Entry<'_>,
+    option: &str,
+    block: &serde_yaml::Mapping,
+    key: &str,
+) -> Result<i64, ConfigError> {
+    match block.get(serde_yaml::Value::String(key.to_string())) {
+        None | Some(serde_yaml::Value::Null) => Ok(0),
+        Some(serde_yaml::Value::Number(value)) => {
+            value.as_i64().ok_or_else(|| {
+                entry.invalid(format!("option '{option}.{key}' must be an integer"))
+            })
+        }
+        Some(other) => Err(entry.invalid(format!(
+            "option '{option}.{key}' must be an integer, found {}",
+            crate::config::kind_name(other)
+        ))),
+    }
 }
 
 /// VMess (`adapter/outbound/vmess.go`, `transport/vmess`). Only the AEAD

@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t30-a2-target/debug/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t31-a1-target/debug/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 289, implemented cases: 75, enabled cases: 131, problems: 0
+# no-op cases: 289, implemented cases: 77, enabled cases: 129, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -356,6 +356,8 @@ impl    anytls  idle-session-timeout         rust=accept mihomo=accept
 impl    anytls  min-idle-session             rust=accept mihomo=accept
 impl    anytls  disable-reuse                rust=accept mihomo=accept
 impl    anytls  client-fingerprint           rust=accept mihomo=accept
+impl    anytls  jls-opts                     rust=accept mihomo=accept
+impl    anytls  shadow-tls-opts              rust=accept mihomo=accept
 impl    ss      udp-over-tcp                 rust=accept mihomo=accept
 impl    ss      udp-over-tcp-version         rust=accept mihomo=accept
 impl    vmess   udp                          rust=accept mihomo=accept
@@ -382,9 +384,7 @@ enabled vless   shadow-tls-opts              rust=reject mihomo=reject
 enabled vless   restls-opts                  rust=reject mihomo=reject
 enabled vless   jls-opts                     rust=reject mihomo=reject
 enabled anytls  ech-opts                     rust=reject mihomo=reject
-enabled anytls  shadow-tls-opts              rust=reject mihomo=accept
 enabled anytls  restls-opts                  rust=reject mihomo=reject
-enabled anytls  jls-opts                     rust=reject mihomo=accept
 enabled vmess   global-padding               rust=reject mihomo=reject
 enabled vmess   authenticated-length         rust=reject mihomo=reject
 enabled vmess   reality-opts                 rust=reject mihomo=reject

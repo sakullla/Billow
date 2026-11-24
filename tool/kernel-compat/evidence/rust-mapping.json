@@ -576,14 +576,15 @@
         "idle-session-timeout",
         "min-idle-session",
         "disable-reuse",
+        "jls-opts (username, password)",
+        "shadow-tls-opts version 1 (password)",
         "client-fingerprint (approximation: closest rustls profile, counted as residual)"
       ],
       "udp": "implemented: `udp: true` opens a UoT stream (`sp.v2.udp-over-tcp.arpa`) and frames `u16 length || payload`; one stream per destination (pinned `ListenPacketContext`), the server connection honours the TCP `dialer-proxy` chain, and the idle-session pool honours the reuse knobs; tested against the pinned anytls listener",
       "notImplemented": [
         "ech-opts",
-        "shadow-tls-opts",
-        "restls-opts",
-        "jls-opts"
+        "shadow-tls-opts: version 2 (the pinned default) and version 3",
+        "restls-opts"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
@@ -595,9 +596,16 @@
         "tests/mihomo_peers.rs::anytls_udp_uot_reaches_the_echo_through_mihomo",
         "tests/mihomo_peers.rs::anytls_udp_reaches_two_destinations_from_one_association",
         "tests/mihomo_peers.rs::chained_anytls_udp_with_a_dead_hop_never_reaches_the_echo",
-        "tests/config.rs::anytls_session_intervals_match_the_pinned_normalisation"
+        "tests/config.rs::anytls_session_intervals_match_the_pinned_normalisation",
+        "src/outbound/jls.rs::tests::tcp_client_seals_the_serialised_client_hello",
+        "src/outbound/shadow_tls.rs::tests::framing_prefixes_the_hmac_and_uses_application_data_records",
+        "tests/mihomo_peers.rs::anytls_over_jls_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::anytls_over_jls_with_a_wrong_password_never_reaches_the_sink",
+        "tests/mihomo_peers.rs::anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink"
       ],
-      "notes": "Session reuse follows the pinned `anytls/session.Client`: idle sessions are pooled per outbound, `disable-reuse` closes a session when its stream ends, `min-idle-session`/`idle-session-timeout` bound the sweep, a background ticker runs every `idle-session-check-interval` (started on the first pooled session, aborted with the pool), and intervals/timeouts `<= 5s` are normalised to the pinned 30s. `client-metadata` is sent in the settings frame. A UoT association is opened per destination (the pinned `ListenPacketContext` shape) and its AnyTLS server connection honours the same single-socks5 `dialer-proxy` hop as TCP. `shadow-tls-opts`/`restls-opts`/`jls-opts` remain named rejections: rustls cannot set the uTLS session id / rewrite the ClientHello+ServerHello random those modes need. `client-fingerprint` is applied as the closest rustls profile (browser key-exchange list); extension order/ciphers are not reproduced, so the 4 family rows are approximations counted as residuals, never byte parity. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "Session reuse follows the pinned `anytls/session.Client`: idle sessions are pooled per outbound, `disable-reuse` closes a session when its stream ends, `min-idle-session`/`idle-session-timeout` bound the sweep, a background ticker runs every `idle-session-check-interval` (started on the first pooled session, aborted with the pool), and intervals/timeouts `<= 5s` are normalised to the pinned 30s. `client-metadata` is sent in the settings frame. A UoT association is opened per destination (the pinned `ListenPacketContext` shape) and its AnyTLS server connection honours the same single-socks5 `dialer-proxy` hop as TCP. `shadow-tls-opts`/`restls-opts`/`jls-opts` remain named rejections: rustls cannot set the uTLS session id / rewrite the ClientHello+ServerHello random those modes need. `client-fingerprint` is applied as the closest rustls profile (browser key-exchange list); extension order/ciphers are not reproduced, so the 4 family rows are approximations counted as residuals, never byte parity. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
+      "security": "implemented for jls-opts and shadow-tls-opts version 1: the JLS ClientHello/ServerHello random is sealed and verified over a TCP rustls session built from the recorded-random provider (`src/outbound/jls.rs::tcp_client`, `src/outbound/tls_io.rs`), and ShadowTLS v1 runs the TLS 1.2 camouflage handshake and then hands the raw stream back (pinned `serverV1` splices raw traffic); both verified end to end against the pinned anytls listener (`jls-config`/`shadow-tls` inbound blocks). ShadowTLS v2 (the default) stays a named rejection: its client HMAC over the bytes the handshake read did not match the pinned server hash in verification (`[ShadowTLS] hashcode mismatch`), and v3 needs a ClientHello session-id hook rustls does not expose. Restls stays a named rejection."
     },
     "vmess": {
       "status": "implemented",
