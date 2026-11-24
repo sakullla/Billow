@@ -1258,7 +1258,7 @@
     },
     "hysteria2": {
       "status": "partial",
-      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets), the initial/max stream/connection receive windows mapped to quinn, `up` as a Brutal sender (pinned window formula), `bbr-profile` mapped to the BBR initial window (quinn has no profile selector; the profile now takes precedence over `cwnd`), `udp-mtu` mapped to the QUIC initial path MTU, Salamander and Gecko obfuscation, `ports`/`hop-interval` port hopping on a wrapped `quinn::AsyncUdpSocket`, and the realm rendezvous client (HTTP control `/connect`, STUN discovery, HYRLMv1 hole punching, then QUIC over the punched socket). UDP remains unimplemented (no Hysteria UDP session relay) and `ech-opts` is rejected by name, unchanged from T30.",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets), the initial/max stream/connection receive windows mapped to quinn, `up` as a Brutal sender (pinned window formula), `bbr-profile` mapped to the BBR initial window (quinn has no profile selector; the profile now takes precedence over `cwnd`), `udp-mtu` mapped to the QUIC initial path MTU, Salamander and Gecko obfuscation, `ports`/`hop-interval` port hopping on a wrapped `quinn::AsyncUdpSocket`, and the realm rendezvous client (HTTP control `/connect`, STUN discovery, HYRLMv1 hole punching, then QUIC over the punched socket). The realm control TLS block keeps its `fingerprint` (SHA-256 certificate DER pin, enforced even with `skip-cert-verify`) and presents `certificate`/`private-key` as the control mTLS identity; both are validated at load, and `realm-opts` with a non-empty `ports` pool is the pinned `realm and port hopping are mutually exclusive` error. UDP remains unimplemented (no Hysteria UDP session relay) and `ech-opts` is rejected by name, unchanged from T30.",
       "options": [
         "server",
         "port",
@@ -1322,7 +1322,12 @@
         "src/outbound/hysteria2_realm.rs::tests::stun_response_decodes_the_xor_mapped_address",
         "tests/mihomo_peers.rs::hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo",
-        "tests/mihomo_peers.rs::hysteria2_realm_reaches_the_receiving_side_through_mihomo"
+        "tests/mihomo_peers.rs::hysteria2_realm_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_realm_fingerprint_pins_the_control_certificate_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_realm_wrong_fingerprint_never_reaches_the_sink",
+        "tests/mihomo_peers.rs::hysteria2_realm_client_certificate_authenticates_to_the_control_server",
+        "tests/mihomo_peers.rs::hysteria2_realm_without_the_required_client_certificate_never_reaches_the_sink",
+        "tests/quic_peers.rs::hysteria2_realm_rejects_port_hopping_and_keeps_its_tls_identity"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },

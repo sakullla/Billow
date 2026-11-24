@@ -321,7 +321,9 @@ impl ServerCertVerifier for NameVerifier {
 
 /// Load `certificate`/`private-key`: inline PEM when the value contains a PEM
 /// header, otherwise a file path (the pinned loader also tries inline first).
-fn client_auth(
+/// Also called by the realm `realm-opts` parser so an identity that cannot be
+/// loaded is a load-time error, not a silent dial-time gap.
+pub(crate) fn client_auth(
     settings: &TlsSettings,
 ) -> io::Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
     match (&settings.certificate, &settings.private_key) {

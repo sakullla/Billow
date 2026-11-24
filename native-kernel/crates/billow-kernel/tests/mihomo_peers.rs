@@ -2394,6 +2394,220 @@ fn hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihom
     });
 }
 
+/// SHA-256 of the peer's leaf certificate DER: the pinned `fingerprint` form
+/// (`ca.NewFingerprintVerifier` hashes `cert.Raw`).
+fn certificate_pin(certs: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let pem = std::fs::read(certs.join("cert.pem")).expect("read peer certificate");
+    let der = rustls_pemfile::certs(&mut pem.as_slice())
+        .next()
+        .expect("peer certificate is present")
+        .expect("peer certificate parses");
+    Sha256::digest(der.as_ref())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn wait_realm_registered(mihomo: &Mihomo) {
+    for _ in 0..200 {
+        let log = mihomo.log();
+        if log.contains("re-registered with control") || log.contains("registered realm=") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the pinned realm server did not register: {}", mihomo.log());
+}
+
+/// Control listener plus the pinned hysteria2 listener that registers to it.
+/// `control_extra` is appended to the control listener (for client auth);
+/// `realm_extra` is appended inside the actor's `realm-opts` (for its identity).
+fn realm_listeners(
+    control_port: u16,
+    realm_port: u16,
+    token: &str,
+    realm_id: &str,
+    stun: u16,
+    control_extra: &str,
+    realm_extra: &str,
+) -> String {
+    format!(
+        "  - {{name: realm-control, type: hysteria2-realm, listen: 127.0.0.1, port: {control_port}, certificate: CERT, private-key: KEY, token: \"{token}\"{control_extra}}}\n  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {realm_port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]{realm_extra}}}}}\n"
+    )
+}
+
+/// The realm `fingerprint` is the SHA-256 of the control certificate. A
+/// matching pin accepts the self-signed control certificate even with
+/// `skip-cert-verify: true` (the pinned `GetTLSConfig` installs the fingerprint
+/// verifier first and then sets InsecureSkipVerify), so the pin is not lost to
+/// the insecure flag.
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_realm_fingerprint_pins_the_control_certificate_through_mihomo() {
+    let Some(certs) = cert_dir() else {
+        skip(
+            "hysteria2-realm-pin",
+            "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem",
+        );
+        return;
+    };
+    let pin = certificate_pin(&certs);
+    let stun = common::stun_server();
+    let control_port = free_port();
+    let realm_port = free_port();
+    let token = "realm-token";
+    let realm_id = "billow";
+    let listeners = realm_listeners(control_port, realm_port, token, realm_id, stun, "", "");
+    let rule = format!("DST-PORT,{control_port},DIRECT\n  - MATCH,sink-http");
+    with_quic_peer_rule("hysteria2-realm-pin", &listeners, &rule, |sink, mihomo| {
+        wait_realm_registered(mihomo);
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {realm_port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, fingerprint: '{pin}', token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n"
+        ));
+        let marker = "marker-hysteria2-realm-pin-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-realm-pin", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+/// A pin that does not match the control certificate must abort the control
+/// TLS handshake before the realm request is made.
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_realm_wrong_fingerprint_never_reaches_the_sink() {
+    let stun = common::stun_server();
+    let control_port = free_port();
+    let realm_port = free_port();
+    let token = "realm-token";
+    let realm_id = "billow";
+    let wrong = "00".repeat(32);
+    let listeners = realm_listeners(control_port, realm_port, token, realm_id, stun, "", "");
+    let rule = format!("DST-PORT,{control_port},DIRECT\n  - MATCH,sink-http");
+    with_quic_peer_rule(
+        "hysteria2-realm-wrong-pin",
+        &listeners,
+        &rule,
+        |sink, mihomo| {
+            wait_realm_registered(mihomo);
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {realm_port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, fingerprint: '{wrong}', token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n"
+            ));
+            let (status, _) = connect(
+                running.proxy,
+                &format!("127.0.0.1:{}", sink.port),
+                b"must-not-arrive",
+            );
+            assert_eq!(
+                status, "HTTP/1.1 502 Bad Gateway",
+                "the control certificate does not match the pin, so the realm dial fails"
+            );
+            expect_not_reached("hysteria2-realm-wrong-pin", sink);
+        },
+    );
+}
+
+/// The control server can require a client certificate; the realm block must
+/// load `certificate`/`private-key` and the control TLS must present it.
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_realm_client_certificate_authenticates_to_the_control_server() {
+    let Some(certs) = cert_dir() else {
+        skip(
+            "hysteria2-realm-client-cert",
+            "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem",
+        );
+        return;
+    };
+    let stun = common::stun_server();
+    let control_port = free_port();
+    let realm_port = free_port();
+    let token = "realm-token";
+    let realm_id = "billow";
+    // `require-any` asks for a client certificate without a CA to verify it,
+    // so the peer's self-signed pair is enough for both sides.
+    let listeners = realm_listeners(
+        control_port,
+        realm_port,
+        token,
+        realm_id,
+        stun,
+        ", client-auth-type: require-any",
+        ", certificate: CERT, private-key: KEY",
+    );
+    let cert_path = certs.join("cert.pem");
+    let key_path = certs.join("key.pem");
+    let rule = format!("DST-PORT,{control_port},DIRECT\n  - MATCH,sink-http");
+    with_quic_peer_rule(
+        "hysteria2-realm-client-cert",
+        &listeners,
+        &rule,
+        |sink, mihomo| {
+            wait_realm_registered(mihomo);
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {realm_port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, certificate: '{}', private-key: '{}', token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n",
+                cert_path.display(),
+                key_path.display()
+            ));
+            let marker = "marker-hysteria2-realm-client-cert-through-mihomo";
+            let status = connect_while(
+                running.proxy,
+                &format!("127.0.0.1:{}", sink.port),
+                marker.as_bytes(),
+                || expect_marker("hysteria2-realm-client-cert", sink, marker),
+            );
+            assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        },
+    );
+}
+
+/// Without a client certificate the control TLS handshake is rejected.
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_realm_without_the_required_client_certificate_never_reaches_the_sink() {
+    let stun = common::stun_server();
+    let control_port = free_port();
+    let realm_port = free_port();
+    let token = "realm-token";
+    let realm_id = "billow";
+    let listeners = realm_listeners(
+        control_port,
+        realm_port,
+        token,
+        realm_id,
+        stun,
+        ", client-auth-type: require-any",
+        ", certificate: CERT, private-key: KEY",
+    );
+    let rule = format!("DST-PORT,{control_port},DIRECT\n  - MATCH,sink-http");
+    with_quic_peer_rule(
+        "hysteria2-realm-no-client-cert",
+        &listeners,
+        &rule,
+        |sink, mihomo| {
+            wait_realm_registered(mihomo);
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {realm_port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n"
+            ));
+            let (status, _) = connect(
+                running.proxy,
+                &format!("127.0.0.1:{}", sink.port),
+                b"must-not-arrive",
+            );
+            assert_eq!(
+                status, "HTTP/1.1 502 Bad Gateway",
+                "the control server requires a client certificate and none is configured"
+            );
+            expect_not_reached("hysteria2-realm-no-client-cert", sink);
+        },
+    );
+}
+
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
 fn hysteria2_realm_reaches_the_receiving_side_through_mihomo() {

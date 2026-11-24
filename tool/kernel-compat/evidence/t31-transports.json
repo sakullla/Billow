@@ -1,7 +1,7 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T31",
-  "attempt": "T31-A3",
+  "attempt": "T31-A4",
   "baseline": "evidence/t30-option-closure.md",
   "residual_before": {
     "anytls": 2,
@@ -139,16 +139,22 @@
       "state": "implemented",
       "verification": [
         "mihomo_peers::hysteria2_realm_reaches_the_receiving_side_through_mihomo",
+        "mihomo_peers::hysteria2_realm_fingerprint_pins_the_control_certificate_through_mihomo",
+        "mihomo_peers::hysteria2_realm_wrong_fingerprint_never_reaches_the_sink",
+        "mihomo_peers::hysteria2_realm_client_certificate_authenticates_to_the_control_server",
+        "mihomo_peers::hysteria2_realm_without_the_required_client_certificate_never_reaches_the_sink",
+        "quic_peers::hysteria2_realm_rejects_port_hopping_and_keeps_its_tls_identity",
         "outbound::hysteria2_realm::tests::punch_packets_round_trip_and_reject_a_wrong_key",
         "outbound::hysteria2_realm::tests::stun_response_decodes_the_xor_mapped_address",
-        "outbound::hysteria2_realm::tests::http_responses_decode_content_length_and_chunked_bodies",
-        "quic_peers::hysteria2_transport_options_are_parsed"
+        "outbound::hysteria2_realm::tests::http_responses_decode_content_length_and_chunked_bodies"
       ],
       "implementation": [
         "src/outbound/hysteria2_realm.rs (control HTTP/1.1 over TLS, STUN, punch, QUIC over the punched socket)",
-        "src/outbound/quic.rs::connect_over_socket"
+        "src/outbound/quic.rs::connect_over_socket",
+        "src/proxies.rs::parse_hysteria2_realm (control TLS identity and the pinned port-hop exclusion)",
+        "src/outbound/tls.rs::client_config (PinnedVerifier + client_auth)"
       ],
-      "note": "The client resolves the control URL, binds one UDP socket per family, discovers its mapped address with STUN binding requests (XOR-MAPPED-ADDRESS), posts /v1/{realm-id}/connect with the nonce/key, punches with HYRLMv1 HELLO/ACK packets (100 ms, 10 s cap, symmetric-NAT candidate expansion) and runs the QUIC handshake over the same socket to the returned peer address. Verified end to end with the pinned `hysteria2-realm` control listener plus a pinned `hysteria2` listener with `realm-opts` registering to it; both sides use a loopback STUN server, so the control HTTP, STUN, punch and post-punch QUIC connection are all exercised. The control client speaks HTTP/1.1 (control servers also serve h2, which this path does not negotiate)."
+      "note": "The client resolves the control URL, binds one UDP socket per family, discovers its mapped address with STUN binding requests (XOR-MAPPED-ADDRESS), posts /v1/{realm-id}/connect with the nonce/key, punches with HYRLMv1 HELLO/ACK packets (100 ms, 10 s cap, symmetric-NAT candidate expansion) and runs the QUIC handshake over the same socket to the returned peer address. The realm control TLS block now carries its identity: `fingerprint` is the pinned SHA-256 of the presented certificate DER and is installed before `skip-cert-verify`, so a pin is still enforced when the insecure flag is set (matching `ca.GetTLSConfig`); `certificate`/`private-key` are loaded and presented as the control mTLS client identity. Both are validated at load (inline PEM or an absolute path, both fields together), so an unsupported shape is a named rejection rather than a silent drop. `realm-opts` plus a non-empty `ports` pool is rejected with the pinned `realm and port hopping are mutually exclusive`. Verified end to end with the pinned `hysteria2-realm` control listener plus a pinned `hysteria2` listener with `realm-opts` registering to it; both sides use a loopback STUN server, so the control HTTP, STUN, punch and post-punch QUIC connection are all exercised. The control client speaks HTTP/1.1 (control servers also serve h2, which this path does not negotiate)."
     },
     {
       "family": "vmess",
@@ -226,8 +232,8 @@
     "residual_note": "All T31 target rows are implemented or impl rows. The remaining hysteria2 gaps are `udp` (no UDP session relay) and `ech-opts` (rejected by both engines); the remaining anytls gaps are ShadowTLS v3 and Restls."
   },
   "verification": {
-    "cargo_test": "all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic peers, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 90 ignored mihomo peer cases)",
-    "peer_tests": "90 passed, 0 failed (pinned Mihomo v1.19.34), including the new gecko, realm and bbr-profile cases",
+    "cargo_test": "all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic peers, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 94 ignored mihomo peer cases)",
+    "peer_tests": "94 passed, 0 failed (pinned Mihomo v1.19.34), including the new gecko, realm, realm fingerprint pin (matching and wrong), realm control mTLS (present and missing) and bbr-profile cases",
     "option_probe": "291 / 87 / 119, 0 problems (no enabled T31 target row remains)",
     "runner_test": "10 passed",
     "differentials": {

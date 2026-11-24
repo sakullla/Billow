@@ -4607,6 +4607,12 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         }
     }
     let realm = parse_hysteria2_realm(entry)?;
+    // The pinned `hysteria2.NewClient` rejects a non-empty port pool together
+    // with realm rendezvous: the punch owns the UDP socket and the port hop
+    // would rewrite the same destination.
+    if realm.is_some() && !ports.is_empty() {
+        return Err(entry.invalid("realm and port hopping are mutually exclusive"));
+    }
     // quinn exposes one receive window per stream/connection (it uses the same
     // value as both the initial and maximum): take the maximum when both are
     // set, otherwise the initial one.
@@ -4741,11 +4747,24 @@ fn parse_hysteria2_realm(
         "name-cert-verify",
     )?)
     .filter(|value| !value.is_empty());
-    // Fingerprint/certificate/private-key are parsed by the shared TLS reader
-    // when the realm client is built; they are validated here for shape only.
-    let _ = block_string(entry, "realm-opts", block, "fingerprint")?;
-    let _ = block_string(entry, "realm-opts", block, "certificate")?;
-    let _ = block_string(entry, "realm-opts", block, "private-key")?;
+    // `fingerprint` is the pinned SHA-256 certificate pin (DER, not SPKI) and
+    // must be applied even when `skip-cert-verify` is true: `GetTLSConfig`
+    // installs the fingerprint verifier and only then sets InsecureSkipVerify.
+    let fingerprint = block_string(entry, "realm-opts", block, "fingerprint")?;
+    if !fingerprint.is_empty() {
+        tls_settings.fingerprint = Some(parse_fingerprint(&fingerprint).map_err(|error| {
+            entry.invalid(format!("option 'realm-opts.fingerprint': {error}"))
+        })?);
+    }
+    let certificate = block_string(entry, "realm-opts", block, "certificate")?;
+    if !certificate.is_empty() {
+        tls_settings.certificate = Some(certificate);
+    }
+    let private_key = block_string(entry, "realm-opts", block, "private-key")?;
+    if !private_key.is_empty() {
+        tls_settings.private_key = Some(private_key);
+    }
+    validate_realm_tls_material(entry, &tls_settings)?;
     Ok(Some(Hysteria2Realm {
         server_url,
         token,
@@ -4753,6 +4772,52 @@ fn parse_hysteria2_realm(
         stun_servers,
         tls_settings,
     }))
+}
+
+/// Validate the realm-control client identity at load, like the pinned
+/// `NewTLSKeyPairLoader` does when `GetTLSConfig` builds the control client:
+/// both fields are required together, an inline PEM is parsed, and a path must
+/// be absolute (the kernel has no configuration-directory resolver, so a
+/// relative path would otherwise be read from the process CWD — silently
+/// different from the pinned `C.Path.Resolve`).
+fn validate_realm_tls_material(
+    entry: &Entry<'_>,
+    settings: &TlsSettings,
+) -> Result<(), ConfigError> {
+    match (&settings.certificate, &settings.private_key) {
+        (None, None) => return Ok(()),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(entry.invalid(
+                "options 'realm-opts.certificate' and 'realm-opts.private-key' must be set together",
+            ))
+        }
+        (Some(_), Some(_)) => {}
+    }
+    for (name, value) in [
+        ("certificate", settings.certificate.as_deref().unwrap_or_default()),
+        ("private-key", settings.private_key.as_deref().unwrap_or_default()),
+    ] {
+        if value.contains("-----BEGIN") {
+            continue;
+        }
+        let path = std::path::Path::new(value);
+        if !path.is_absolute() {
+            return Err(entry.invalid(format!(
+                "option 'realm-opts.{name}' must be an inline PEM or an absolute path (relative paths are not resolvable)"
+            )));
+        }
+        if !path.is_file() {
+            return Err(entry.invalid(format!(
+                "option 'realm-opts.{name}' file '{value}' does not exist"
+            )));
+        }
+    }
+    crate::outbound::tls::client_auth(settings).map_err(|error| {
+        entry.invalid(format!(
+            "option 'realm-opts.certificate'/'realm-opts.private-key': {error}"
+        ))
+    })?;
+    Ok(())
 }
 
 /// Hysteria v1 (`adapter/outbound/hysteria.go`). `up` and `down` are required

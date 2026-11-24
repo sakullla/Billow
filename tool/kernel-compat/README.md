@@ -314,7 +314,11 @@ camouflage handshake disables TLS 1.3 tickets so the digest ends on the pinned
 server's last write); hysteria2 `ports`/`hop-interval` (wrapped
 `quinn::AsyncUdpSocket`), `obfs: salamander`, `obfs: gecko` (long-header
 fragmentation/padding/reassembly), `realm-opts` (control HTTP `/connect` +
-STUN + HYRLMv1 punching, then QUIC over the punched socket), `up` (Brutal
+STUN + HYRLMv1 punching, then QUIC over the punched socket; the control TLS
+block applies `fingerprint` as a SHA-256 certificate-DER pin even with
+`skip-cert-verify`, presents `certificate`/`private-key` as an mTLS client
+identity, validates that material at load, and rejects `realm-opts` together
+with a non-empty `ports` pool), `up` (Brutal
 window), `udp-mtu` and `bbr-profile` (BBR initial-window mapping, profile over
 `cwnd`) are implemented and verified against the pinned hysteria2 and
 `hysteria2-realm` listeners; vmess `network: mkcp`/`kcp` (KCP over UDP with the

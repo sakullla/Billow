@@ -864,6 +864,63 @@ async fn hysteria2_transport_options_are_parsed() {
     assert!(billow_kernel::load_config(bad_range, "hysteria2-gecko-bad.yaml").is_err());
 }
 
+/// `realm-opts` owns the UDP socket, so the pinned client rejects a non-empty
+/// port pool; the realm block now carries the control TLS identity instead of
+/// accepting `fingerprint`/`certificate`/`private-key` and dropping them.
+#[test]
+fn hysteria2_realm_rejects_port_hopping_and_keeps_its_tls_identity() {
+    let hopping = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, ports: '443,8443-8444', realm-opts: {enable: true, server-url: 'https://realm.example', realm-id: r}}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(hopping, "hysteria2-realm-hop.yaml")
+        .expect_err("realm plus a port pool is rejected")
+        .to_string();
+    assert!(
+        error.contains("realm and port hopping are mutually exclusive"),
+        "{error}"
+    );
+
+    let pin = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let realm = format!(
+        "mixed-port: 17890\nproxies:\n  - {{name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, hop-interval: 7-9, realm-opts: {{enable: true, server-url: 'https://realm.example', realm-id: r, fingerprint: '{pin}', skip-cert-verify: true}}}}\nrules:\n  - MATCH,h2\n"
+    );
+    let config = billow_kernel::load_config(&realm, "hysteria2-realm-tls.yaml").unwrap();
+    match &config.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Hysteria2(proxy) => {
+            assert_eq!(proxy.hop_interval, (7, 9));
+            let realm = proxy.realm.as_ref().expect("realm block loads");
+            assert_eq!(
+                realm.tls_settings.fingerprint.as_deref().map(|pin| pin.len()),
+                Some(32)
+            );
+            assert!(realm.tls_settings.skip_cert_verify);
+        }
+        other => panic!("expected hysteria2, got {other:?}"),
+    }
+
+    // A browser name is not a certificate pin.
+    let browser = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, realm-opts: {enable: true, server-url: 'https://realm.example', fingerprint: chrome}}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(browser, "hysteria2-realm-browser.yaml")
+        .expect_err("a browser fingerprint is rejected")
+        .to_string();
+    assert!(error.contains("realm-opts.fingerprint"), "{error}");
+
+    // A client identity is loaded or rejected at load, not silently ignored.
+    let relative = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, realm-opts: {enable: true, server-url: 'https://realm.example', certificate: cert.pem, private-key: key.pem}}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(relative, "hysteria2-realm-relative.yaml")
+        .expect_err("a relative path is not resolvable")
+        .to_string();
+    assert!(error.contains("absolute path"), "{error}");
+    let half = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, realm-opts: {enable: true, server-url: 'https://realm.example', certificate: cert.pem}}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(half, "hysteria2-realm-half.yaml")
+        .expect_err("certificate without private-key is rejected")
+        .to_string();
+    assert!(error.contains("must be set together"), "{error}");
+    let missing = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, realm-opts: {enable: true, server-url: 'https://realm.example', certificate: /nonexistent/billow-cert.pem, private-key: /nonexistent/billow-key.pem}}\nrules:\n  - MATCH,h2\n";
+    let error = billow_kernel::load_config(missing, "hysteria2-realm-missing.yaml")
+        .expect_err("an unreadable client identity is rejected at load")
+        .to_string();
+    assert!(error.contains("does not exist"), "{error}");
+}
+
 // ---------------------------------------------------------------------------
 // MASQUE CONNECT-UDP peer (RFC 9298 over HTTP/3).
 //

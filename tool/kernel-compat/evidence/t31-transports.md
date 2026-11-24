@@ -59,10 +59,19 @@ body with HELLO/ACK and up to 1 KiB padding, 100 ms interval, 10 s cap,
 symmetric-NAT port expansion), and the QUIC handshake over the winning punched
 socket (`quic::connect_over_socket`) before the normal `/auth` and `0x401`
 stream. The control request uses the realm TLS block; a plain `http://` URL
-skips TLS. The control client speaks HTTP/1.1: it offers `http/1.1` when the
-block has no ALPN, and refuses a negotiated protocol other than `http/1.1`
-instead of silently mis-framing (the pinned HTTP client also enables h2; every
-hysteria-realm control server written against the pinned API serves HTTP/1.1).
+skips TLS. The control TLS identity is parsed, not dropped: `fingerprint` is
+the pinned SHA-256 of the presented certificate DER and is installed before
+`skip-cert-verify`, so a pin still protects the control channel when that flag
+is true (the pinned `ca.GetTLSConfig` order); `certificate`/`private-key` are
+loaded and presented as the control mTLS client identity. An unsupported shape
+(only one half of the pair, a relative path, or unparsable material) is a named
+load-time rejection. `realm-opts` together with a non-empty `ports` pool is
+rejected with the pinned `realm and port hopping are mutually exclusive`,
+because the punch owns the UDP socket. The control client speaks HTTP/1.1: it
+offers `http/1.1` when the block has no ALPN, and refuses a negotiated protocol
+other than `http/1.1` instead of silently mis-framing (the pinned HTTP client
+also enables h2; every hysteria-realm control server written against the pinned
+API serves HTTP/1.1).
 
 Peer shape: the pinned `type: hysteria2-realm` listener is the control server
 (token required), and a second pinned `type: hysteria2` listener carries
@@ -70,8 +79,14 @@ Peer shape: the pinned `type: hysteria2-realm` listener is the control server
 to it. A loopback STUN fixture answers both sides; the test waits for the
 pinned server's registration, then the kernel's `realm-opts` dial reaches the
 sink through the punched QUIC connection. The control endpoint is HTTPS
-(`skip-cert-verify` on both sides), so the TLS control path is exercised too. Evidence:
-`tests/mihomo_peers.rs::hysteria2_realm_reaches_the_receiving_side_through_mihomo`,
+(`skip-cert-verify` on both sides), so the TLS control path is exercised too.
+The pin cases set `skip-cert-verify: true` and prove that a matching
+`fingerprint` still succeeds and a wrong one never reaches the sink; the mTLS
+cases run the control listener with `client-auth-type: require-any`, so the
+kernel without `certificate`/`private-key` is rejected while the same control
+listener accepts the configured client identity. Evidence:
+`tests/mihomo_peers.rs::{hysteria2_realm_reaches_the_receiving_side_through_mihomo,hysteria2_realm_fingerprint_pins_the_control_certificate_through_mihomo,hysteria2_realm_wrong_fingerprint_never_reaches_the_sink,hysteria2_realm_client_certificate_authenticates_to_the_control_server,hysteria2_realm_without_the_required_client_certificate_never_reaches_the_sink}`,
+`tests/quic_peers.rs::hysteria2_realm_rejects_port_hopping_and_keeps_its_tls_identity`,
 `src/outbound/hysteria2_realm.rs::tests::{punch_packets_round_trip_and_reject_a_wrong_key,stun_response_decodes_the_xor_mapped_address,http_responses_decode_content_length_and_chunked_bodies}`.
 
 ## hysteria2 — named residuals
@@ -115,8 +130,8 @@ Evidence: `tests/mihomo_peers.rs::vmess_over_tlsmirror_reaches_the_receiving_sid
 
 ## Verification
 
-- `CARGO_TARGET_DIR=<independent> cargo test --manifest-path native-kernel/Cargo.toml --locked`: all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 90 ignored mihomo peer cases).
-- `tool/kernel-compat/peer-tests.sh`: **90 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 gecko, hy2 bbr-profile, hy2 realm, hy2 port pool, vmess mkcp/mekya/tlsmirror).
+- `CARGO_TARGET_DIR=<independent> cargo test --manifest-path native-kernel/Cargo.toml --locked`: all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 94 ignored mihomo peer cases).
+- `tool/kernel-compat/peer-tests.sh`: **94 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 gecko, hy2 bbr-profile, hy2 realm, hy2 realm fingerprint pin (matching and wrong), hy2 realm control mTLS (present and missing), hy2 port pool, vmess mkcp/mekya/tlsmirror).
 - `node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>`: 291 / 87 / 119, 0 problems; no T31 target row remains as an enabled rejection.
 - `node --test tool/kernel-compat/runner.test.mjs`: 10 passed.
 - Differentials against the same pinned binary: t22 22 pass / 1 skipped / 0 differ; t23 28 pass / 1 persistence / 0 differ; t24 36 pass / 2 skipped / 0 differ / 7 recorded inbound framing differences; t25 47/49 equal / 2 recorded divergences / 0 unexpected; t5 12/12 scenarios / 0 differ.
