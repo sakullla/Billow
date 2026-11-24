@@ -283,9 +283,16 @@ The T28-A3 delivery repair is value-level (the option rows do not move):
 `ss`/`trojan ss-opts` now build five AEADs (`aes-128/192/256-gcm`,
 `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`, the 24-byte XChaCha nonce
 included), and `bbr_meta_v2` is accepted as the pinned alias of `bbr` while the
-old meta BBR v1 controller stays a named rejection. The remaining PickCipher
-names (ChaCha8/AES-CCM/stream ciphers) and `bbr_meta_v1` are registered as
-value-level gaps. The 107 enabled rows are attributed per family in
+old meta BBR v1 controller stays a named rejection. The remaining
+`ss`-pinned names (shadowstream, ChaCha8/AES-CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/
+Ascon AEADs and `none`) and the remaining `core.PickCipher` names (ChaCha8/
+AES-CCM/stream ciphers and `DUMMY`) plus `bbr_meta_v1` are registered as
+value-level gaps. T28-A5 is an evidence-only repair: the trojan `ss-opts` pinned
+set is 21 accepted / 16 named rejections (not 33/28), because
+`rabbit128-poly1305`, GCM-SIV, AEGIS, AEZ, Deoxys, LEA-GCM and Ascon are
+rejected by the pinned engine too (`mihomo -t`: `cipher not supported`), and
+the `ss` 39-name set is attributed to `sing-shadowsocks2` rather than
+`core.PickCipher`. The 107 enabled rows are attributed per family in
 `evidence/t28-option-parity.md`: easytier/wireguard/openvpn need the T6/T7
 userspace stack, the TLS families need uTLS or TLS-in-TLS handshakes, and the
 UDP/XUDP/UoT rows need protocol work; none is silently accepted. The groups

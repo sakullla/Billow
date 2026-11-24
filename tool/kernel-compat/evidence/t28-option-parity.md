@@ -12,13 +12,13 @@ node tool/kernel-compat/option-probe.mjs \
   --out tool/kernel-compat/evidence/option-matrix.txt
 ```
 
-| cases | T27 | T28-A2 | T28-A3 | T28-A4 |
-| --- | ---: | ---: | ---: | ---: |
-| no-op (must load) | 287 | 289 | 289 | 289 |
-| implemented (must load) | 50 | 55 | 55 | 55 |
-| enabled (must be rejected) | 179 | 151 | 151 | 151 |
-| rust reject / mihomo accept | 135 | 107 | 107 | 107 |
-| problems | 0 | 0 | 0 | 0 |
+| cases | T27 | T28-A2 | T28-A3 | T28-A4 | T28-A5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| no-op (must load) | 287 | 289 | 289 | 289 | 289 |
+| implemented (must load) | 50 | 55 | 55 | 55 | 55 |
+| enabled (must be rejected) | 179 | 151 | 151 | 151 | 151 |
+| rust reject / mihomo accept | 135 | 107 | 107 | 107 | 107 |
+| problems | 0 | 0 | 0 | 0 | 0 |
 
 T28-A2 removed 28 enabled rows (10 of them duplicate rows T27 emitted twice for
 mieru/sudoku; the other 18 are real option moves: mieru 5, sudoku 5, shadowquic
@@ -31,7 +31,11 @@ unchanged); it completes the value-level cipher registration for both `ss` and
 trojan `ss-opts` (the implemented five were being presented as the complete
 pinned set), corrects the default-suite ignored count, and fixes the BBR initial
 window per family. The value-level gaps are listed separately below because the
-probe classifies options, not values inside an implemented option.
+probe classifies options, not values inside an implemented option. T28-A5 is an
+evidence-only repair: it reclassifies the trojan `ss-opts` pinned-accepted set
+after probing every name with the pinned binary, records the T22/T24
+differentials that were missing from the A4 validation block, and does not move
+an option-level row (the probe counts above are unchanged).
 
 The 151 enabled rows still contain three duplicate rows that two T27 input
 lists emit (mieru `udp`, mieru `traffic-pattern`, sudoku `udp`); two of those
@@ -70,7 +74,8 @@ rows. They are left visible instead of silently deduped.
 ## Value-level gaps closed in T28-A3
 
 - **Shadowsocks cipher set (ss and trojan `ss-opts`).** `SsCipher` now follows
-  the pinned `core.PickCipher` names for the five AEADs this kernel can build:
+  the pinned `sing-shadowsocks2` names for the `ss` outbound and the pinned
+  `core.PickCipher` names for trojan `ss-opts` for the five AEADs this kernel can build:
   `aes-128-gcm`, `aes-192-gcm` (24-byte key), `aes-256-gcm`,
   `chacha20-ietf-poly1305` and `xchacha20-ietf-poly1305` (24-byte nonce; the
   nonce counter is now sized per cipher). The TCP stream, the UDP datagram codec
@@ -86,27 +91,37 @@ rows. They are left visible instead of silently deduped.
   `bbr_meta_v1` (the old meta BBR sender) has no quinn equivalent and is
   rejected by value with the controller named.
 
-T28-A4 note: those five AEADs are the *implemented* set, not the pinned
-acceptance set. The pinned `ss` outbound accepts 39 method names and trojan
-`ss-opts` accepts 33 (`core.PickCipher`); every remaining name is a named
-rejection, enumerated value by value below.
+T28-A5 note: those five AEADs are the *implemented* set, not the pinned
+acceptance set. The pinned `ss` outbound accepts 39 method names through
+`sing-shadowsocks2`; trojan `ss-opts` accepts **21** through `core.PickCipher`
+(the five AEADs, `chacha8-ietf-poly1305`, `xchacha8-ietf-poly1305`,
+`aes-128/192/256-ccm`, the ten shadowstream ciphers and `DUMMY`). The other 16
+pinned-accepted trojan names are named rejections. Twelve names that A4 listed
+as pinned-accepted (`rabbit128-poly1305`, `aes-128-gcm-siv`, `aes-256-gcm-siv`,
+`aegis-128l`, `aegis-256`, `aez-384`, `deoxys-ii-256-128`, `lea-128-gcm`,
+`lea-192-gcm`, `lea-256-gcm`, `ascon128`, `ascon128a`) are rejected by the
+pinned engine too: `mihomo -t` reports `cipher not supported` for each. They are
+listed as pinned-and-Rust rejections below, not as pinned-accepted gaps.
 
 ## Value-level gaps still registered
 
 These values sit inside implemented options, so the option-level matrix rows
 stay green. They fail at load with the value named and are not silently
-skipped. T28-A4 re-derived the set value by value: each name below was run
+skipped. T28-A5 re-derived both sets value by value: each name below was run
 through the pinned v1.19.34 binary (`mihomo -t`) and matched against the locked
-`sing-shadowsocks2` / `core.PickCipher` sources. The 2022 methods need a base64
-PSK of the key length (a plain string is rejected by the pinned decoder), so
-their pinned verdicts were taken with valid base64 keys.
+`sing-shadowsocks2` registry (for `ss`) and `core.PickCipher` table (for trojan
+`ss-opts`). The 2022 methods need a base64 PSK of the key length (a plain string
+is rejected by the pinned decoder), so their pinned verdicts were taken with
+valid base64 keys.
 
 ### `ss.cipher` — 34 named rejections
 
 Implemented (5): `aes-128-gcm`, `aes-192-gcm`, `aes-256-gcm`,
 `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`.
 
-Pinned accepts and this kernel rejects by name (34):
+Pinned accepts and this kernel rejects by name (34). The pinned `ss` outbound
+registers these through `sing-shadowsocks2`; `core.PickCipher` is the trojan
+`ss-opts` table and is not the `ss` method registry:
 
 - legacy AEAD additions (17): `chacha8-ietf-poly1305`,
   `xchacha8-ietf-poly1305`, `rabbit128-poly1305`, `aes-128-ccm`,
@@ -123,23 +138,31 @@ Pinned accepts and this kernel rejects by name (34):
 
 `DUMMY` is not an `ss` method in the pinned engine either, so both reject it.
 
-### `trojan.ss-opts.method` — 28 named rejections
+### `trojan.ss-opts.method` — 16 named rejections
 
 Implemented (5): the same AEADs as `ss`.
 
-Pinned accepts and this kernel rejects by name (28):
+Pinned accepts and this kernel rejects by name (16):
 
-- the same 17 legacy AEAD additions;
+- AEAD additions `core.PickCipher` does accept (5): `chacha8-ietf-poly1305`,
+  `xchacha8-ietf-poly1305`, `aes-128-ccm`, `aes-192-ccm`, `aes-256-ccm`;
 - the same 10 shadowstream names;
 - `DUMMY` (the pinned unencrypted passthrough; case-insensitive like the other
   names).
 
-`none` and the six `2022-blake3-*` names are rejected by both engines.
+Pinned rejects too (19): the other 12 legacy AEAD names
+(`rabbit128-poly1305`, `aes-128-gcm-siv`, `aes-256-gcm-siv`, `aegis-128l`,
+`aegis-256`, `aez-384`, `deoxys-ii-256-128`, `lea-128-gcm`, `lea-192-gcm`,
+`lea-256-gcm`, `ascon128`, `ascon128a`; each was run through `mihomo -t` and
+reported `cipher not supported`), plus `none` and the six `2022-blake3-*`
+names.
 
 Both families share `SsCipher`, whose parser rejects every name outside the
 five implemented AEADs with `option 'cipher' / 'ss-opts.method' value '<name>'
-is not implemented`, so the lists above are the complete named-rejection set
-(no pinned-accepted value is missing). Implementing `none`/`DUMMY` would need a
+is not implemented`, so the lists above are the complete named-rejection set:
+34 pinned-accepted names for `ss`, and 16 pinned-accepted plus 19 pinned-rejected
+names for trojan `ss-opts` (no pinned-accepted value is missing).
+Implementing `none`/`DUMMY` would need a
 separate unframed path (no salt/chunk layer; `ss` `none` still prefixes the
 SOCKS address, trojan `DUMMY` is a pure passthrough), and the six 2022 methods
 need the AEAD-2022 record layout plus a BLAKE3 KDF; both stay registered gaps
@@ -147,13 +170,13 @@ rather than approximated.
 
 | family / option | implemented values | named rejections | owner |
 | --- | --- | --- | --- |
-| `ss.cipher` | aes-128/192/256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305 | 34 pinned-accepted: 17 legacy AEAD additions, 10 shadowstream, `none`, 6 `2022-blake3-*` | requirement decision or a cipher follow-up (unframed + shadowstream + 2022 records) |
-| `trojan.ss-opts.method` | same five AEADs | 28 pinned-accepted: 17 legacy AEAD additions, 10 shadowstream, `DUMMY` | requirement decision or a cipher follow-up |
+| `ss.cipher` | aes-128/192/256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305 | 34 pinned-accepted (`sing-shadowsocks2`): 17 legacy AEAD additions, 10 shadowstream, `none`, 6 `2022-blake3-*` | requirement decision or a cipher follow-up (unframed + shadowstream + 2022 records) |
+| `trojan.ss-opts.method` | same five AEADs | 16 pinned-accepted (`core.PickCipher`): 5 AEAD additions, 10 shadowstream, `DUMMY`; the 12 GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon names, `none` and the 6 `2022-blake3-*` are rejected by the pinned engine too | requirement decision or a cipher follow-up |
 | `tuic`/`masque` `congestion-controller` | cubic, new_reno, bbr, bbr_meta_v2 | bbr_meta_v1 | requirement decision (meta BBR v1 dependency) |
 
 ## Per-family remaining ownership (107 rows)
 
-No enabled row moved in T28-A3 or T28-A4. The owners below name the dependency that
+No enabled row moved in T28-A3, T28-A4 or T28-A5. The owners below name the dependency that
 blocks the behaviour; they are not implementation claims. Every listed value
 is still rejected at load with its key/value named.
 
@@ -184,28 +207,34 @@ associations** account for 8 rows (ss 2, sudoku, mieru, anytls, vless, vmess,
 trusttunnel); the rest are protocol-specific transports (port hopping/obfs,
 mKCP/mekya, private Brutal, QUIC v2, XPlus, TLS-in-TLS, H2/l4proxy/gVisor).
 
-## Validation for this attempt (T28-A4)
+## Validation for this attempt (T28-A5)
 
-All commands ran in an independent `CARGO_TARGET_DIR` (a temporary
-`t28a4-target` debug tree and a `t28a4-release-target` release tree); no port
-was left bound and no process was left running.
+T28-A5 changed no Rust source (evidence/README only), so the T28-A4 full-suite
+numbers below remain the source-of-truth run; this attempt rebuilt the current
+tree and re-ran the checks affected by the repair. No port was left bound and no
+process was left running.
 
-- `cargo test --manifest-path native-kernel/Cargo.toml --locked`: pass,
-  420 passed / 0 failed / 92 ignored by design across every test binary
-  (lib 165 passed + 1 ignored benchmark `rule_rows_large_catalog_benchmark`,
-  config 48, controller 15, dns 19, groups 32, protocols 60 + 2 ignored,
-  quic_peers 32, resources 15 + 1 ignored, sessions 11, shadowquic_stream 1,
-  CLI 11, family_cli 10 + 1 ignored, CLI integration 1; the peer suites are
-  `#[ignore]`: independent_peers 7, mesh_peers 5, mihomo_peers 66,
-  openvpn_peer 4, wireguard_peer 5 → 92 ignored). The earlier "91" text
-  missed the lib benchmark.
-- Groups suite: 32/32 (re-run in this attempt as part of the default suite).
-  The T28-A3 flake fix (wait on the recorded `/shared` dead outcome, not just
-  `node.connections`) is unchanged: before that fix 5/15 loaded runs failed,
-  after it 16/16 + 12/12 single runs and 4/4 full suites passed.
-- option-probe with the current release CLI: 289 no-op / 55 implemented / 151
-  enabled / 107 disagreements / 0 problems (exit 0).
-- BBR initial window: `congestion_tuning` now takes the family's QUIC
+- Default suite (T28-A4 full run, unchanged source): pass, 420 passed / 0 failed
+  / 92 ignored by design across every test binary (lib 165 passed + 1 ignored
+  benchmark `rule_rows_large_catalog_benchmark`, config 48, controller 15,
+  dns 19, groups 32, protocols 60 + 2 ignored, quic_peers 32, resources 15 + 1
+  ignored, sessions 11, shadowquic_stream 1, CLI 11, family_cli 10 + 1 ignored,
+  CLI integration 1; the peer suites are `#[ignore]`: independent_peers 7,
+  mesh_peers 5, mihomo_peers 66, openvpn_peer 4, wireguard_peer 5 → 92
+  ignored). The earlier "91" text missed the lib benchmark.
+- T28-A5 spot run of the default suite: `cargo test --manifest-path
+  native-kernel/Cargo.toml --locked -p billow-kernel --test config --test
+  protocols` → config 48 passed / 0 failed / 0 ignored; protocols 60 passed /
+  0 failed / 2 ignored (the two peer cases need the Go toolchain).
+- Groups suite: 32/32 in the T28-A4 default run; the T28-A3 flake fix (wait on
+  the recorded `/shared` dead outcome, not just `node.connections`) is
+  unchanged: before that fix 5/15 loaded runs failed, after it 16/16 + 12/12
+  single runs and 4/4 full suites passed.
+- option-probe rerun with the freshly built release CLI: 289 no-op / 55
+  implemented / 151 enabled / 107 disagreements / 0 problems (exit 0). The
+  regenerated matrix differs from `evidence/option-matrix.txt` only in the
+  header binary path, so the committed matrix still describes the same run.
+- BBR initial window: `congestion_tuning` takes the family's QUIC
   `InitialPacketSize`. TUIC keeps quic-go's default 1280, masque sets the
   pinned 1242; the unit test
   `src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr` checks 64/32 packets
@@ -214,19 +243,32 @@ was left bound and no process was left running.
   a SIGINT/SIGTERM that arrives during startup is observed instead of ending
   the process through the default disposition; the Android fd-lost loop shares
   the same pre-installed handler.
-- Value-level checks against the pinned binary (T28-A4, complete set): all 39
-  pinned `ss` method names and all 33 `trojan.ss-opts` names were run through
-  `mihomo -t`; the pinned-accepted / Rust-rejected values are the lists above.
-  Spot checks: `ss` with `none`, `2022-blake3-aes-128-gcm` (valid PSK),
-  `ascon128` or `aes-256-ctr` loads in Mihomo and fails here naming
-  `value '<name>'`; trojan `ss-opts` with `DUMMY` (any case) or `ascon128`
-  loads in Mihomo and fails here naming `ss-opts.method`. `none` and
-  `2022-blake3-*` are rejected by both for trojan `ss-opts`; `DUMMY` is
-  rejected by both for `ss`.
-- Differentials rerun against this build: T5 12/12 scenarios; T23 27 cases +
-  persistence (28 pass); T24 38 cases (36 pass, 2 skipped); T25 47/49 equal
-  with the 2 known divergences; 0 differ/unexpected everywhere.
+- Value-level checks against the pinned binary (T28-A5, complete set): all 39
+  pinned `ss` method names were run through `mihomo -t` (39 accepted through
+  `sing-shadowsocks2`; `DUMMY` rejected) and all 33 `trojan.ss-opts` names were
+  run against `core.PickCipher` (21 accepted; the 12 legacy AEAD names report
+  `cipher not supported`; `none` rejected). Spot checks: `ss` with `ascon128`
+  or `aes-256-ctr` loads in Mihomo and fails here naming `value '<name>'`;
+  trojan `ss-opts` with `chacha8-ietf-poly1305`/`aes-128-ccm` loads in Mihomo
+  and fails here naming `ss-opts.method`, while `ascon128`/`lea-256-gcm` are
+  rejected by both, `DUMMY` loads in Mihomo and fails here, and `none` /
+  `2022-blake3-*` are rejected by both. `DUMMY` is rejected by both for `ss`.
+- Differentials: T22 and T24 were re-run against this build. T22: 23 cases,
+  22 pass, 1 skipped (`fallback-geoip-code-mmdb-negated` needs `--mmdb-dir`),
+  0 differ/knownDifference/unexpected/startupFailed. T24: 38 cases, 36 pass,
+  2 skipped, 0 differ/unexpected; `framingDifferences` is 9 in this run — it
+  counts the pre-normalization inbound framing (Mihomo's 200-then-close can
+  surface as `timeout` or `closed`) and varies run to run (8 in T27-A2, 6 in
+  T24, 4 in T8), so it is not a rule-compatibility claim. T5 (12/12), T23
+  (28 pass) and T25 (47/49 equal, 2 known divergences) are unchanged from
+  T28-A4 with 0 differ/unexpected.
 - `node --test tool/kernel-compat/runner.test.mjs`: 10/10 pass.
+- Capability index: `node tool/kernel-compat/capability.mjs --out
+  tool/kernel-compat/evidence/source-capabilities.json` regenerated it from the
+  updated `rust-mapping.json`; coverage is now 62 mapped / 33 partial / 60
+  unimplemented (155 total) instead of the stale 55/32/68. The trojan
+  `notImplemented` list no longer carries the implemented
+  `ip-version`/`tfo`/`mptcp`/`interface-name`/`routing-mark` entries.
 
 ## Unverified boundaries
 
