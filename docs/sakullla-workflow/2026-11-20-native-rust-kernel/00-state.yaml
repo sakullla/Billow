@@ -3,15 +3,35 @@ workflow_id: 2026-11-20-native-rust-kernel
 requirement_ref: docs/requirements/2026-11-20-native-rust-kernel.md
 requirement_version: sha256:aa0f5410f9097c8b8cb30a481039c5e1b8cde2d2646c354fd27a99cf981b038b
 requirement_ids: [R1, R2, R3, R4]
-requirement_revision: 12
+requirement_revision: 13
 revision_fence:
-  from_revision: 11
-  to_revision: 12
+  from_revision: 12
+  to_revision: 13
   status: reconciled
-  preserved_active_task_ids: []
+  preserved_active_task_ids: [T26]
   preserved_result_task_ids: []
   preserved_review_task_ids: []
-  preserved_drafts: []
+  preserved_drafts:
+    - task_id: T26
+      paths:
+        - repository_id: anchor
+          path: docs/testing/2026-11-23-ios-rust-extension-memory.md
+          digest: sha256:bf02439932e58de2a5bd9b816862dc2a31698045d88375fb081ac840f8bbfbfc
+        - repository_id: anchor
+          path: src-tauri/src/ios_vpn.rs
+          digest: sha256:fc0c1628703f4c91ab3f40ffa1c0de67efdf4a32e4e75f91d61d113277d87662
+        - repository_id: anchor
+          path: src-tauri/src/profile.rs
+          digest: sha256:2e8a7d4ce1bc6142321a6fc62171d2ca47a2764248401e08177bb2c2e069a794
+        - repository_id: anchor
+          path: src-tauri/src/takeover.rs
+          digest: sha256:bb07aca31fa07acc287477dcbcfcd318edc494b9c9a67046770903939967266c
+        - repository_id: anchor
+          path: tool/engine-switch.md
+          digest: sha256:5f94be93d919f9b50b8ceee5966f9e3d6ea242e6f9e772bf0a27ccf32d97299a
+        - repository_id: anchor
+          path: tool/ios/verify-device.md
+          digest: sha256:e15d9d4910f77fbef05a3d10c3d5c8374b432d5a8e163712d3a495701b48dd81
   reused_task_ids:
     - T1
     - T2
@@ -38,9 +58,11 @@ revision_fence:
     - T20
     - T18
     - T21
+    - T26
+    - T27
   stale_task_ids: []
   revision_attempt_task_ids: []
-  rebuilt_task_ids: [T26, T27, T28, T29]
+  rebuilt_task_ids: [T28, T29]
 status: active
 stages:
   exploration: completed
@@ -1060,25 +1082,25 @@ tasks:
     requirement_revision: 12
     review_base_ref: 936057af3f17a9db4ac062bbe6f92e62734133f3
     attempts:
-      - attempt_id: T26-A3
-        message_id: T26-A3-M1
+      - attempt_id: T26-A5
+        message_id: T26-A5-M1
         recipe_digest: sha256:8b99f1acc0dc516507d681f6501791669a0f2c9947e26f20a58cfd22ba5e177c
         owner_mode: worker
-        baseline_ref: 8d6f5d0b9b6ae07d5b7aeb95c16a3dca84a6fbac
-        checkpoint_ref: 72bbc6d5d622db1e544c88c3e41bf41a1629c782
+        baseline_ref: 2b59cad1790ff3d8db24f3d3a72c1620cc422f81
+        checkpoint_ref: c6d6634f288429c2747074618b9516f02fe7c934
         execution_status: completed_with_concerns
         review_decision: passed
         finding_count: 2
-        path_count: 10
-        review_evidence_refs: [evidence/reviews/116.json]
-        scope_ref: evidence/history/59.json#Attempt-History/T26-A3/scope_delta
+        path_count: 3
+        review_evidence_refs: [evidence/reviews/128.json]
+        scope_ref: evidence/history/65.json#Attempt-History/T26-A5/scope_delta
         scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
-        execution_ref: evidence/history/59.json#Attempt-History/T26-A3/execution
-        execution_digest: sha256:da60a1ddf8e4ea49c7f10ef9eb3d9faa75af1bd4b733025f25df40b0b7cceaa3
-        review_ref: evidence/history/59.json#Attempt-History/T26-A3/review
-        review_digest: sha256:e72f2cd8f89ef3d90739282f8868f5931b6a1c0341fb3ef00a6feb56417bf8a7
-    history_head_ref: evidence/history/59.json
-    history_count: 3
+        execution_ref: evidence/history/65.json#Attempt-History/T26-A5/execution
+        execution_digest: sha256:3e59b76236e6dfab36e35b8825d3edf1b5b9c5983e2a5b152c3a884b2b5f2add
+        review_ref: evidence/history/65.json#Attempt-History/T26-A5/review
+        review_digest: sha256:55cbd225a79b4196f61af47d3147cf2db9519dfd56b91a3a3c7a8c5b44e41ec3
+    history_head_ref: evidence/history/65.json
+    history_count: 5
   - id: T27
     status: completed
     task_run_ref: task-runs/T27-run.md
@@ -1132,25 +1154,25 @@ tasks:
     requirement_revision: 12
     review_base_ref: 84d6346dfd875e0798a2fe344b7889678bf0b2a4
     attempts:
-      - attempt_id: T28-A2
-        message_id: T28-A2-M1
+      - attempt_id: T28-A5
+        message_id: T28-A5-M1
         recipe_digest: sha256:1461bc7ce708747cac5ebd36ec0d70b7d7e95ec4b7f2c1090ed9339d5df9076b
         owner_mode: worker
-        baseline_ref: 8bbeef07221bd30df253a4477ebac099c4099bfe
-        checkpoint_ref: 39df43851e32cb78b51d76ecfa42f10fc3ff1082
+        baseline_ref: 8bd2efb9f3d8b8d37ac07a76e3e6311ada3ed1e2
+        checkpoint_ref: ec862c289b2003d9253e0c01dbd7057a21dc3638
         execution_status: completed_with_concerns
         review_decision: passed
-        finding_count: 5
-        path_count: 11
-        review_evidence_refs: [evidence/reviews/122.json]
-        scope_ref: evidence/history/62.json#Attempt-History/T28-A2/scope_delta
+        finding_count: 1
+        path_count: 6
+        review_evidence_refs: [evidence/reviews/134.json]
+        scope_ref: evidence/history/68.json#Attempt-History/T28-A5/scope_delta
         scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
-        execution_ref: evidence/history/62.json#Attempt-History/T28-A2/execution
-        execution_digest: sha256:658fb5d4fc6a4ff87b511e65e09630d224a7289fb777094ebdb9f1f433f8fa18
-        review_ref: evidence/history/62.json#Attempt-History/T28-A2/review
-        review_digest: sha256:9730bd76a0348917241e20e832a0143661f9dfec5f6778fd5e157288d2152c73
-    history_head_ref: evidence/history/62.json
-    history_count: 2
+        execution_ref: evidence/history/68.json#Attempt-History/T28-A5/execution
+        execution_digest: sha256:ca47057aafe9c43785054e076e120afd9ebc3549a7feadca26196319adcc587f
+        review_ref: evidence/history/68.json#Attempt-History/T28-A5/review
+        review_digest: sha256:c1ce58a4651a3db9771e778a28ee718d144d4e2242ed59622262805e23e58615
+    history_head_ref: evidence/history/68.json
+    history_count: 5
   - id: T29
     status: completed
     task_run_ref: task-runs/T29-run.md
@@ -1168,25 +1190,25 @@ tasks:
     requirement_revision: 12
     review_base_ref: 39df43851e32cb78b51d76ecfa42f10fc3ff1082
     attempts:
-      - attempt_id: T29-A2
-        message_id: T29-A2-M1
+      - attempt_id: T29-A4
+        message_id: T29-A4-M1
         recipe_digest: sha256:50c5b574debc5942b8674f9d5ef861b1dfa7515f5e152bac93a6ef74c8071086
         owner_mode: worker
-        baseline_ref: 83742e1ea2be6a06f5114712a53aef12bf4d4f2a
-        checkpoint_ref: 83742e1ea2be6a06f5114712a53aef12bf4d4f2a
+        baseline_ref: fb651b52003679ea6c17afbf809788a599e5446d
+        checkpoint_ref: fb651b52003679ea6c17afbf809788a599e5446d
         execution_status: completed_with_concerns
         review_decision: passed
-        finding_count: 4
+        finding_count: 2
         path_count: 0
-        review_evidence_refs: [evidence/reviews/124.json]
-        scope_ref: evidence/history/63.json#Attempt-History/T29-A2/scope_delta
+        review_evidence_refs: [evidence/reviews/136.json]
+        scope_ref: evidence/history/70.json#Attempt-History/T29-A4/scope_delta
         scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
-        execution_ref: evidence/history/63.json#Attempt-History/T29-A2/execution
-        execution_digest: sha256:256b2fba6bc42c55be7daabbd17078589badc8eec825fc0a959fcd28684285c6
-        review_ref: evidence/history/63.json#Attempt-History/T29-A2/review
-        review_digest: sha256:07c2e35112907ab66b054a77ce0dc3507aa8855369c403713a0a2ddd28e63d56
-    history_head_ref: evidence/history/63.json
-    history_count: 2
+        execution_ref: evidence/history/70.json#Attempt-History/T29-A4/execution
+        execution_digest: sha256:82a83062dcf88ce2155a0a92a30da668210ed02da8197724e3b69464cb5b0872
+        review_ref: evidence/history/70.json#Attempt-History/T29-A4/review
+        review_digest: sha256:467ce38f5b5b88a777a9daf744d37e47838eaefdf4b1cc451b8aad5bd6115506
+    history_head_ref: evidence/history/70.json
+    history_count: 4
 blocker: null
 delivery:
   status: pending
@@ -1681,5 +1703,59 @@ scheduling:
       status: released
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t29-a1-invocation.json
       admission_evidence_ref: ""
+    - lease_id: task:T26-A4
+      invocation_id: ses_df4d18ef5ffeOEPiK1P0XwkkYu
+      task_id: T26
+      attempt_id: T26-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t26-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T26-A5
+      invocation_id: ses_df4af708fffe0ojtdGfH1nH2vV
+      task_id: T26
+      attempt_id: T26-A5
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t26-a5-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T28-A3
+      invocation_id: ses_df49e35d4ffekYfis4k2C0JSra
+      task_id: T28
+      attempt_id: T28-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t28-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T28-A4
+      invocation_id: ses_df466e944ffeHYRE0F0TnPQF2n
+      task_id: T28
+      attempt_id: T28-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t28-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T28-A5
+      invocation_id: ses_df43d3793ffehGUwoC4MOyK4C1
+      task_id: T28
+      attempt_id: T28-A5
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t28-a5-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T29-A3
+      invocation_id: ses_df421b879ffeFwfJT2WqSt2Hga
+      task_id: T29
+      attempt_id: T29-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t29-a3-invocation.json
+      admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/418.json
+result_inbox_ref: evidence/results/460.json
