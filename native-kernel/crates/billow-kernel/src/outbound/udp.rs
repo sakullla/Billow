@@ -130,24 +130,26 @@ fn target_matches(from: &Target, server_addrs: &[SocketAddr]) -> bool {
     }
 }
 
-/// Every address a UDP destination resolves to, IPv4 first (the system
-/// resolver answers; there is no in-kernel DNS before T5).
+/// Every address a UDP destination (the proxy server of an `ss`/`ssr`
+/// association) resolves to. The shared resolver applies the in-scope
+/// `ip-version` and `proxy-server-nameserver` (`outbound::with_proxy_dns`), so
+/// a proxy server name is never resolved by the OS resolver while DNS is on.
+/// `IPv4 first` is only the `dual` default of that shared ordering.
 pub async fn resolve_all(target: &Target) -> io::Result<Vec<SocketAddr>> {
-    if let Ok(ip) = target.host.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, target.port)]);
+    // The shared resolver applies `ip-version` (including for a literal) and
+    // `proxy-server-nameserver`; `IPv4 first` is only its `dual` default.
+    super::resolve_all(&target.host, target.port)
+        .await
+        .map_err(dial_to_io)
+}
+
+/// Keep the transport error shape: a resolution failure surfaces its source
+/// instead of a printed `DialError`.
+fn dial_to_io(error: DialError) -> io::Error {
+    match error {
+        DialError::Resolve { source, .. } => source,
+        other => io::Error::other(other.to_string()),
     }
-    let mut addrs = tokio::net::lookup_host((target.host.as_str(), target.port))
-        .await?
-        .collect::<Vec<_>>();
-    addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
-    addrs.dedup();
-    if addrs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "destination resolved to no address",
-        ));
-    }
-    Ok(addrs)
 }
 
 /// Resolve a UDP destination: names use the system resolver (there is no
@@ -541,7 +543,7 @@ impl TrojanUdp {
         let stream = super::tls::wrap_stream(server_stream, &option.server, &option.tls_settings, tls)
             .await
             .map_err(|e| handshake("trojan-udp tls", e))?;
-        let mut stream: BoxStream = match &option.network {
+        let stream: BoxStream = match &option.network {
             crate::proxies::TrojanNetwork::Tcp => Box::new(stream),
             crate::proxies::TrojanNetwork::Ws(ws_settings) => {
                 let host = option
@@ -561,6 +563,7 @@ impl TrojanUdp {
                 Box::new(tunnel)
             }
         };
+        let mut stream = super::trojan::wrap_ss(stream, option).await?;
         // The pinned server reads a command, an address and a CRLF even for the
         // UDP command; the frames carry the real destinations.
         let dummy = Target {
@@ -694,6 +697,28 @@ mod tests {
         };
         let addrs = futures_block_on(resolve_all(&target)).expect("literal resolves");
         assert_eq!(addrs, vec![addr("127.0.0.1", 53)]);
+    }
+
+    #[test]
+    fn resolve_all_applies_the_scoped_ip_version_to_a_literal() {
+        // `ip-version` is a BasicOption filter, not only a resolver hint: the
+        // pinned dialer refuses an address of the other family.
+        let target = Target {
+            host: "::1".into(),
+            port: 53,
+        };
+        let options = crate::proxies::DialerOptions {
+            ip_version: crate::proxies::IpVersion::V4Only,
+            ..Default::default()
+        };
+        let result = futures_block_on(super::super::with_dialer(options, resolve_all(&target)));
+        assert!(result.is_err(), "ipv4 must reject an IPv6 literal");
+        let options = crate::proxies::DialerOptions {
+            ip_version: crate::proxies::IpVersion::V6Only,
+            ..Default::default()
+        };
+        let result = futures_block_on(super::super::with_dialer(options, resolve_all(&target)));
+        assert_eq!(result.expect("ipv6 accepts ::1"), vec![addr("::1", 53)]);
     }
 
     /// A tiny block_on so the unit tests do not need a tokio test runtime.

@@ -130,6 +130,11 @@ pub(crate) async fn association_task(
     };
     let timeout = session.limits.dial_timeout;
     let tls = session.runtime.tls.clone();
+    // The engine scopes `proxy-server-nameserver` around its dials; a spawned
+    // association is a fresh task and does not inherit a task-local scope, so
+    // the scope is re-entered here. Without this an `ss`/`ssr`/`socks5` server
+    // name would go to the OS resolver while DNS is configured.
+    let proxy_dns = session.runtime.dns.clone();
     let hops = crate::engine::chain_for(&session.runtime.config, &proxy);
     let family = proxy.type_name();
     let supported = match &proxy.protocol {
@@ -145,7 +150,7 @@ pub(crate) async fn association_task(
         inner.note_udp_unsupported(&name, family);
         return;
     }
-    let transport = outbound::with_dialer(proxy.dialer.clone(), async {
+    let connect = outbound::with_dialer(proxy.dialer.clone(), async {
         match &proxy.protocol {
             Protocol::Socks5(option) => {
                 crate::outbound::socks5::Socks5Udp::connect(option, timeout, &tls)
@@ -177,8 +182,11 @@ pub(crate) async fn association_task(
                 .map(Transport::ShadowQuic),
             _ => unreachable!("supported was checked above"),
         }
-    })
-    .await;
+    });
+    let transport = match proxy_dns {
+        Some(dns) => outbound::with_proxy_dns(dns, connect).await,
+        None => connect.await,
+    };
     let mut transport = match transport {
         Ok(transport) => transport,
         Err(error) => {

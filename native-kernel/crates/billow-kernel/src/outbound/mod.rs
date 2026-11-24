@@ -585,8 +585,15 @@ pub(crate) fn order_addresses(addrs: &mut Vec<SocketAddr>, ip_version: IpVersion
     }
 }
 
-/// Resolve the server name once, applying the in-scope `ip-version`.
-pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialError> {
+/// Every address a proxy `server` name resolves to, with the in-scope
+/// `ip-version` applied (filter for `ipv4`/`ipv6`, order for the prefer
+/// values). Proxy server names go through `proxy-server-nameserver` when the
+/// caller scoped [`with_proxy_dns`], exactly like [`resolve`]; the OS resolver
+/// is only the fallback when DNS is off.
+pub(crate) async fn resolve_all(
+    server: &str,
+    port: u16,
+) -> Result<Vec<SocketAddr>, DialError> {
     let ip_version = current_dialer().map(|options| options.ip_version).unwrap_or_default();
     if let Ok(ip) = server.parse::<IpAddr>() {
         if ip_version == IpVersion::V4Only && !ip.is_ipv4()
@@ -600,36 +607,49 @@ pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialE
                 ),
             });
         }
-        return Ok(SocketAddr::new(ip, port));
+        return Ok(vec![SocketAddr::new(ip, port)]);
     }
     let dns = PROXY_DNS.try_with(|dns| dns.clone()).ok();
-    if let Some(dns) = dns {
-        let ips = dns
-            .resolve_proxy_server(server)
+    let mut addrs = if let Some(dns) = dns {
+        dns.resolve_proxy_server(server)
             .await
             .map_err(|error| DialError::Resolve {
                 host: server.to_string(),
                 source: io::Error::other(error.to_string()),
-            })?;
-        let mut addrs = ips.into_iter().map(|ip| SocketAddr::new(ip, port)).collect();
-        order_addresses(&mut addrs, ip_version);
-        return addrs.into_iter().next().ok_or_else(|| DialError::Resolve {
+            })?
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, port))
+            .collect::<Vec<_>>()
+    } else {
+        tokio::net::lookup_host((server, port))
+            .await
+            .map_err(|source| DialError::Resolve {
+                host: server.to_string(),
+                source,
+            })?
+            .collect::<Vec<_>>()
+    };
+    order_addresses(&mut addrs, ip_version);
+    addrs.dedup();
+    if addrs.is_empty() {
+        return Err(DialError::Resolve {
             host: server.to_string(),
             source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
         });
     }
-    let mut addrs = tokio::net::lookup_host((server, port))
-        .await
-        .map_err(|source| DialError::Resolve {
+    Ok(addrs)
+}
+
+/// Resolve the server name once, applying the in-scope `ip-version`.
+pub(crate) async fn resolve(server: &str, port: u16) -> Result<SocketAddr, DialError> {
+    resolve_all(server, port)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| DialError::Resolve {
             host: server.to_string(),
-            source,
-        })?
-        .collect::<Vec<_>>();
-    order_addresses(&mut addrs, ip_version);
-    addrs.into_iter().next().ok_or_else(|| DialError::Resolve {
-        host: server.to_string(),
-        source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
-    })
+            source: io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
+        })
 }
 
 pub(crate) async fn connect_tcp(server: &str, port: u16) -> Result<TcpStream, DialError> {

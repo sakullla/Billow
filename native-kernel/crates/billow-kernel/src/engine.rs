@@ -1695,6 +1695,29 @@ async fn serve_request(
 /// time) plus one socket per transport actually used, so an association costs
 /// at most ~128 KiB regardless of how many destinations it talks to.
 async fn serve_udp_associate(
+    client: TcpStream,
+    peer: SocketAddr,
+    id: u64,
+    context: &SessionContext,
+    config: &Config,
+) -> Result<(), SessionOutcome> {
+    // The association runs in its own session task, and a task-local scope is
+    // not inherited across `tokio::spawn`. Re-enter the engine's
+    // `proxy-server-nameserver` scope here so ss/ssr/socks5 server names are
+    // resolved the same way the TCP path resolves them.
+    match context.runtime.dns.clone() {
+        Some(dns) => {
+            outbound::with_proxy_dns(
+                dns,
+                serve_udp_associate_inner(client, peer, id, context, config),
+            )
+            .await
+        }
+        None => serve_udp_associate_inner(client, peer, id, context, config).await,
+    }
+}
+
+async fn serve_udp_associate_inner(
     mut client: TcpStream,
     peer: SocketAddr,
     id: u64,

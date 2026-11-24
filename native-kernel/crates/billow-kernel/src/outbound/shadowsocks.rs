@@ -459,10 +459,37 @@ pub async fn dial(
 
 /// Wrap an established TCP stream: sends the salt and queues the address frame.
 pub async fn connect<S>(
-    mut inner: S,
+    inner: S,
     cipher: SsCipher,
     password: &str,
     address: &[u8],
+) -> io::Result<SsStream<S>>
+where
+    S: AsyncWrite + AsyncRead + Unpin,
+{
+    connect_inner(inner, cipher, password, Some(address)).await
+}
+
+/// Wrap an established stream as a bare AEAD layer (no SOCKS target frame):
+/// the first payload is whatever the caller writes next. Mihomo's
+/// `core.Cipher.StreamConn` is used this way by trojan's `ss-opts`, where the
+/// trojan header follows the salt as the first AEAD chunk.
+pub async fn connect_layer<S>(
+    inner: S,
+    cipher: SsCipher,
+    password: &str,
+) -> io::Result<SsStream<S>>
+where
+    S: AsyncWrite + AsyncRead + Unpin,
+{
+    connect_inner(inner, cipher, password, None).await
+}
+
+async fn connect_inner<S>(
+    mut inner: S,
+    cipher: SsCipher,
+    password: &str,
+    address: Option<&[u8]>,
 ) -> io::Result<SsStream<S>>
 where
     S: AsyncWrite + AsyncRead + Unpin,
@@ -488,7 +515,9 @@ where
         read_pending: Vec::new(),
         read_pos: 0,
     };
-    stream.queue_address(address);
+    if let Some(address) = address {
+        stream.queue_address(address);
+    }
     Ok(stream)
 }
 
@@ -504,4 +533,43 @@ pub async fn read_to_end<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec
     let mut out = Vec::new();
     reader.read_to_end(&mut out).await?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Server side of the bare AEAD layer: read the client salt, derive the
+    /// read cipher, then open one chunk. Proves `connect_layer` emits no
+    /// address frame: the first plaintext chunk is exactly what the caller
+    /// wrote.
+    #[tokio::test]
+    async fn connect_layer_seals_the_first_payload_without_an_address_frame() {
+        let (client, server) = tokio::io::duplex(4096);
+        let password = "layer-pw";
+        let cipher = SsCipher::Aes128Gcm;
+        let expected = b"\x01\x02header-after-salt".to_vec();
+        let server_task = tokio::spawn(async move {
+            let mut server = server;
+            let mut salt = vec![0u8; cipher.key_len()];
+            server.read_exact(&mut salt).await.expect("salt");
+            let aead = session_aead(cipher, password, &salt);
+            let mut nonce = [0u8; 12];
+            let mut sealed_len = vec![0u8; 2 + TAG_LEN];
+            server.read_exact(&mut sealed_len).await.expect("length");
+            aead.open(&nonce, &mut sealed_len).expect("open length");
+            increment(&mut nonce);
+            let declared = u16::from_be_bytes([sealed_len[0], sealed_len[1]]) as usize;
+            let mut sealed = vec![0u8; declared + TAG_LEN];
+            server.read_exact(&mut sealed).await.expect("payload");
+            aead.open(&nonce, &mut sealed).expect("open payload");
+            sealed
+        });
+        let mut stream = connect_layer(client, cipher, password)
+            .await
+            .expect("layer");
+        stream.write_all(&expected).await.expect("write");
+        stream.flush().await.expect("flush");
+        assert_eq!(server_task.await.expect("server"), expected);
+    }
 }

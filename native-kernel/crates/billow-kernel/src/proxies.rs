@@ -203,7 +203,17 @@ pub struct TrojanOutbound {
     pub tls_settings: TlsSettings,
     pub network: TrojanNetwork,
     pub udp: bool,
+    /// `ss-opts: {enabled: true, ...}`: an extra Shadowsocks AEAD layer over
+    /// the TLS stream (the pinned `core.Cipher.StreamConn` wrapper).
+    pub ss_opts: Option<TrojanSsOpts>,
     pub dialer_proxy: Option<String>,
+}
+
+/// The pinned `TrojanSSOption`. `method` defaults to `AES-128-GCM`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrojanSsOpts {
+    pub cipher: SsCipher,
+    pub password: Secret,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,6 +685,12 @@ pub struct MasqueOutbound {
     pub tls_settings: TlsSettings,
     /// `handshake-timeout` in seconds; 0 keeps the dial timeout.
     pub handshake_timeout: u64,
+    /// QUIC congestion controller selected by `congestion-controller`
+    /// (`cubic`, `new_reno`, `bbr`); `None` keeps quinn's default.
+    pub congestion_controller: Option<String>,
+    /// Initial congestion window in packets (`cwnd`, pinned default 32 when a
+    /// controller is selected).
+    pub cwnd: u32,
     /// `udp`: for CONNECT-IP this enables the UDP-over-IP association; for
     /// CONNECT-UDP it is the only implemented mode, so `false` leaves an
     /// outbound that refuses every dial explicitly.
@@ -2802,6 +2818,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
         }
     };
     let udp = entry.bool("udp")?.unwrap_or(false);
+    let ss_opts = parse_trojan_ss_opts(entry)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
         "dialer-proxy",
@@ -2838,8 +2855,53 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
         tls_settings,
         network,
         udp,
+        ss_opts,
         dialer_proxy,
     })
+}
+
+/// `ss-opts` of trojan: a bare Shadowsocks AEAD layer over the TLS stream.
+fn parse_trojan_ss_opts(entry: &mut Entry<'_>) -> Result<Option<TrojanSsOpts>, ConfigError> {
+    let Some(block) = entry.block("ss-opts")? else {
+        return Ok(None);
+    };
+    let enabled = block
+        .get(serde_yaml::Value::String("enabled".to_string()))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        // The pinned type leaves `ssCipher` nil when `enabled` is false, even
+        // if the other fields are present.
+        return Ok(None);
+    }
+    let password = block
+        .get(serde_yaml::Value::String("password".to_string()))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if password.is_empty() {
+        return Err(entry.invalid("option 'ss-opts.password' is required when ss-opts is enabled"));
+    }
+    let method = block
+        .get(serde_yaml::Value::String("method".to_string()))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("AES-128-GCM")
+        .to_string();
+    let cipher = match method.to_ascii_uppercase().as_str() {
+        "AES-128-GCM" => SsCipher::Aes128Gcm,
+        "AES-256-GCM" => SsCipher::Aes256Gcm,
+        "CHACHA20-IETF-POLY1305" => SsCipher::Chacha20IetfPoly1305,
+        other => {
+            return Err(entry.unsupported(format!(
+                "option 'ss-opts.method' value '{other}' is not implemented (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)"
+            )))
+        }
+    };
+    Ok(Some(TrojanSsOpts {
+        cipher,
+        password: Secret::new(password),
+    }))
 }
 
 fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
@@ -3212,7 +3274,6 @@ fn parse_snell(entry: &mut Entry<'_>) -> Result<SnellOutbound, ConfigError> {
 /// multiplexing levels and traffic patterns are rejected with the reason
 /// recorded instead of being ignored.
 fn parse_mieru(entry: &mut Entry<'_>) -> Result<MieruOutbound, ConfigError> {
-    reject_unwired_basic(entry, "mieru")?;
     let server = entry.server()?;
     let port = entry.int("port")?;
     let port_range = entry
@@ -3350,7 +3411,6 @@ fn finish_mieru(
 /// kernel implements the legacy mask, TCP sessions and the session mux, and
 /// rejects the tunnel modes and UoT with the reason recorded.
 fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
-    reject_unwired_basic(entry, "sudoku")?;
     let server = entry.server()?;
     let port = entry.port()?;
     let key = Secret::new(entry.required_string("key")?);
@@ -4439,20 +4499,36 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
         None
     };
 
-    if entry
+    let congestion_controller = match entry
         .string("congestion-controller")?
         .filter(|value| !value.is_empty())
-        .is_some()
-        || entry
-            .string("bbr-profile")?
-            .filter(|value| !value.is_empty())
-            .is_some()
-        || entry.int("cwnd")?.unwrap_or(0) != 0
+    {
+        None => None,
+        Some(value) => match value.as_str() {
+            "cubic" | "new_reno" | "bbr" => Some(value),
+            other => {
+                return Err(entry.unsupported(format!(
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr; quinn has no meta BBR variant)"
+                )))
+            }
+        },
+    };
+    if entry
+        .string("bbr-profile")?
+        .is_some_and(|value| !value.is_empty())
     {
         return Err(entry.unsupported(
-            "options 'congestion-controller'/'cwnd'/'bbr-profile' are not implemented: quinn exposes only its own congestion controller, so the pinned adapter's QUIC controller knobs have no equivalent",
+            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
         ));
     }
+    let cwnd = match entry.int("cwnd")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'cwnd' must not be negative"))
+        }
+        Some(0) | None => 0,
+        Some(value) => u32::try_from(value)
+            .map_err(|_| entry.invalid("option 'cwnd' is out of range"))?,
+    };
     if entry
         .string("dialer-proxy")?
         .filter(|value| !value.is_empty())
@@ -4504,6 +4580,8 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
         port,
         tls_settings,
         handshake_timeout,
+        congestion_controller,
+        cwnd,
         udp,
         connect_ip,
     })
@@ -5296,7 +5374,6 @@ fn wireguard_u16(entry: &mut Entry<'_>, key: &str, default: u16) -> Result<u16, 
 ///   mihomo's private Brutal controller, which quinn does not have; only their
 ///   no-op values are accepted.
 fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigError> {
-    reject_unwired_basic(entry, "shadowquic")?;
     let server = entry.server()?;
     let port = entry.port()?;
     let username = entry.string("username")?.unwrap_or_default();

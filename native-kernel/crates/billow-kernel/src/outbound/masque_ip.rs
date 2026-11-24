@@ -379,6 +379,14 @@ impl ConnectIpSession {
         let mut quic_options = QuicOptions::new(alpn.clone());
         quic_options.keep_alive = Some(Duration::from_secs(30));
         quic_options.datagrams = true;
+        if option.congestion_controller.is_some() || option.cwnd != 0 {
+            let (controller, initial) = super::tuic::congestion_tuning(
+                option.congestion_controller.as_deref(),
+                option.cwnd,
+            );
+            quic_options.congestion_controller = controller;
+            quic_options.initial_congestion_window = initial;
+        }
         quic_options.datagram_receive_buffer = Some(64 * 1024);
         quic_options.datagram_send_buffer = Some(64 * 1024);
         // The pinned adapter's SNI default; the certificate name is not

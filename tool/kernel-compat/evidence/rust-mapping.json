@@ -454,7 +454,6 @@
       "notImplemented": [
         "grpc-opts",
         "reality-opts",
-        "ss-opts",
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
@@ -474,7 +473,8 @@
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
+      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
     },
     "vless": {
       "status": "implemented",
@@ -870,7 +870,7 @@
     },
     "mieru": {
       "status": "partial",
-      "reason": "TCP single sessions are implemented; the UDP transport, `udp: true` (UDP associate), the multiplexing levels and `traffic-pattern` are rejected at load with the reason recorded (T13 scope)",
+      "reason": "TCP single sessions are implemented and the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version` (T28); the UDP transport, `udp: true` (UDP associate), the multiplexing levels and `traffic-pattern` are rejected at load with the reason recorded (T13 scope)",
       "options": [
         "server",
         "port",
@@ -887,12 +887,7 @@
         "transport: UDP",
         "udp: true",
         "multiplexing: MULTIPLEXING_LOW/MIDDLE/HIGH",
-        "traffic-pattern",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
-        "ip-version"
+        "traffic-pattern"
       ],
       "notes": [
         "the mieru module is GPL-3.0, so the client is an independent implementation of docs/protocol.md (PBKDF2-SHA256 time salt, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, one TCP session per underlay); no mieru code is vendored or linked",
@@ -910,7 +905,7 @@
     },
     "masque": {
       "status": "partial",
-      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC congestion-controller options, `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
+      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC `bbr-profile` (quinn has no profile selector), `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
       "options": [
         "server",
         "port",
@@ -949,8 +944,6 @@
         "HTTP/2 CONNECT-IP (`network: h2`)",
         "h3-l4proxy (`network: h3-l4proxy`)",
         "ip-stack.mode: gvisor (the pinned build-tagged gVisor dependency)",
-        "congestion-controller",
-        "cwnd",
         "bbr-profile",
         "dialer-proxy",
         "remote-dns-resolve with DNS over TCP/DoT/DoH or `#param` name servers",
@@ -1035,7 +1028,7 @@
     },
     "sudoku": {
       "status": "partial",
-      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded",
+      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded T28: the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version`.",
       "license": "GPL-3.0-derived translation of Mihomo `transport/sudoku` v1.19.34 (commit 0455d0d28c4526937380505153e65a843d8612e8); the kernel workspace is GPL-3.0-only, any distribution of the combined work must follow GPL-3.0 (source availability etc.), see native-kernel/COPYING.GPL-3.0 and THIRD_PARTY_NOTICES.md",
       "options": [
         "server",
@@ -1058,12 +1051,7 @@
       "udp": "not implemented: `udp: true` (the UoT association, `KIPTypeStartUoT` + `transport/sudoku/uot.go`) is rejected at load; the kernel's UDP association selection for sudoku is a T9 decision",
       "notImplemented": [
         "udp: true",
-        "http-mask-mode: stream/poll/auto/ws",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
-        "ip-version"
+        "http-mask-mode: stream/poll/auto/ws"
       ],
       "notes": [
         "the module files carry `SPDX-License-Identifier: GPL-3.0-only` and the upstream version/commit; `src/keys.rs` (`sudoku_seed`) and `src/proxies.rs` (`SudokuOutbound`, `parse_sudoku`) are mixed files with the same header on the derived item and the scope stated in their module docs; distribution must follow GPL-3.0 (native-kernel/COPYING.GPL-3.0)",
@@ -1267,7 +1255,7 @@
     },
     "shadowquic": {
       "status": "partial",
-      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket",
+      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md; `zero-rtt`, QUIC `v2` and the private Brutal congestion options are rejected by name because quinn has no Brutal controller/JLS 0-RTT ticket T28: the QUIC endpoint applies `interface-name`/`routing-mark`/`ip-version`; `tfo`/`mptcp` are accepted no-ops because the pinned packet dialer cannot apply TCP options to a QUIC UDP socket.",
       "options": [
         "server",
         "port",
@@ -1292,12 +1280,7 @@
         "bbr-profile",
         "up",
         "down",
-        "dialer-proxy",
-        "tfo",
-        "mptcp",
-        "interface-name",
-        "routing-mark",
-        "ip-version"
+        "dialer-proxy"
       ],
       "evidence": [
         "src/outbound/jls.rs::tests::verifies_locked_jls_client_and_server_hellos",

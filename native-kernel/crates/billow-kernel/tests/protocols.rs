@@ -2820,6 +2820,61 @@ async fn trojan_udp_peer(cert: &Cert, password: &'static str, echo_port: u16) ->
     (addr.port(), log)
 }
 
+/// A tiny UDP DNS server that answers every A query with 127.0.0.1 and counts
+/// the queries it served. Used to prove proxy-server names resolve through
+/// `dns.proxy-server-nameserver` instead of the OS resolver.
+fn spawn_a_record_dns() -> (u16, Arc<AtomicU64>) {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("dns bind");
+    socket.set_nonblocking(true).expect("nonblocking dns");
+    let port = socket.local_addr().unwrap().port();
+    common::reserve_port(port);
+    let queries = Arc::new(AtomicU64::new(0));
+    let counter = queries.clone();
+    tokio::spawn(async move {
+        let socket = tokio::net::UdpSocket::from_std(socket).expect("dns socket");
+        let mut buffer = vec![0u8; 2048];
+        loop {
+            let Ok((read, peer)) = socket.recv_from(&mut buffer).await else {
+                continue;
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            let query = &buffer[..read];
+            if query.len() < 12 {
+                continue;
+            }
+            let mut offset = 12usize;
+            while offset < query.len() && query[offset] != 0 {
+                offset += 1 + query[offset] as usize;
+            }
+            offset += 1;
+            if offset + 4 > query.len() {
+                continue;
+            }
+            let qtype = u16::from_be_bytes([query[offset], query[offset + 1]]);
+            let question_end = offset + 4;
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&query[..2]); // id
+            reply.extend_from_slice(&[0x81, 0x80]); // response, recursion available
+            reply.extend_from_slice(&1u16.to_be_bytes());
+            let answers = if qtype == 1 { 1u16 } else { 0 };
+            reply.extend_from_slice(&answers.to_be_bytes());
+            reply.extend_from_slice(&0u16.to_be_bytes());
+            reply.extend_from_slice(&0u16.to_be_bytes());
+            reply.extend_from_slice(&query[12..question_end]);
+            if answers == 1 {
+                reply.extend_from_slice(&[0xc0, 0x0c]); // name pointer
+                reply.extend_from_slice(&1u16.to_be_bytes()); // A
+                reply.extend_from_slice(&1u16.to_be_bytes()); // IN
+                reply.extend_from_slice(&60u32.to_be_bytes());
+                reply.extend_from_slice(&4u16.to_be_bytes());
+                reply.extend_from_slice(&[127, 0, 0, 1]);
+            }
+            let _ = socket.send_to(&reply, peer).await;
+        }
+    });
+    (port, queries)
+}
+
 /// A UDP echo on loopback; returns its port and the payload counter.
 async fn udp_echo() -> (u16, Arc<AtomicU64>) {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -2968,6 +3023,42 @@ async fn shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead() {
     kernel.stop().unwrap();
 }
 
+/// The `ss`/`ssr` UDP association resolves its *server* name through
+/// `dns.proxy-server-nameserver` (not the OS resolver), and the resolution
+/// happens inside the spawned association: the mixed inbound's task-local
+/// scope is re-entered there. The name `ss.pool.test` exists only in the test
+/// DNS server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_udp_server_name_uses_proxy_server_nameserver() {
+    let cipher = billow_kernel::proxies::SsCipher::Aes256Gcm;
+    let password = "pool-dns-pw";
+    let (echo_port, _) = udp_echo().await;
+    let (server_port, _log) = ss_udp_peer_bound("127.0.0.1:0", cipher, password, echo_port).await;
+    let (dns_port, queries) = spawn_a_record_dns();
+    let dead = free_port();
+    let dir = scratch("ss-udp-pool-dns");
+    let path = dir.join("kernel.yaml");
+    std::fs::write(
+        &path,
+        format!(
+            "mixed-port: {}\nlog-level: warn\ndns:\n  enable: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:{dead}']\n  proxy-server-nameserver: ['udp://127.0.0.1:{dns_port}']\nproxies:\n  - {{name: s, type: ss, server: ss.pool.test, port: {server_port}, cipher: aes-256-gcm, password: {password}, udp: true, ip-version: ipv4}}\nrules:\n  - 'MATCH,s'\n",
+            free_port()
+        ),
+    )
+    .unwrap();
+    let (mut kernel, _) = Kernel::start(&path, None, limits()).unwrap();
+    let (control, relay) = udp_associate(kernel.listen_addr());
+    let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().unwrap();
+    let reply = udp_roundtrip(relay, target, b"pool-dns", Duration::from_secs(3))
+        .expect("the ss server name must resolve through the configured DNS");
+    assert_eq!(reply, b"pool-dns");
+    assert!(
+        queries.load(Ordering::Relaxed) > 0,
+        "the association must query proxy-server-nameserver"
+    );
+    drop(control);
+    kernel.stop().unwrap();
+}
 
 /// `ss` + `udp: true` + `dialer-proxy: hop`: the datagrams must travel through
 /// the SOCKS5 hop's UDP relay, not straight to the server. The hop's own log

@@ -101,6 +101,60 @@ impl PacketSink for Collector {
     }
 }
 
+/// A tiny UDP DNS server that answers every A query with 127.0.0.1. The TUN
+/// association task is spawned, so this proves the task-local
+/// `proxy-server-nameserver` scope is re-entered inside the spawned task.
+fn spawn_a_record_dns() -> (u16, Arc<std::sync::atomic::AtomicU64>) {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("dns bind");
+    socket.set_nonblocking(true).expect("nonblocking dns");
+    let port = socket.local_addr().unwrap().port();
+    let queries = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = queries.clone();
+    tokio::spawn(async move {
+        let socket = UdpSocket::from_std(socket).expect("dns socket");
+        let mut buffer = vec![0u8; 2048];
+        loop {
+            let Ok((read, peer)) = socket.recv_from(&mut buffer).await else {
+                continue;
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            let query = &buffer[..read];
+            if query.len() < 12 {
+                continue;
+            }
+            let mut offset = 12usize;
+            while offset < query.len() && query[offset] != 0 {
+                offset += 1 + query[offset] as usize;
+            }
+            offset += 1;
+            if offset + 4 > query.len() {
+                continue;
+            }
+            let qtype = u16::from_be_bytes([query[offset], query[offset + 1]]);
+            let question_end = offset + 4;
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&query[..2]);
+            reply.extend_from_slice(&[0x81, 0x80]);
+            reply.extend_from_slice(&1u16.to_be_bytes());
+            let answers = if qtype == 1 { 1u16 } else { 0 };
+            reply.extend_from_slice(&answers.to_be_bytes());
+            reply.extend_from_slice(&0u16.to_be_bytes());
+            reply.extend_from_slice(&0u16.to_be_bytes());
+            reply.extend_from_slice(&query[12..question_end]);
+            if answers == 1 {
+                reply.extend_from_slice(&[0xc0, 0x0c]);
+                reply.extend_from_slice(&1u16.to_be_bytes());
+                reply.extend_from_slice(&1u16.to_be_bytes());
+                reply.extend_from_slice(&60u32.to_be_bytes());
+                reply.extend_from_slice(&4u16.to_be_bytes());
+                reply.extend_from_slice(&[127, 0, 0, 1]);
+            }
+            let _ = socket.send_to(&reply, peer).await;
+        }
+    });
+    (port, queries)
+}
+
 struct Device {
     tunnel: Tunnel,
     sink: Arc<Collector>,
@@ -454,6 +508,59 @@ async fn socks5_udp_datagrams_cross_the_tunnel_in_both_directions() {
     let stats = device.tunnel.stats();
     assert_eq!(stats.udp_replies, 1, "{stats:?}");
     assert_eq!(stats.unsupported_protocols, 0, "{stats:?}");
+    device.tunnel.stop();
+}
+
+/// A TUN UDP association is spawned as its own task; it must re-enter the
+/// engine's `proxy-server-nameserver` scope. The proxy server name exists only
+/// in the test DNS server, so the data plane cannot reach the peer otherwise.
+#[tokio::test(flavor = "multi_thread")]
+async fn spawned_tun_udp_association_uses_proxy_server_nameserver() {
+    let echo = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let echo_addr = echo.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 128];
+        if let Ok((read, from)) = echo.recv_from(&mut buffer).await {
+            let _ = echo.send_to(&buffer[..read], from).await;
+        }
+    });
+    let peer = socks5_udp_peer().await;
+    let (dns_port, queries) = spawn_a_record_dns();
+    let dead = free_port();
+    let config = format!(
+        "mixed-port: {}\nlog-level: warn\ndns:\n  enable: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:{dead}']\n  proxy-server-nameserver: ['udp://127.0.0.1:{dns_port}']\nproxies:\n  - {{name: s5, type: socks5, server: s5.pool.test, port: {peer}, udp: true, ip-version: ipv4}}\nrules:\n  - 'MATCH,s5'\n",
+        free_port()
+    );
+    let device = Device::start(&config, TunnelOptions::default());
+    let port = device.next_port();
+    let query = ipstack::build_udp_packet(
+        DEVICE_IP,
+        echo_addr.ip(),
+        port,
+        echo_addr.port(),
+        b"tun-pool-dns",
+        64,
+    )
+    .unwrap();
+    device.send(&query);
+    let packets = device
+        .sink
+        .wait_for(|packets| {
+            packets.iter().any(|packet| {
+                ipstack::parse_ip_packet(packet).map(|p| p.protocol) == Ok(ipstack::IPPROTO_UDP)
+            })
+        })
+        .await;
+    let reply = packets
+        .iter()
+        .find_map(|packet| ipstack::parse_ip_packet(packet).ok())
+        .expect("UDP reply");
+    let udp = ipstack::parse_udp(&reply).expect("UDP datagram");
+    assert_eq!(udp.payload, b"tun-pool-dns");
+    assert!(
+        queries.load(Ordering::Relaxed) > 0,
+        "the spawned association must query proxy-server-nameserver"
+    );
     device.tunnel.stop();
 }
 

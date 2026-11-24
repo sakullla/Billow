@@ -100,7 +100,7 @@ fn timeout_error(timeout: Duration) -> DialError {
 /// accepts `cubic`, `new_reno` and `bbr`; only the BBR branch consumes `cwnd`
 /// (default 32 packets), while `cwnd` without a controller and with the other
 /// controllers is accepted and left to the library default.
-fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionController, Option<u64>) {
+pub(crate) fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionController, Option<u64>) {
     let controller = match name {
         Some("cubic") => CongestionController::Cubic,
         Some("new_reno") => CongestionController::NewReno,

@@ -247,20 +247,10 @@ const t13Enabled = [
   ['mieru', 'udp', 'udp: true'],
   ['mieru', 'multiplexing', 'multiplexing: MULTIPLEXING_LOW'],
   ['mieru', 'traffic-pattern', 'traffic-pattern: AbCd'],
-  ['mieru', 'tfo', 'tfo: true'],
-  ['mieru', 'mptcp', 'mptcp: true'],
-  ['mieru', 'interface-name', 'interface-name: eth0'],
-  ['mieru', 'routing-mark', 'routing-mark: 100'],
-  ['mieru', 'ip-version', 'ip-version: ipv4'],
   // sudoku: `multiplex: on` is implemented (session mux), so it is not an
   // enabled-rejection row; the HTTP tunnel modes and UoT still are.
   ['sudoku', 'udp', 'udp: true'],
   ['sudoku', 'http-mask-mode', 'http-mask-mode: stream'],
-  ['sudoku', 'tfo', 'tfo: true'],
-  ['sudoku', 'mptcp', 'mptcp: true'],
-  ['sudoku', 'interface-name', 'interface-name: eth0'],
-  ['sudoku', 'routing-mark', 'routing-mark: 100'],
-  ['sudoku', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 // T15 shadowquic: explicit enabled forms (a list for `quic-versions` and rate
 // strings for `up`/`down`).
@@ -272,11 +262,6 @@ const t15Enabled = [
   ['shadowquic', 'cwnd', 'cwnd: 64'],
   ['shadowquic', 'up', 'up: 50 Mbps'],
   ['shadowquic', 'down', 'down: 50 Mbps'],
-  ['shadowquic', 'tfo', 'tfo: true'],
-  ['shadowquic', 'mptcp', 'mptcp: true'],
-  ['shadowquic', 'interface-name', 'interface-name: eth0'],
-  ['shadowquic', 'routing-mark', 'routing-mark: 100'],
-  ['shadowquic', 'ip-version', 'ip-version: ipv4'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 // T16 families: explicit forms, because the generic `{enabled: true}` shape is
 // not valid for `amnezia-wg-option`, `ip-stack`, `dns` or `dialer-proxy`.
@@ -311,8 +296,6 @@ const t16Enabled = [
 const t18Enabled = [
   ['masque', 'network', 'network: h2'],
   ['masque', 'network', 'network: h3-l4proxy'],
-  ['masque', 'congestion-controller', 'congestion-controller: bbr'],
-  ['masque', 'cwnd', 'cwnd: 32'],
   ['masque', 'bbr-profile', 'bbr-profile: standard'],
   ['masque', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
   ['masque', 'dialer-proxy', 'dialer-proxy: hop'],
@@ -507,6 +490,10 @@ add('sudoku', 'http-mask', 'true')
 for (const type of ['shadowquic']) {
   add(type, 'tfo', 'false')
   add(type, 'mptcp', 'false')
+  // T28: accepted by both engines; a QUIC server socket is UDP, so the pinned
+  // packet dialer never applies the TCP-only TFO/MPTCP options either.
+  add(type, 'tfo', 'true')
+  add(type, 'mptcp', 'true')
   add(type, 'interface-name', "''")
   add(type, 'routing-mark', '0')
   add(type, 'ip-version', "''")
@@ -615,6 +602,31 @@ for (const [type, key, option] of [
 ]) {
   implemented.push({ type, key, base: bases[type].on, option })
 }
+
+// T28 second batch: the shared stream dialer families (mieru/sudoku) now take
+// the BasicOption knobs, the shadowquic QUIC endpoint applies the UDP-relevant
+// ones, masque maps its QUIC controller, and trojan implements `ss-opts`.
+for (const type of ['mieru', 'sudoku']) {
+  implemented.push({ type, key: 'basic-options', base: bases[type].off, option: basicOption })
+}
+implemented.push({
+  type: 'shadowquic',
+  key: 'basic-options',
+  base: bases.shadowquic.off,
+  option: 'interface-name: lo0, routing-mark: 100, ip-version: ipv4',
+})
+implemented.push({
+  type: 'masque',
+  key: 'congestion-controller',
+  base: bases.masque.off,
+  option: 'congestion-controller: bbr, cwnd: 32',
+})
+implemented.push({
+  type: 'trojan',
+  key: 'ss-opts',
+  base: bases.trojan.off,
+  option: 'ss-opts: {enabled: true, method: AES-256-GCM, password: p}',
+})
 
 // Enabled forms: every one must be rejected by name.
 

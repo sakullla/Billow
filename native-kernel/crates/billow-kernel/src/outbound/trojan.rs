@@ -45,6 +45,7 @@ pub async fn dial(
             Box::new(tunnel)
         }
     };
+    stream = wrap_ss(stream, option).await?;
     let mut header = trojan_password_key(option.password.expose());
     header.extend_from_slice(&request_tail(target));
     stream
@@ -53,6 +54,27 @@ pub async fn dial(
         .map_err(|e| handshake("trojan", e))?;
     stream.flush().await.map_err(|e| handshake("trojan", e))?;
     Ok(Dialed { stream, server })
+}
+
+/// Wrap the stream in trojan's optional `ss-opts` Shadowsocks AEAD layer.
+/// The pinned `StreamConnContext` applies `core.Cipher.StreamConn` after TLS/WS
+/// and before the trojan header, so the header and everything after it are
+/// sealed chunks.
+pub async fn wrap_ss(
+    stream: BoxStream,
+    option: &TrojanOutbound,
+) -> Result<BoxStream, DialError> {
+    let Some(ss) = &option.ss_opts else {
+        return Ok(stream);
+    };
+    let wrapped = super::shadowsocks::connect_layer(
+        stream,
+        ss.cipher,
+        ss.password.expose(),
+    )
+    .await
+    .map_err(|e| handshake("trojan ss-opts", e))?;
+    Ok(Box::new(wrapped))
 }
 
 /// `CRLF cmd SOCKS5-addr CRLF`, exactly as Mihomo's `transport/trojan.WriteHeader`

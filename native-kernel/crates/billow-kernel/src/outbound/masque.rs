@@ -160,6 +160,14 @@ impl MasqueUdp {
         };
         let mut quic_options = QuicOptions::new(vec!["h3".to_string()]);
         quic_options.keep_alive = Some(Duration::from_secs(30));
+        if option.congestion_controller.is_some() || option.cwnd != 0 {
+            let (controller, initial) = super::tuic::congestion_tuning(
+                option.congestion_controller.as_deref(),
+                option.cwnd,
+            );
+            quic_options.congestion_controller = controller;
+            quic_options.initial_congestion_window = initial;
+        }
         let (connection, endpoint) = quic::connect(
             &option.server,
             &option.server,

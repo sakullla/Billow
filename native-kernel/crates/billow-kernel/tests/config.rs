@@ -1869,3 +1869,74 @@ fn t27_socks5_udp_is_accepted_and_chain_is_named() {
     );
     assert!(error.contains("option 'udp' with 'dialer-proxy'"), "{error}");
 }
+
+#[test]
+fn t28_tcp_basic_options_reach_the_shared_dialer_families() {
+    // mieru and sudoku dial their server with the shared stream dialer, so
+    // tfo/mptcp/interface-name/routing-mark/ip-version are applied to that
+    // socket instead of being rejected.
+    for (kind, base) in [
+        (
+            "mieru",
+            "server: 127.0.0.1, port: 1, transport: TCP, username: u, password: p",
+        ),
+        ("sudoku", "server: 127.0.0.1, port: 1, key: k"),
+    ] {
+        let yaml = format!(
+            "proxies:\n  - {{name: p, type: {kind}, {base}, tfo: true, mptcp: true, interface-name: lo0, routing-mark: 100, ip-version: ipv4}}\nrules: ['MATCH,p']\n"
+        );
+        let loaded = load_config(&yaml, "t").unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let proxy = &loaded.config.proxies[0];
+        assert!(proxy.dialer.tfo, "{kind}");
+        assert!(proxy.dialer.mptcp, "{kind}");
+        assert_eq!(proxy.dialer.interface_name.as_deref(), Some("lo0"), "{kind}");
+        assert_eq!(proxy.dialer.routing_mark, 100, "{kind}");
+        assert_eq!(proxy.dialer.ip_version, billow_kernel::proxies::IpVersion::V4Only);
+    }
+    // shadowquic is QUIC over UDP: interface-name/routing-mark shape the UDP
+    // endpoint and ip-version filters its server address. tfo/mptcp are TCP
+    // options the pinned packet dialer never applies, so they are accepted
+    // no-ops here too.
+    let yaml = "proxies:\n  - {name: p, type: shadowquic, server: 127.0.0.1, port: 1, username: u, password: p, interface-name: lo0, routing-mark: 100, ip-version: ipv4, tfo: true, mptcp: true}\nrules: ['MATCH,p']\n";
+    let loaded = load_config(yaml, "t").expect("shadowquic basic options load");
+    let proxy = &loaded.config.proxies[0];
+    assert_eq!(proxy.dialer.interface_name.as_deref(), Some("lo0"));
+    assert_eq!(proxy.dialer.ip_version, billow_kernel::proxies::IpVersion::V4Only);
+}
+
+#[test]
+fn t28_masque_quic_controller_and_trojan_ss_opts_are_parsed() {
+    load_config(
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr, cwnd: 32}\nrules: ['MATCH,m']\n",
+        "t",
+    )
+    .expect("masque QUIC controller loads");
+    let error = proxy_err(
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, bbr-profile: standard}\nrules: ['MATCH,m']\n",
+    );
+    assert!(error.contains("option 'bbr-profile'"), "{error}");
+    let error = proxy_err(
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v2}\nrules: ['MATCH,m']\n",
+    );
+    assert!(error.contains("option 'congestion-controller'"), "{error}");
+
+    load_config(
+        "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {enabled: true, method: AES-256-GCM, password: sp}}\nrules: ['MATCH,t']\n",
+        "t",
+    )
+    .expect("trojan ss-opts loads");
+    // A disabled block is a no-op, as in the pinned type.
+    load_config(
+        "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {}}\nrules: ['MATCH,t']\n",
+        "t",
+    )
+    .expect("disabled ss-opts loads");
+    let error = proxy_err(
+        "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {enabled: true, method: rc4-md5, password: sp}}\nrules: ['MATCH,t']\n",
+    );
+    assert!(error.contains("option 'ss-opts.method'"), "{error}");
+    let error = proxy_err(
+        "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {enabled: true}}\nrules: ['MATCH,t']\n",
+    );
+    assert!(error.contains("option 'ss-opts.password'"), "{error}");
+}
