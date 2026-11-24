@@ -1757,5 +1757,12 @@ export const UI_EN: Record<string, string> = {
   '重试失败': 'Retry failed',
   '置顶': 'Pin',
   '取消置顶': 'Unpin',
+  '展开筛选与分组导航': 'Show filters & group jump',
+  '收起筛选与分组导航': 'Hide filters & group jump',
+  '清除筛选：{0}': 'Clear filter: {0}',
+  '点击清除筛选': 'Click to clear filter',
+  '标签': 'Tags',
+  '分组': 'Groups',
+  '与明暗模式自由组合，采用柔和中性底板与克制主色': 'Combine freely with light or dark mode using calm neutral surfaces and refined accents',
 }
 

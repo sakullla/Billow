@@ -51,7 +51,7 @@ const desktopWindow = computed(() => Boolean(app.value && app.value.autostart !=
     </SettingsRow>
     <SettingsRow
       :title="tr('配色方案')"
-      :description="tr('与明暗模式自由组合，实时切换表面色温与主色')"
+      :description="tr('与明暗模式自由组合，采用柔和中性底板与克制主色')"
       setting="palette"
       stacked
       data-testid="palette-setting"

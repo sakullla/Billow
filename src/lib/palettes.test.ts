@@ -80,17 +80,26 @@ describe('palette metadata single source of truth', () => {
       expect(lightBg, `${id}.light bg < surface`).toBeLessThan(lightSurface)
       expect(lightBg, `${id}.light bg luminance`).toBeGreaterThan(0.8)
 
-      // Dark mode: chrome < bg < surface
+      // Dark mode: chrome < bg < surface, lifted above pitch-black void to avoid halation
       const darkChrome = relativeLuminance(meta.dark.chrome)
       const darkBg = relativeLuminance(meta.dark.bg)
       const darkSurface = relativeLuminance(meta.dark.surface)
       expect(darkChrome, `${id}.dark chrome < bg`).toBeLessThan(darkBg)
       expect(darkBg, `${id}.dark bg < surface`).toBeLessThan(darkSurface)
+      expect(darkBg, `${id}.dark bg luminance`).toBeGreaterThan(0.007)
       expect(darkBg, `${id}.dark bg luminance`).toBeLessThan(0.05)
 
-      // Contrast checks for both modes
+      // Neutral/low-cast surface ergonomics: prevent heavy chromatic cast across backgrounds & cards
       for (const mode of ['light', 'dark'] as const) {
         const tone = meta[mode]
+        for (const surfaceKey of ['bg', 'chrome', 'surface'] as const) {
+          const rgb = tone[surfaceKey]
+            .slice(1)
+            .match(/.{2}/g)!
+            .map((pair) => parseInt(pair, 16))
+          const spread = Math.max(...rgb) - Math.min(...rgb)
+          expect(spread, `${id}.${mode}.${surfaceKey} RGB cast spread`).toBeLessThanOrEqual(10)
+        }
         expect(contrastRatio(tone.accent, tone.onAccent), `${id}.${mode} accent/onAccent`).toBeGreaterThanOrEqual(4.5)
         expect(contrastRatio(tone.accent, tone.surface), `${id}.${mode} accent/surface`).toBeGreaterThanOrEqual(3.0)
         expect(contrastRatio(tone.text, tone.bg), `${id}.${mode} text/bg`).toBeGreaterThanOrEqual(10.0)

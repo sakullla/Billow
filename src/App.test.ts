@@ -3209,6 +3209,10 @@ describe('App', () => {
     await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
     await flushPromises()
 
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+
     const strip = wrapper.find('[data-testid="group-jump-bar"]')
     expect(strip.exists()).toBe(true)
     // Pick a group that starts collapsed
@@ -3300,8 +3304,10 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(true)
 
-    // Tapping a second group pill on mobile collapses the previously open group for zero clutter
+    // Tapping a second group pill on mobile (after expanding options) collapses the previously open group for zero clutter
     expect(wrapper.find('[data-group-card="节点选择"]').classes('open')).toBe(true)
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="jump-group-OpenAI"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-group-card="OpenAI"]').classes('open')).toBe(true)

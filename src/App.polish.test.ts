@@ -1534,9 +1534,23 @@ describe('UI/UX polish', () => {
       expect(body().find('[data-uwp-family="Microsoft.WindowsTerminal_8wekyb3d8bbwe"]').attributes('aria-pressed')).toBe('true')
     })
 
-    it('supports left-mouse drag-to-scroll and wheel horizontal scroll on proxy group pills without accidental clicks', async () => {
+    it('supports collapsible filter/group drawer with persisted preference and drag/wheel scroll on proxy group pills', async () => {
       const { wrapper } = await mountApp()
       await openPage(wrapper, 'proxies')
+
+      // Default desktop toolbar stays a single uncluttered row with the drawer collapsed
+      expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+
+      const toggleBtn = wrapper.find('[data-testid="toggle-proxy-filters"]')
+      expect(toggleBtn.exists()).toBe(true)
+      expect(toggleBtn.attributes('aria-expanded')).toBe('false')
+
+      await toggleBtn.trigger('click')
+      await flushPromises()
+      expect(toggleBtn.attributes('aria-expanded')).toBe('true')
+      expect(localStorage.getItem('billow:proxy-filters-open')).toBe('true')
+
       const bar = wrapper.find('[data-testid="group-jump-bar"]')
       expect(bar.exists()).toBe(true)
       const el = bar.element as HTMLElement
@@ -1561,12 +1575,22 @@ describe('UI/UX polish', () => {
       el.dispatchEvent(wheelEv)
       expect(wheelEv.defaultPrevented).toBe(true)
       expect(el.scrollLeft).toBe(180)
+
+      // Explicit close button inside the drawer collapses both rows cleanly
+      await wrapper.find('[data-testid="close-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+      expect(localStorage.getItem('billow:proxy-filters-open')).toBe('false')
     })
 
-    it('R3: renders dynamic quick filter chips in ProxiesView, combines with search/hideFailed, and resets in one click', async () => {
+    it('R3: expands quick filter chips on demand, shows inline removable active pill when collapsed, and resets in one click', async () => {
       const { wrapper } = await mountApp()
       await connect(wrapper)
       await openPage(wrapper, 'proxies')
+
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
 
       const filterBar = wrapper.find('[data-testid="proxy-quick-filters"]')
       expect(filterBar.exists()).toBe(true)
@@ -1585,6 +1609,14 @@ describe('UI/UX polish', () => {
       const matchedNodes = wrapper.findAll('.node[data-node]')
       expect(matchedNodes.length).toBeGreaterThan(0)
 
+      // Collapsing the drawer while a filter is active surfaces a removable inline pill in the single-row toolbar.
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+      const inlinePill = wrapper.find('[data-testid="active-quick-filter-pill"]')
+      expect(inlinePill.exists()).toBe(true)
+      expect(inlinePill.text()).toContain('UDP')
+
       // Combining quick tag with an unmatched search shows empty state with one-click reset.
       await wrapper.find('[data-testid="node-search"]').setValue('nonexistent-xyz-node')
       await flushPromises()
@@ -1594,6 +1626,10 @@ describe('UI/UX polish', () => {
       await flushPromises()
       expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(false)
       expect((wrapper.find('[data-testid="node-search"]').element as HTMLInputElement).value).toBe('')
+      expect(wrapper.find('[data-testid="active-quick-filter-pill"]').exists()).toBe(false)
+
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
       expect(wrapper.find('[data-testid="quick-filter-tag:udp"]').attributes('aria-pressed')).toBe('false')
       expect(wrapper.find('[data-testid="clear-proxy-quick-filters"]').exists()).toBe(false)
     })

@@ -70,6 +70,9 @@ const toolbarEl = ref<HTMLElement | null>(null)
 const optionsOpen = ref<boolean>(readPref('proxy-options-open', false))
 const showOptions = computed(() => !props.compact || optionsOpen.value)
 watch(optionsOpen, (value) => writePref('proxy-options-open', value))
+/** Desktop keeps the sticky bar a calm single row by default; filter chips & group jump fold behind a persisted toggle. */
+const filtersOpen = ref<boolean>(readPref<unknown>('proxy-filters-open', false) === true)
+watch(filtersOpen, (value) => writePref('proxy-filters-open', value))
 /** Open group headers stick under the toolbar; its height can change when options open. */
 const toolbarHeight = ref(0)
 let toolbarObserver: ResizeObserver | null = null
@@ -266,6 +269,12 @@ function matchesQuickTag(node: NodeItem): boolean {
 
 const hasSearchOrTag = computed(() => Boolean(needle.value || activeTag.value))
 const hasActiveFilter = computed(() => Boolean(hasSearchOrTag.value || (hideFailed.value && failedNodeCount.value > 0)))
+const activeQuickFilter = computed(() =>
+  activeTag.value ? (quickFilters.value.find((chip) => chip.id === activeTag.value) ?? null) : null,
+)
+const totalVisibleGroups = computed(() => modeListed.value.filter((group) => !autoHidden(group)).length)
+const canToggleFilters = computed(() => quickFilters.value.length > 0 || totalVisibleGroups.value > 2)
+const drawerExpanded = computed(() => (props.compact ? optionsOpen.value : filtersOpen.value))
 
 function resetFilters() {
   query.value = ''
@@ -1061,6 +1070,19 @@ onBeforeUnmount(() => {
       </button>
       <span v-if="hasSearchOrTag && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
       <button
+        v-if="!drawerExpanded && activeQuickFilter"
+        type="button"
+        class="chip-btn active proxy-active-filter-pill"
+        :aria-label="tr('清除筛选：{0}', { 0: activeQuickFilter.label })"
+        :title="tr('点击清除筛选')"
+        data-testid="active-quick-filter-pill"
+        @click="activeTag = null"
+      >
+        <span>{{ activeQuickFilter.label }}</span>
+        <span class="proxy-quick-count mono">{{ activeQuickFilter.count }}</span>
+        <Icon name="x" :size="12" />
+      </button>
+      <button
         v-if="failedNodeCount > 0"
         type="button"
         class="chip-btn hide-failed-chip"
@@ -1071,6 +1093,22 @@ onBeforeUnmount(() => {
       > {{ tr('隐藏超时') }} {{ failedNodeCount }}
       </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
+        <button
+          v-if="!compact && canToggleFilters"
+          type="button"
+          class="btn ghost sm tool-btn filter-drawer-toggle"
+          :class="{ active: filtersOpen }"
+          :aria-expanded="filtersOpen"
+          :aria-pressed="filtersOpen"
+          aria-controls="proxy-filter-drawer"
+          :title="filtersOpen ? tr('收起筛选与分组导航') : tr('展开筛选与分组导航')"
+          data-testid="toggle-proxy-filters"
+          @click="filtersOpen = !filtersOpen"
+        >
+          <Icon name="filter" :size="14" />
+          <span>{{ tr('筛选') }}</span>
+          <Icon name="chevron-down" :size="13" class="filter-toggle-chevron" :class="{ open: filtersOpen }" />
+        </button>
         <Segmented v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
         <!-- Desktop: quiet icon buttons with tooltips; phones lay them out as labelled chips (R3, R12). Auto groups need no toggle (R13). -->
         <div
@@ -1137,66 +1175,98 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="quickFilters.length && (!compact || optionsOpen || Boolean(activeTag))"
-        class="proxy-quick-filters"
-        role="group"
-        :aria-label="tr('筛选')"
-        data-testid="proxy-quick-filters"
+        v-if="drawerExpanded && (quickFilters.length || (groups.length > 2 && !hasSearchOrTag))"
+        id="proxy-filter-drawer"
+        class="proxy-filter-drawer"
+        data-testid="proxy-filter-drawer"
       >
-        <button
-          v-for="chip in quickFilters"
-          :key="chip.id"
-          type="button"
-          class="chip-btn proxy-quick-chip"
-          :class="{ active: activeTag === chip.id }"
-          :aria-pressed="activeTag === chip.id"
-          :data-testid="`quick-filter-${chip.id}`"
-          @click="toggleQuickTag(chip.id)"
+        <div
+          v-if="quickFilters.length"
+          class="proxy-quick-filters"
+          role="group"
+          :aria-label="tr('筛选')"
+          data-testid="proxy-quick-filters"
         >
-          <span>{{ chip.label }}</span>
-          <span class="proxy-quick-count mono">{{ chip.count }}</span>
-        </button>
-        <button
-          v-if="hasActiveFilter"
-          type="button"
-          class="btn ghost sm proxy-quick-reset"
-          data-testid="clear-proxy-quick-filters"
-          @click="resetFilters"
-        >
-          <Icon name="x" :size="13" />
-          {{ tr('重置筛选') }}
-        </button>
-      </div>
+          <span class="drawer-row-label">{{ tr('标签') }}</span>
+          <button
+            v-for="chip in quickFilters"
+            :key="chip.id"
+            type="button"
+            class="chip-btn proxy-quick-chip"
+            :class="{ active: activeTag === chip.id }"
+            :aria-pressed="activeTag === chip.id"
+            :data-testid="`quick-filter-${chip.id}`"
+            @click="toggleQuickTag(chip.id)"
+          >
+            <span>{{ chip.label }}</span>
+            <span class="proxy-quick-count mono">{{ chip.count }}</span>
+          </button>
+          <button
+            v-if="hasActiveFilter"
+            type="button"
+            class="btn ghost sm proxy-quick-reset"
+            data-testid="clear-proxy-quick-filters"
+            @click="resetFilters"
+          >
+            <Icon name="x" :size="13" />
+            {{ tr('重置筛选') }}
+          </button>
+          <button
+            v-if="!compact"
+            type="button"
+            class="icon-btn sm drawer-close-btn"
+            :aria-label="tr('收起筛选与分组导航')"
+            :title="tr('收起筛选与分组导航')"
+            data-testid="close-proxy-filters"
+            @click="filtersOpen = false"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
 
-      <nav
-        v-if="groups.length > 2 && !hasSearchOrTag"
-        ref="groupPillsEl"
-        class="group-pills"
-        :class="{ dragging: draggingPills }"
-        :aria-label="tr('代理组快速跳转')"
-        data-testid="group-jump-bar"
-        @mousedown="onPillsMouseDown"
-        @click.capture="onPillsClickCapture"
-        @wheel="onPillsWheel"
-      >
-        <button
-          v-for="group in groups"
-          :key="group.name"
-          type="button"
-          class="group-pill"
-          :class="{
-            open: isOpen(group.name),
-            focused: store.focusGroup.value === group.name,
-            testing: store.activeTest.value?.group === group.name,
-          }"
-          :aria-busy="store.activeTest.value?.group === group.name || undefined"
-          :data-testid="`jump-group-${group.name}`"
-          @click="jumpToGroup(group.name)"
-        >
-          <span class="group-pill-name">{{ group.name }}</span>
-          <span class="group-pill-count mono">{{ group.nodes.length }}</span>
-        </button>
-      </nav>
+        <div v-if="groups.length > 2 && !hasSearchOrTag" class="proxy-group-nav-row">
+          <span class="drawer-row-label">{{ tr('分组') }}</span>
+          <nav
+            ref="groupPillsEl"
+            class="group-pills"
+            :class="{ dragging: draggingPills }"
+            :aria-label="tr('代理组快速跳转')"
+            data-testid="group-jump-bar"
+            @mousedown="onPillsMouseDown"
+            @click.capture="onPillsClickCapture"
+            @wheel="onPillsWheel"
+          >
+            <button
+              v-for="group in groups"
+              :key="group.name"
+              type="button"
+              class="group-pill"
+              :class="{
+                open: isOpen(group.name),
+                focused: store.focusGroup.value === group.name,
+                testing: store.activeTest.value?.group === group.name,
+              }"
+              :aria-busy="store.activeTest.value?.group === group.name || undefined"
+              :data-testid="`jump-group-${group.name}`"
+              @click="jumpToGroup(group.name)"
+            >
+              <span class="group-pill-name">{{ group.name }}</span>
+              <span class="group-pill-count mono">{{ group.nodes.length }}</span>
+            </button>
+          </nav>
+          <button
+            v-if="!compact && !quickFilters.length"
+            type="button"
+            class="icon-btn sm drawer-close-btn"
+            :aria-label="tr('收起筛选与分组导航')"
+            :title="tr('收起筛选与分组导航')"
+            data-testid="close-proxy-filters"
+            @click="filtersOpen = false"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+      </div>
       <div v-if="testAllProgressPct != null" class="test-progress-track" aria-hidden="true">
         <span class="test-progress-fill" :style="{ width: `${testAllProgressPct}%` }" />
       </div>
@@ -1487,32 +1557,113 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.proxy-quick-filters {
-  flex-basis: 100%;
+.filter-drawer-toggle {
+  gap: 5px;
+  height: 36px;
+  padding: 0 11px;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 560;
+}
+
+.filter-drawer-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.filter-toggle-chevron {
+  opacity: 0.7;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.filter-toggle-chevron.open {
+  transform: rotate(180deg);
+}
+
+.proxy-active-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px 0 11px;
+  font-size: var(--text-xs);
+  flex: none;
+}
+
+.proxy-filter-drawer {
+  flex: 1 1 100%;
+  order: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.proxy-quick-filters,
+.proxy-group-nav-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+.proxy-quick-filters {
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
 .proxy-quick-filters::-webkit-scrollbar {
   display: none;
 }
 
+.proxy-group-nav-row .group-pills {
+  flex: 1 1 auto;
+  min-width: 0;
+  order: 0;
+  margin: 0;
+  padding: 1px 0;
+}
+
+.drawer-row-label {
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 580;
+  color: var(--text-3);
+  padding-right: 2px;
+  user-select: none;
+}
+
+.drawer-close-btn {
+  flex: none;
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  color: var(--text-3);
+}
+
+.drawer-close-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
 .proxy-quick-chip {
   display: inline-flex;
   align-items: center;
-  height: 28px;
+  height: 27px;
   padding: 0 10px;
   font-size: var(--text-xs);
   gap: 5px;
+  flex: none;
 }
 
 .proxy-quick-chip:focus-visible,
-.proxy-quick-reset:focus-visible {
-  outline: 2px solid var(--accent);
+.proxy-quick-reset:focus-visible,
+.proxy-active-filter-pill:focus-visible {
+  outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
 }
 
@@ -1523,14 +1674,15 @@ onBeforeUnmount(() => {
 
 .proxy-quick-reset {
   flex: none;
-  height: 28px;
+  height: 27px;
   padding: 0 9px;
   font-size: var(--text-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .proxy-quick-chip,
-  .proxy-quick-reset {
+  .proxy-quick-reset,
+  .filter-toggle-chevron {
     transition: none;
   }
 }

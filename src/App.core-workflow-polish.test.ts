@@ -675,6 +675,9 @@ describe('Core workflow polish (R3–R4)', () => {
       const gate = deferred<Snapshot>()
       vi.spyOn(backend, 'testGroup').mockImplementationOnce(() => gate.promise)
 
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
+
       const pill = () => wrapper.find('[data-testid="jump-group-节点选择"]')
       expect(pill().exists()).toBe(true)
       expect(pill().classes()).not.toContain('testing')

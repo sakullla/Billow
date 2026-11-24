@@ -181,19 +181,32 @@ describe('phone layout', () => {
     expect(wrapper.find('.toasts').text()).toContain('最新版本')
   })
 
-  it('keeps the compact proxies top bar uncluttered and reveals quick filters inside options', async () => {
+  it('keeps the compact proxies top bar uncluttered and reveals quick filters and group jump inside options', async () => {
     const { wrapper } = await mountPhone()
     storeOf(wrapper).go('proxies')
     await settle(100)
 
-    // Default compact proxies view stays uncluttered: no extra mode bar or always-visible filter chips.
+    // Default compact proxies view stays a single row: no mode bar, filter chips, or group jump strip.
     expect(wrapper.find('[data-testid="proxies-mobile-mode"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="toggle-options"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(true)
+
+    // Selecting a filter and folding options back keeps a removable active pill in the single-row bar.
+    await wrapper.find('[data-testid="quick-filter-tag:udp"]').trigger('click')
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+    const activePill = wrapper.find('[data-testid="active-quick-filter-pill"]')
+    expect(activePill.exists()).toBe(true)
+    await activePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="active-quick-filter-pill"]').exists()).toBe(false)
   })
 
   it('keeps compact mobile layout free of floating command-palette search button', async () => {
