@@ -15,11 +15,11 @@
 //! and the server answers `status (0=ok,1=error) || message length (varint) ||
 //! message || padding length (varint) || padding`, then the byte stream.
 //!
-//! Implemented: TCP, `password`, `sni`/`skip-cert-verify`/`alpn`, `up`/`down`
+//! Implemented: TCP, UDP (QUIC datagram sessions, see `outbound::udp::
+//! Hysteria2Udp`), `password`, `sni`/`skip-cert-verify`/`alpn`, `up`/`down`
 //! validation, `handshake-timeout`, `ports`/`hop-interval`, `obfs:
 //! salamander|gecko`, `udp-mtu`, `bbr-profile`, `realm-opts` (the rendezvous
-//! is in `hysteria2_realm`) and the QUIC receive/congestion tuning. UDP
-//! sessions are still not relayed.
+//! is in `hysteria2_realm`) and the QUIC receive/congestion tuning.
 //!
 //! A new QUIC connection is created per dial; the pinned client pools one.
 
@@ -33,7 +33,7 @@ use super::quic::{
 };
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
-use quinn::RecvStream;
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
 
 use crate::proxies::Hysteria2Outbound;
 
@@ -92,13 +92,22 @@ async fn read_tcp_response(recv: &mut RecvStream) -> Result<(), DialError> {
     }
 }
 
-/// Dial `target` through a Hysteria2 server.
-pub async fn dial(
+/// A Hysteria2 QUIC connection after the HTTP/3 authentication succeeded.
+/// The `hold` streams are the client control/QPACK streams the HTTP/3 session
+/// opened; they must stay alive while the connection carries TCP or UDP.
+pub(crate) struct Authenticated {
+    pub connection: Connection,
+    pub endpoint: Endpoint,
+    pub hold: Vec<SendStream>,
+}
+
+/// Establish the QUIC connection and perform the Hysteria2 HTTP/3
+/// authentication. Shared by the TCP dial and the UDP association.
+pub(crate) async fn connect_authenticated(
     option: &Hysteria2Outbound,
-    target: &Target,
     tls: &ClientTls,
     timeout: Duration,
-) -> Result<Dialed, DialError> {
+) -> Result<Authenticated, DialError> {
     let quic_options = quic_options(option)?;
     let handshake_timeout = if option.handshake_timeout == 0 {
         timeout
@@ -161,6 +170,25 @@ pub async fn dial(
         });
     }
     let hold = session.into_hold();
+    Ok(Authenticated {
+        connection,
+        endpoint,
+        hold,
+    })
+}
+
+/// Dial `target` through a Hysteria2 server.
+pub async fn dial(
+    option: &Hysteria2Outbound,
+    target: &Target,
+    tls: &ClientTls,
+    timeout: Duration,
+) -> Result<Dialed, DialError> {
+    let Authenticated {
+        connection,
+        endpoint,
+        hold,
+    } = connect_authenticated(option, tls, timeout).await?;
 
     // One bidirectional stream per TCP session.
     let (mut send, mut recv) = tokio::time::timeout(timeout, connection.open_bi())
@@ -183,6 +211,16 @@ pub async fn dial(
         stream: Box::new(stream),
         server,
     })
+}
+
+/// The Hysteria UDP session payload MTU: `udp-mtu`, or the pinned default
+/// (quic-go's 1200-byte maximum datagram minus a 3-byte datagram frame).
+pub(crate) fn udp_session_mtu(option: &Hysteria2Outbound) -> usize {
+    if option.udp_mtu == 0 {
+        1197
+    } else {
+        usize::from(option.udp_mtu)
+    }
 }
 
 /// Map the parsed Hysteria2 block onto the shared QUIC transport, including

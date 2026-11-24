@@ -695,7 +695,57 @@ fn send_two_targets(
     second: (SocketAddr, &[u8]),
 ) {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut buffer = [0u8; 65535];
+    let mut seen: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+    // Hysteria2's QUIC handshake and session start happen on the first
+    // datagram; retry on the same socket (the relay pins the first source
+    // port) until both destinations answered.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && seen.len() < 2 {
+        for (target, payload) in [first, second] {
+            let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+            packet.extend_from_slice(
+                &target
+                    .ip()
+                    .to_string()
+                    .parse::<std::net::Ipv4Addr>()
+                    .unwrap()
+                    .octets(),
+            );
+            packet.extend_from_slice(&target.port().to_be_bytes());
+            packet.extend_from_slice(payload);
+            socket.send_to(&packet, relay).unwrap();
+        }
+        socket
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        while seen.len() < 2 {
+            match socket.recv_from(&mut buffer) {
+                Ok((read, _)) => {
+                    let (host, offset) = parse_udp_reply(&buffer[..read]);
+                    seen.push((host, buffer[offset..read].to_vec()));
+                }
+                Err(_) => break,
+            }
+        }
+    }
     for (target, payload) in [first, second] {
+        assert!(
+            seen.iter()
+                .any(|(host, packet)| *host == target && packet == payload),
+            "the kernel did not return the reply from {target} (payload {:?}); got {seen:?}",
+            String::from_utf8_lossy(payload)
+        );
+    }
+}
+
+/// One destination, retried on a pinned association socket until the reply
+/// arrives (a QUIC association needs a moment for its handshake).
+fn udp_exchange_retry(relay: SocketAddr, target: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut buffer = [0u8; 65535];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
         let mut packet = vec![0u8, 0u8, 0u8, 0x01];
         packet.extend_from_slice(
             &target
@@ -708,27 +758,27 @@ fn send_two_targets(
         packet.extend_from_slice(&target.port().to_be_bytes());
         packet.extend_from_slice(payload);
         socket.send_to(&packet, relay).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        match socket.recv_from(&mut buffer) {
+            Ok((read, _)) => {
+                let (host, offset) = parse_udp_reply(&buffer[..read]);
+                assert_eq!(host, target, "reply came from a different destination");
+                return buffer[offset..read].to_vec();
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP association error: {error}"),
+        }
     }
-    socket
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    let mut buffer = [0u8; 65535];
-    let mut seen: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
-    for _ in 0..2 {
-        let (read, _) = socket
-            .recv_from(&mut buffer)
-            .expect("both destinations must answer through the kernel");
-        let (host, offset) = parse_udp_reply(&buffer[..read]);
-        seen.push((host, buffer[offset..read].to_vec()));
-    }
-    for (target, payload) in [first, second] {
-        assert!(
-            seen.iter()
-                .any(|(host, packet)| *host == target && packet == payload),
-            "the kernel did not return the reply from {target} (payload {:?}); got {seen:?}",
-            String::from_utf8_lossy(payload)
-        );
-    }
+    panic!(
+        "no UDP reply through the kernel after {:?} (target {target})",
+        Duration::from_secs(10)
+    );
 }
 
 /// Send one SOCKS5 UDP datagram (RSV RSV FRAG ATYP ADDR PORT payload).
@@ -2179,6 +2229,50 @@ where
     }
 }
 
+/// A QUIC listener (hysteria2) is UDP-only, so `start_mihomo`'s TCP readiness
+/// probe cannot see it; this waits the fixed QUIC start-up instead and routes
+/// datagrams DIRECT to a UDP echo.
+fn with_udp_quic_peer<F>(test: &str, listeners: &str, body: F)
+where
+    F: FnOnce(&Mihomo, &[u16]),
+{
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let _serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    install_kernel_log();
+    let Some(bin) = mihomo_bin() else {
+        skip(test, "set KC_MIHOMO_BIN to the pinned Mihomo binary");
+        return;
+    };
+    let Some(certs) = cert_dir() else {
+        skip(test, "provide the openssl CLI or KC_CERT_DIR with cert.pem/key.pem");
+        return;
+    };
+    let sink = Sink::start();
+    let Some(mihomo) = start_mihomo_quic(bin, certs, sink.port, listeners, "MATCH,sink-direct")
+    else {
+        panic!("{test}: Mihomo did not start");
+    };
+    let ports = listener_ports(
+        &listeners
+            .replace("CERT", "cert.pem")
+            .replace("KEY", "key.pem"),
+    );
+    // The QUIC socket binds after the Go listener starts; give it a little
+    // longer than the TCP probe used by the other helpers.
+    std::thread::sleep(Duration::from_millis(500));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        body(&mihomo, &ports)
+    }));
+    if let Err(panic) = outcome {
+        eprintln!(
+            "--- {test}: peer config ---\n{}\n--- peer log ---\n{}",
+            mihomo.config,
+            mihomo.log()
+        );
+        std::panic::resume_unwind(panic);
+    }
+}
+
 const TUIC_UUID: &str = "9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68";
 const TUIC_PASSWORD: &str = "tuic-listener-secret";
 
@@ -2300,6 +2394,70 @@ fn hysteria2_port_pool_selects_the_listed_port_through_mihomo() {
             || expect_marker("hysteria2-ports", sink, marker),
         );
         assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_udp_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("hysteria2-udp", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, udp: true}}\n",
+            ports[0]
+        ));
+        let first = UdpEcho::start();
+        let second = UdpEcho::start();
+        let (control, relay) = udp_associate(running.proxy);
+        let first_target = SocketAddr::from(([127, 0, 0, 1], first.port));
+        let second_target = SocketAddr::from(([127, 0, 0, 1], second.port));
+        let first_payload = b"marker-hysteria2-udp-one";
+        let second_payload = b"marker-hysteria2-udp-two";
+        // One QUIC session must carry both destinations: the server routes
+        // every message by its own address field, exactly like the pinned
+        // `ListenPacket` association.
+        send_two_targets(
+            relay,
+            (first_target, first_payload),
+            (second_target, second_payload),
+        );
+        assert!(first
+            .received()
+            .iter()
+            .any(|payload| payload == first_payload));
+        assert!(second
+            .received()
+            .iter()
+            .any(|payload| payload == second_payload));
+        drop(control);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_udp_fragments_a_large_datagram_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("hysteria2-udp-fragments", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, udp-mtu: 1200}}\n",
+            ports[0]
+        ));
+        let echo = UdpEcho::start();
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let (_control, relay) = udp_associate(running.proxy);
+        let reply = udp_exchange_retry(relay, target, &payload);
+        assert_eq!(
+            reply, payload,
+            "a 3000-byte datagram must be reassembled across `udp-mtu: 1200`"
+        );
+        assert!(echo.received().iter().any(|seen| *seen == payload));
     });
 }
 

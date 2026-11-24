@@ -319,16 +319,20 @@ block applies `fingerprint` as a SHA-256 certificate-DER pin even with
 `skip-cert-verify`, presents `certificate`/`private-key` as an mTLS client
 identity, validates that material at load, and rejects `realm-opts` together
 with a non-empty `ports` pool), `up` (Brutal
-window), `udp-mtu` and `bbr-profile` (BBR initial-window mapping, profile over
-`cwnd`) are implemented and verified against the pinned hysteria2 and
+window), `udp` (the pinned QUIC datagram session: session/packet/fragment
+header, per-message destination routing, `udp-mtu` fragmentation with packet-id
+reassembly, relayed on the mixed and TUN paths), `udp-mtu` and `bbr-profile`
+(BBR initial-window mapping, profile over `cwnd`) are implemented and verified
+against the pinned hysteria2 and
 `hysteria2-realm` listeners; vmess `network: mkcp`/`kcp` (KCP over UDP with the
 pinned auth/header modes) and `network: mekya` (KCP over HTTP/2 bundle
 requests) are implemented and verified against the pinned vmess listener;
 vmess `tlsmirror-opts` is the pinned carrier-TLS + hidden AES-GCM record layer
 (primary-key, TLS 1.3) and is verified against the pinned vmess listener's
 `tlsmirror-config` with a real TLS destination. The remaining target-family
-gaps are `hysteria2 ech-opts` and the Hysteria2 UDP session relay; they are
-named in the mapping and this README.
+gap is `hysteria2 ech-opts`; a hysteria2 `dialer-proxy` chain is refused by
+name (a QUIC socket cannot ride a SOCKS5 UDP hop). Both are named in the
+mapping and this README.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

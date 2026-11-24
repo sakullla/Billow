@@ -610,6 +610,8 @@ rules:
     assert_eq!(config.proxies[11].type_name(), "tuic");
     assert_eq!(config.proxies[12].type_name(), "hysteria");
     assert_eq!(config.proxies[13].type_name(), "hysteria2");
+    // Hysteria2 enables UDP unconditionally in the pinned outbound.
+    assert!(config.proxies[13].udp_enabled());
     assert!(!config.proxies[5].udp_enabled());
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(2)), "ss1");
     assert_eq!(config.action_name(billow_kernel::Action::Proxy(1)), "h1");
@@ -2062,6 +2064,34 @@ fn t27_socks5_udp_is_accepted_and_chain_is_named() {
         "proxies:\n  - {name: s, type: socks5, server: 127.0.0.1, port: 1080, udp: true, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\nrules: ['MATCH,s']\n",
     );
     assert!(error.contains("option 'udp' with 'dialer-proxy'"), "{error}");
+}
+
+#[test]
+fn t31_hysteria2_udp_is_always_enabled_and_a_chain_is_refused() {
+    // The pinned Hysteria2Option has no `udp` field: `udp: true` and
+    // `udp: false` are tolerated no-ops and UDP stays enabled (the outbound
+    // sets `UDP: true` in its Base). Traffic must never be accepted and then
+    // dropped, so both load.
+    for flag in ["udp: true", "udp: false"] {
+        let loaded = load_config(
+            &format!(
+                "proxies:\n  - {{name: q, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, {flag}}}\nrules: ['MATCH,q']\n"
+            ),
+            "t",
+        )
+        .expect("hysteria2 UDP loads");
+        assert!(
+            loaded.config.proxies[0].udp_enabled(),
+            "hysteria2 UDP is unconditionally enabled ({flag})"
+        );
+    }
+    // A QUIC UDP session cannot be carried through a SOCKS5 hop, so the chain
+    // is refused by name instead of dialling the server around it.
+    let error = proxy_err(
+        "proxies:\n  - {name: q, type: hysteria2, server: 127.0.0.1, port: 8443, password: p, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\nrules: ['MATCH,q']\n",
+    );
+    assert!(error.contains("hysteria2"), "{error}");
+    assert!(error.contains("SOCKS5"), "{error}");
 }
 
 #[test]

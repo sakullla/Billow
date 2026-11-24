@@ -1062,9 +1062,10 @@ pub struct GostRelayOutbound {
 
 
 /// Hysteria2 (`adapter/outbound/hysteria2.go`, `sing-quic/hysteria2`): HTTP/3
-/// authentication then one bidirectional QUIC stream per TCP session. Port
-/// hopping, the Salamander/Gecko obfuscators, realm and UDP are rejected by
-/// name.
+/// authentication then one bidirectional QUIC stream per TCP session, or one
+/// QUIC datagram session for UDP (always enabled, as the pinned outbound sets
+/// `UDP: true`). Port hopping, the Salamander/Gecko obfuscators and realm are
+/// implemented; `ech-opts` and a `dialer-proxy` chain are rejected by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hysteria2Outbound {
     pub server: String,
@@ -1369,6 +1370,10 @@ impl Proxy {
             Protocol::Ssr(p) => p.udp,
             Protocol::GostRelay(p) => p.udp,
             Protocol::Masque(p) => p.udp,
+            // Hysteria2 enables UDP unconditionally in the pinned outbound
+            // (`UDP: true`); the option has no `udp` field, so a config's
+            // `udp: true` is a tolerated no-op and `udp: false` is ignored.
+            Protocol::Hysteria2(_) => true,
             Protocol::ShadowQuic(_) => true,
             Protocol::Tailscale(p) => p.udp,
             Protocol::Zerotier(p) => p.udp,
@@ -1557,6 +1562,17 @@ fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
     for (i, proxy) in proxies.iter().enumerate() {
         if !proxy.udp_enabled() {
             continue;
+        }
+        // Hysteria2 UDP rides QUIC over the association's own UDP socket; a
+        // SOCKS5 hop can only carry a SOCKS5 UDP association, so a chain would
+        // be silently bypassed. Refuse it by name at load time.
+        if matches!(proxy.protocol, Protocol::Hysteria2(_)) {
+            if let Some(hop) = proxy.dialer_proxy() {
+                return Err(ConfigError::Unsupported(format!(
+                    "proxies[{i}] (name={}, type=hysteria2): 'dialer-proxy' '{hop}' is not implemented: the QUIC UDP session cannot be carried through a SOCKS5 hop, and the association is never dialled around the chain",
+                    proxy.name
+                )));
+            }
         }
         let mut hops: Vec<&Proxy> = vec![proxy];
         while hops.len() < 9 {

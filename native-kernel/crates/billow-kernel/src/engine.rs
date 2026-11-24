@@ -1828,6 +1828,7 @@ async fn serve_udp_associate_inner(
     let mut gost_target: Option<outbound::Target> = None;
     let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
+    let mut hysteria2: Option<outbound::udp::Hysteria2Udp> = None;
     // Destination-bound UoT / plain-UDP associations (anytls, ss UoT v2/v1,
     // vmess plain). The pinned outbound opens one packet conn per destination
     // and reads every one of them concurrently; the relay mirrors that with a
@@ -1850,6 +1851,7 @@ async fn serve_udp_associate_inner(
     let mut gost_buf: Option<Vec<u8>> = None;
     let mut masque_buf: Option<Vec<u8>> = None;
     let mut shadowquic_buf: Option<Vec<u8>> = None;
+    let mut hysteria2_buf: Option<Vec<u8>> = None;
     let mut control_probe = [0u8; 1];
     let mut failed = false;
     let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
@@ -1866,6 +1868,7 @@ async fn serve_udp_associate_inner(
     let mut gost_eof = false;
     let mut masque_eof = false;
     let mut shadowquic_eof = false;
+    let mut hysteria2_eof = false;
 
     'associate: loop {
         if direct_eof {
@@ -1918,6 +1921,11 @@ async fn serve_udp_associate_inner(
             shadowquic = None;
             shadowquic_buf = None;
             shadowquic_eof = false;
+        }
+        if hysteria2_eof {
+            hysteria2 = None;
+            hysteria2_buf = None;
+            hysteria2_eof = false;
         }
         tokio::select! {
             biased;
@@ -2465,6 +2473,40 @@ async fn serve_udp_associate_inner(
                                 .send(&datagram.target, payload)
                                 .await
                         }
+                        crate::proxies::Protocol::Hysteria2(option) => {
+                            // Hysteria2 UDP is always enabled in the pinned
+                            // outbound: one QUIC datagram session serves every
+                            // destination, so the association is reused.
+                            if hysteria2.is_none() {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::Hysteria2Udp::connect(
+                                        option,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        hysteria2 = Some(association);
+                                        hysteria2_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "hysteria2 UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            hysteria2
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
                         other => {
                             // The pinned outbound has no UDP association this
                             // kernel implements for this family; dropping is a
@@ -2722,6 +2764,29 @@ async fn serve_udp_associate_inner(
                     }
                 }
             }
+            received = async {
+                match (hysteria2.as_mut(), hysteria2_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if hysteria2.is_some() && !hysteria2_eof => {
+                // The QUIC connection ending is the association ending; the
+                // client keeps its UDP association and simply has no exit.
+                if matches!(&received, Ok(None) | Err(_)) {
+                    hysteria2_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, hysteria2_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
         }
     }
     // Retire every per-destination reader task with the association; a task
@@ -2753,7 +2818,7 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Ssr(_) => "ssr (udp: false)",
         crate::proxies::Protocol::Tuic(_) => "tuic (udp: false)",
         crate::proxies::Protocol::Hysteria(_) => "hysteria (udp: false)",
-        crate::proxies::Protocol::Hysteria2(_) => "hysteria2 (udp: false)",
+        crate::proxies::Protocol::Hysteria2(_) => "hysteria2",
         crate::proxies::Protocol::Mieru(_) => "mieru (udp: false)",
         crate::proxies::Protocol::Sudoku(_) => "sudoku (udp: false)",
         crate::proxies::Protocol::Masque(_) => "masque (udp: false)",

@@ -4,8 +4,9 @@
 //! the engine (rule -> group -> outbound) exactly like a SOCKS5 `UDP
 //! ASSOCIATE` datagram. The transports are the same association types the
 //! mixed listener uses (`socks5`, `ss`, `trojan`, `ssr`, `masque`,
-//! `shadowquic`), plus `DIRECT`. A family without a UDP association in this
-//! kernel is refused by name instead of being sent the wrong way. The mesh
+//! `shadowquic`, `hysteria2`), plus `DIRECT`. A family without a UDP
+//! association in this kernel is refused by name instead of being sent the
+//! wrong way. The mesh
 //! families (`wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier`) and
 //! `gost-relay` still have no TUN transport; that is registered in the
 //! evidence rather than silently accepted.
@@ -27,7 +28,7 @@ use crate::outbound::{
     self,
     masque::MasqueUdpAssociation,
     shadowquic::ShadowQuicUdp,
-    udp::{SsUdp, SsrUdp, TrojanUdp, MAX_DATAGRAM},
+    udp::{Hysteria2Udp, SsUdp, SsrUdp, TrojanUdp, MAX_DATAGRAM},
 };
 use crate::proxies::{Protocol, Proxy};
 
@@ -66,6 +67,7 @@ enum Transport {
     Ssr(SsrUdp),
     Masque(MasqueUdpAssociation),
     ShadowQuic(ShadowQuicUdp),
+    Hysteria2(Hysteria2Udp),
 }
 
 impl Transport {
@@ -77,6 +79,7 @@ impl Transport {
             Transport::Ssr(transport) => transport.send(target, payload).await,
             Transport::Masque(transport) => transport.send(target, payload).await,
             Transport::ShadowQuic(transport) => transport.send(target, payload).await,
+            Transport::Hysteria2(transport) => transport.send(target, payload).await,
         }
     }
 
@@ -98,6 +101,7 @@ impl Transport {
             Transport::Ssr(transport) => transport.recv(buffer).await,
             Transport::Masque(transport) => transport.recv(buffer).await,
             Transport::ShadowQuic(transport) => transport.recv(buffer).await,
+            Transport::Hysteria2(transport) => transport.recv(buffer).await,
         };
         match result? {
             Some((target, read)) => match target.host.parse::<IpAddr>() {
@@ -144,6 +148,8 @@ pub(crate) async fn association_task(
         Protocol::Ssr(option) => option.udp,
         Protocol::Masque(option) => option.udp,
         Protocol::ShadowQuic(_) => true,
+        // Hysteria2 always enables UDP in the pinned outbound.
+        Protocol::Hysteria2(_) => true,
         _ => false,
     };
     if !supported {
@@ -180,6 +186,9 @@ pub(crate) async fn association_task(
             Protocol::ShadowQuic(option) => ShadowQuicUdp::connect(option, &tls, timeout)
                 .await
                 .map(Transport::ShadowQuic),
+            Protocol::Hysteria2(option) => Hysteria2Udp::connect(option, &hops, timeout, &tls)
+                .await
+                .map(Transport::Hysteria2),
             _ => unreachable!("supported was checked above"),
         }
     });

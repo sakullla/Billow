@@ -123,15 +123,36 @@
     {
       "family": "hysteria2",
       "option": "udp-mtu",
-      "state": "implemented (mapped)",
+      "state": "implemented",
       "verification": [
-        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "mihomo_peers::hysteria2_udp_fragments_a_large_datagram_through_mihomo",
         "quic_peers::hysteria2_transport_options_are_parsed"
       ],
       "implementation": [
-        "src/outbound/quic.rs::TransportConfig::initial_mtu(udp_mtu + 3)"
+        "src/outbound/quic.rs::TransportConfig::initial_mtu(udp_mtu + 3)",
+        "src/outbound/udp.rs::Hysteria2Udp::send (fragment count/id at udp-mtu - header)"
       ],
-      "note": "The engine has no Hysteria2 UDP session relay, so the value is applied to the QUIC initial path MTU (the pinned default 1197 is 1200 - 3). The UDP session itself remains a named gap."
+      "note": "The value bounds both the QUIC initial path MTU (pinned default 1197 = 1200 - 3) and the Hysteria2 session fragmentation: a payload larger than udp-mtu minus the message header is split into fragment-count datagrams and reassembled by packet id. The effective send limit is min(udp-mtu, quinn max_datagram_size)."
+    },
+    {
+      "family": "hysteria2",
+      "option": "udp",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::hysteria2_udp_reaches_the_receiving_side_through_mihomo",
+        "mihomo_peers::hysteria2_udp_fragments_a_large_datagram_through_mihomo",
+        "config::t31_hysteria2_udp_is_always_enabled_and_a_chain_is_refused",
+        "outbound::udp::tests::hysteria2_datagram_layout_matches_the_pinned_udpmessage",
+        "outbound::udp::tests::hysteria2_fragments_reassemble_by_packet_id",
+        "outbound::udp::tests::hysteria2_authority_round_trips_ipv4_and_ipv6"
+      ],
+      "implementation": [
+        "src/outbound/udp.rs::Hysteria2Udp (QUIC datagram session, session/packet/fragment header, defragmentation)",
+        "src/outbound/hysteria2.rs::connect_authenticated (shared HTTP/3 auth for TCP and UDP)",
+        "src/proxies.rs::Proxy::udp_enabled (hysteria2 reports UDP unconditionally)",
+        "src/engine.rs::serve_udp_associate_inner and src/tunnel/udp.rs (mixed SOCKS5 and TUN relay)"
+      ],
+      "note": "The pinned sing-quic client uses QUIC datagrams, not the legacy 0x403 stream: session id (u32 BE) | packet id (u16 BE) | fragment id | fragment count | varint address length | textual host:port | data. One session id per association; the server creates a packet conn on the first message and routes every message by its own destination, so one association serves all targets. `udp: true|false` is a tolerated no-op (Hysteria2Option has no udp field and the outbound always sets UDP: true). A dialer-proxy chain is refused by name because a QUIC socket cannot be carried over a SOCKS5 UDP hop."
     },
     {
       "family": "hysteria2",
@@ -214,11 +235,6 @@
     },
     {
       "family": "hysteria2",
-      "option": "udp",
-      "reason": "no Hysteria2 UDP session relay exists; `udp-mtu` is applied to the QUIC path MTU only"
-    },
-    {
-      "family": "hysteria2",
       "option": "ech-opts",
       "reason": "unchanged from T30; Mihomo and this kernel both reject enabled ECH"
     }
@@ -229,17 +245,17 @@
     "enabled": 119,
     "problems": 0,
     "target_family_residual": 0,
-    "residual_note": "All T31 target rows are implemented or impl rows. The remaining hysteria2 gaps are `udp` (no UDP session relay) and `ech-opts` (rejected by both engines); the remaining anytls gaps are ShadowTLS v3 and Restls."
+    "residual_note": "All T31 target rows are implemented or impl rows. The remaining hysteria2 gap is ech-opts (rejected by both engines); a hysteria2 dialer-proxy chain is refused by name; the remaining anytls gaps are ShadowTLS v3 and Restls."
   },
   "verification": {
-    "cargo_test": "all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic peers, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 94 ignored mihomo peer cases)",
-    "peer_tests": "94 passed, 0 failed (pinned Mihomo v1.19.34), including the new gecko, realm, realm fingerprint pin (matching and wrong), realm control mTLS (present and missing) and bbr-profile cases",
-    "option_probe": "291 / 87 / 119, 0 problems (no enabled T31 target row remains)",
+    "cargo_test": "all default suites pass (189 lib + 1 ignored, 53 config, 15 controller, 19 dns, 32 groups, 60 protocols, 33 quic peers, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 96 ignored mihomo peer cases)",
+    "peer_tests": "96 passed, 0 failed (pinned Mihomo v1.19.34), including the new gecko, realm, realm fingerprint pin (matching and wrong), realm control mTLS (present and missing), bbr-profile and hysteria2 UDP (two destinations, fragmented 3000-byte datagram) cases",
+    "option_probe": "291 / 87 / 119, 0 problems, re-run on this build (matrix identical apart from the rust binary path comment; no enabled T31 target row remains)",
     "runner_test": "10 passed",
     "differentials": {
       "t22": "22 pass / 1 skipped / 0 differ",
       "t23": "28 pass / 1 persistence / 0 differ",
-      "t24": "36 pass / 2 skipped / 0 differ / 7 recorded inbound framing differences",
+      "t24": "36 pass / 2 skipped / 0 differ / 0 unexpected / 8 recorded inbound framing differences on this run (one extra initial-attempt timeout-vs-close normalization, no outcome difference)",
       "t25": "47/49 equal / 2 recorded divergences / 0 unexpected",
       "t5": "12/12 scenarios / 0 differ"
     }
