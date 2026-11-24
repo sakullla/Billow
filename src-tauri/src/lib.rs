@@ -157,6 +157,12 @@ fn restore_window(app: &AppHandle, state: &ShellState) {
         eprintln!("Billow main window is missing; the default window stays open");
         return;
     };
+    #[cfg(target_os = "windows")]
+    {
+        // Guard against any native caption bar so custom TitleBar never duplicates close buttons (#3).
+        let _ = window.set_decorations(false);
+        let _ = window.set_shadow(true);
+    }
     if let Some((width, height)) = shell::usable_window_size(state.width, state.height) {
         if let Err(err) = window.set_size(tauri::LogicalSize::new(width, height)) {
             eprintln!("Billow window size restore failed: {err}");
@@ -1985,10 +1991,47 @@ fn spawn_kernel_guardian(app: &AppHandle) {
 /// a later Quit or Cmd+Q still does.
 static RELEASING_UI: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(desktop, test))]
+fn build_main_window_config(
+    configs: &[tauri::utils::config::WindowConfig],
+    width: f64,
+    height: f64,
+    target_os: &str,
+) -> tauri::utils::config::WindowConfig {
+    let mut cfg = configs
+        .iter()
+        .find(|item| item.label == "main")
+        .cloned()
+        .unwrap_or_else(|| tauri::utils::config::WindowConfig {
+            label: "main".to_string(),
+            title: "Billow".to_string(),
+            min_width: Some(shell::MIN_WIDTH),
+            min_height: Some(shell::MIN_HEIGHT),
+            resizable: true,
+            fullscreen: false,
+            ..Default::default()
+        });
+    cfg.width = width;
+    cfg.height = height;
+    match target_os {
+        "windows" => {
+            cfg.decorations = false;
+            cfg.shadow = true;
+        }
+        "macos" => {
+            cfg.title_bar_style = tauri::utils::TitleBarStyle::Overlay;
+            cfg.hidden_title = true;
+        }
+        _ => {}
+    }
+    cfg
+}
+
 /// Build the main window again after lightweight mode released it (R44).
 ///
-/// It reads the same settings as the packaged window: the label, title, minimum
-/// size and the size the user last had.
+/// Reuses the packaged platform window config (`tauri.windows.conf.json` /
+/// `tauri.macos.conf.json`) so Windows stays undecorated and macOS keeps its
+/// overlay traffic lights instead of duplicating native titlebar controls (#3).
 #[cfg(desktop)]
 fn create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     let (width, height, theme) = {
@@ -1998,17 +2041,35 @@ fn create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
             .unwrap_or((shell::DEFAULT_WIDTH, shell::DEFAULT_HEIGHT));
         (width, height, state.theme.clone())
     };
-    let builder = tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Billow")
-    .inner_size(width, height)
-    .min_inner_size(shell::MIN_WIDTH, shell::MIN_HEIGHT)
-    .resizable(true);
+    let cfg = build_main_window_config(&app.config().app.windows, width, height, std::env::consts::OS);
+    let builder = match tauri::WebviewWindowBuilder::from_config(app, &cfg) {
+        Ok(builder) => builder,
+        Err(_) => {
+            let b = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Billow")
+            .inner_size(width, height)
+            .min_inner_size(shell::MIN_WIDTH, shell::MIN_HEIGHT)
+            .resizable(true);
+            #[cfg(target_os = "windows")]
+            let b = b.decorations(false).shadow(true);
+            #[cfg(target_os = "macos")]
+            let b = b
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true);
+            b
+        }
+    };
     match builder.build() {
         Ok(window) => {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window.set_decorations(false);
+                let _ = window.set_shadow(true);
+            }
             if let Some(icon) = app.default_window_icon() {
                 let _ = window.set_icon(icon.clone());
             }
@@ -2945,5 +3006,25 @@ mod tests {
         // The tray path never sends a notification, even when the action failed.
         assert_eq!(shortcut_failure(false, None, &failed("授权被拒绝")), None);
         assert_eq!(shortcut_failure(false, Some("授权被拒绝"), &failed("内核没有启动")), None);
+    }
+
+    #[test]
+    fn recreated_main_window_preserves_undecorated_windows_and_overlay_macos_chrome() {
+        let win_cfg = build_main_window_config(&[], 1080.0, 720.0, "windows");
+        assert_eq!(win_cfg.label, "main");
+        assert_eq!(win_cfg.width, 1080.0);
+        assert_eq!(win_cfg.height, 720.0);
+        assert!(!win_cfg.decorations, "Windows main window must remain undecorated (#3)");
+        assert!(win_cfg.shadow);
+
+        let mut base = tauri::utils::config::WindowConfig::default();
+        base.label = "main".to_string();
+        base.decorations = true;
+        let win_from_base = build_main_window_config(&[base.clone()], 960.0, 680.0, "windows");
+        assert!(!win_from_base.decorations);
+
+        let mac_cfg = build_main_window_config(&[base], 960.0, 680.0, "macos");
+        assert_eq!(mac_cfg.title_bar_style, tauri::utils::TitleBarStyle::Overlay);
+        assert!(mac_cfg.hidden_title);
     }
 }

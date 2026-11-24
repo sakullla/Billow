@@ -557,12 +557,15 @@ body {
   min-width: 0;
 }
 .group-name {
-  flex-wrap: wrap;
-  row-gap: 2px;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 .group-health {
   flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .group-count {
   background: var(--sunken);
@@ -716,18 +719,40 @@ body {
   border-radius: var(--radius-card);
 }
 
-/* Dock: opaque enough that scrolled content never reads through the labels. */
+/* Dock: opaque enough that scrolled content never reads through the labels, with a bottom scrim so nothing peeks below the floating bar. */
+.shell.compact::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--tabbar-h) + var(--safe-bottom) + 28px);
+  z-index: 29;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--bg) 88%, transparent) 44%,
+    var(--bg) 72%
+  );
+}
+html[data-keyboard] .shell.compact::after {
+  display: none;
+}
+.compact .page {
+  padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 52px);
+}
 .compact .tabbar {
   left: calc(14px + var(--safe-left));
   right: calc(14px + var(--safe-right));
   bottom: calc(12px + var(--safe-bottom));
   padding: 6px;
   border-radius: var(--radius-dock);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  backdrop-filter: saturate(1.8) blur(28px);
-  -webkit-backdrop-filter: saturate(1.8) blur(28px);
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  backdrop-filter: saturate(1.2) blur(24px);
+  -webkit-backdrop-filter: saturate(1.2) blur(24px);
   border-color: var(--border);
-  box-shadow: 0 14px 34px -10px rgba(15, 34, 38, 0.34), 0 2px 6px rgba(15, 34, 38, 0.08), var(--card-highlight);
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.36), 0 2px 6px rgba(0, 0, 0, 0.10), var(--card-highlight);
 }
 .compact .tab {
   min-height: 50px;
@@ -740,21 +765,43 @@ body {
   box-shadow: none;
 }
 
-/* Group header: let the actions drop below the title instead of crushing the name. */
+/* Group header on phones: compact labeled 最快 pill (never a duplicate ⚡ icon), tight spacing for readable server names. */
 .compact .group-head {
-  padding: 8px 8px 8px 6px;
+  padding: 6px 8px 6px 6px;
+  gap: 4px;
+}
+.compact .group-toggle {
+  gap: 9px;
+  padding: 5px 6px;
+}
+.compact .group-head-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.compact .group-name {
+  gap: 6px;
+}
+.compact .group-name strong {
+  font-size: 14.5px;
 }
 .compact .group-fastest {
-  width: 34px;
-  height: 34px;
-  padding: 0;
+  width: auto;
+  height: 28px;
+  padding: 0 9px;
   justify-content: center;
+  font-size: 11.5px;
+  font-weight: 640;
 }
-.compact .group-fastest .group-fastest-label {
+.compact .group-fastest .icon {
   display: none;
 }
-.compact .group-name .group-health {
-  flex-basis: auto;
+.compact .group-fastest .group-fastest-label {
+  display: inline;
+}
+.compact .group-test {
+  width: 34px;
+  height: 34px;
 }
 .compact .group.open .group-head {
   background: color-mix(in srgb, var(--surface) 96%, transparent);

@@ -1,6 +1,7 @@
 <script setup lang="ts">import { tr } from '../lib/i18n'
 
 import { computed } from 'vue'
+import { splitNodePrefix } from '../lib/format'
 import Icon from './Icon.vue'
 
 /**
@@ -35,6 +36,7 @@ function isRelayServer(hop: string, index: number): boolean {
 }
 
 const exit = computed(() => props.hops[props.hops.length - 1] ?? '')
+const exitParts = computed(() => splitNodePrefix(exit.value))
 const relayServers = computed(() =>
   props.hops.filter((hop, index) => isRelayServer(hop, index)),
 )
@@ -104,7 +106,7 @@ function stepRole(hop: string, index: number): { kind: 'exit' | 'relay' | 'group
         <span class="chain-relay" data-testid="chain-relay">{{ lastRelay }}</span>
         <span class="chain-relay-arrow" aria-hidden="true">→</span>
       </template>
-      <span class="chain-exit" :class="{ 'outbound-pill': pill }" :data-policy="pill ? exit.toUpperCase() : undefined">{{ exit || '—' }}</span>
+      <span class="chain-exit" :class="{ 'outbound-pill': pill }" :data-policy="pill ? exit.toUpperCase() : undefined"><template v-if="exitParts.prefix"><span class="chain-exit-prefix">{{ exitParts.prefix }}</span>{{ exitParts.rest }}</template><template v-else>{{ exit || '—' }}</template></span>
     </span>
   </span>
 </template>

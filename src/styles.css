@@ -3226,7 +3226,12 @@ button.delay:hover:not(:disabled) {
   text-align: left;
   transition: background var(--dur-fast) var(--ease);
 }
-.group-toggle:hover {
+@media (hover: hover) {
+  .group-toggle:hover {
+    background: var(--hover);
+  }
+}
+.group-toggle:active {
   background: var(--hover);
 }
 .group-test {
@@ -5728,7 +5733,11 @@ html[data-keyboard] .compact .page {
   border-radius: var(--radius-pill);
 }
 .compact .options-btn {
+  order: 2;
   border-radius: var(--radius-pill);
+}
+.compact .toolbar-options {
+  order: 3;
 }
 /* Phone options: sort on the first row, three equal labelled chips on the second (R12). */
 .compact .toolbar-options {
@@ -7005,8 +7014,34 @@ details.cfg-section[open] .cfg-fold-icon {
     line-height: 16px;
   }
 }
-.home-groups .group-row-now .chain-box {
+.home-groups .group-row-now .chain-box,
+.group-now .chain-box {
   flex: 1 1 0;
+  min-width: 0;
+}
+.chain-exit-prefix {
+  color: var(--text-3);
+}
+.compact .group-now .chain-exit-prefix {
+  display: none;
+}
+@container (max-width: 184px) {
+  .compact .group-now .chain-via,
+  .compact .group-now .chain-more,
+  .compact .group-now .chain-via-sep {
+    display: none;
+  }
+  .compact .group-now .chain-count {
+    display: inline-block;
+    flex: none;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--sunken);
+    color: var(--text-3);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 16px;
+  }
 }
 .conn-meta .chain-box {
   flex: 1 1 0;

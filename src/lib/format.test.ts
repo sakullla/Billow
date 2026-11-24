@@ -7,6 +7,7 @@ import {
   daysLeft,
   delayText,
   delayTone,
+  effectiveGroupDelay,
   formatBytes,
   formatDate,
   formatNumber,
@@ -228,5 +229,39 @@ describe('parseSubscriptionInfo', () => {
     const info = parseSubscriptionInfo(['官网：example.com', '已用流量：30 GB', 'Days Left: 30'])
     expect(info.usage).toBeNull()
     expect(info.others).toEqual(['官网：example.com', 'Days Left: 30', '已用流量：30 GB'])
+  })
+
+  it('suppresses fake timeout delay state when a group currently points to a subscription info node', () => {
+    const infoGroup = {
+      name: 'klm',
+      group_type: 'select',
+      kind: 'manual' as const,
+      now: '【KLM】 Traffic Reset: 10 Days Left',
+      sort: 'default',
+      icon: null,
+      nodes: [
+        {
+          name: '【KLM】 Traffic Reset: 10 Days Left',
+          node_type: 'ss',
+          tags: [],
+          delay_ms: null,
+          failed: true,
+          selected: true,
+        },
+        {
+          name: '【KLM】 HK 01',
+          node_type: 'ss',
+          tags: ['UDP'],
+          delay_ms: 88,
+          failed: false,
+          selected: false,
+        },
+      ],
+    }
+    expect(effectiveGroupDelay(infoGroup, [infoGroup])).toEqual({
+      delay: null,
+      failed: false,
+      target: '',
+    })
   })
 })

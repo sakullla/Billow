@@ -534,7 +534,14 @@ const failedNodeCount = computed(() => {
   for (const group of modeListed.value) {
     if (autoHidden(group)) continue
     for (const node of group.nodes) {
-      if (groupNamesSet.value.has(node.name) || seen.has(node.name)) continue
+      if (
+        groupNamesSet.value.has(node.name) ||
+        BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+        isInfoNode(node.name) ||
+        seen.has(node.name)
+      ) {
+        continue
+      }
       seen.add(node.name)
       if (nodeState(node).failed) count += 1
     }
@@ -546,7 +553,13 @@ function groupHealthText(group: NodeGroup): string {
   let tested = 0
   let ok = 0
   for (const node of group.nodes) {
-    if (groupNamesSet.value.has(node.name)) continue
+    if (
+      groupNamesSet.value.has(node.name) ||
+      BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+      isInfoNode(node.name)
+    ) {
+      continue
+    }
     const state = nodeState(node)
     if (state.failed) {
       tested += 1
@@ -556,7 +569,7 @@ function groupHealthText(group: NodeGroup): string {
     }
   }
   if (!tested) return ''
-  return tr('可用 {0}/{1}', { 0: ok, 1: tested })
+  return props.compact ? `${ok}/${tested}` : tr('可用 {0}/{1}', { 0: ok, 1: tested })
 }
 
 function highlight(name: string) {
@@ -1083,7 +1096,20 @@ onBeforeUnmount(() => {
         <Icon name="x" :size="12" />
       </button>
       <button
-        v-if="failedNodeCount > 0"
+        v-if="compact && !drawerExpanded && hideFailed && failedNodeCount > 0"
+        type="button"
+        class="chip-btn active proxy-active-filter-pill"
+        :aria-label="tr('显示超时节点')"
+        :title="tr('显示超时节点')"
+        data-testid="active-hide-failed-pill"
+        @click="hideFailed = false"
+      >
+        <span>{{ tr('隐藏超时') }}</span>
+        <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
+        <Icon name="x" :size="12" />
+      </button>
+      <button
+        v-if="!compact && failedNodeCount > 0"
         type="button"
         class="chip-btn hide-failed-chip"
         :class="{ active: hideFailed }"
@@ -1175,19 +1201,31 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="drawerExpanded && (quickFilters.length || (groups.length > 2 && !hasSearchOrTag))"
+        v-if="drawerExpanded && (quickFilters.length || (compact && failedNodeCount > 0) || (groups.length > 2 && !hasSearchOrTag))"
         id="proxy-filter-drawer"
         class="proxy-filter-drawer"
         data-testid="proxy-filter-drawer"
       >
         <div
-          v-if="quickFilters.length"
+          v-if="quickFilters.length || (compact && failedNodeCount > 0)"
           class="proxy-quick-filters"
           role="group"
           :aria-label="tr('筛选')"
           data-testid="proxy-quick-filters"
         >
           <span class="drawer-row-label">{{ tr('标签') }}</span>
+          <button
+            v-if="compact && failedNodeCount > 0"
+            type="button"
+            class="chip-btn proxy-quick-chip hide-failed-chip"
+            :class="{ active: hideFailed }"
+            :aria-pressed="hideFailed"
+            data-testid="hide-failed-nodes"
+            @click="hideFailed = !hideFailed"
+          >
+            <span>{{ tr('隐藏超时') }}</span>
+            <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
+          </button>
           <button
             v-for="chip in quickFilters"
             :key="chip.id"
@@ -1342,7 +1380,7 @@ onBeforeUnmount(() => {
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
-              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" />
+              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" :fold="compact" />
               <span v-else class="group-now-name">{{ group.kind === 'auto' ? tr('连接后显示') : '—' }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
               <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">{{ tr('已测') }} {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>

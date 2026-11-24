@@ -243,4 +243,67 @@ describe('phone layout', () => {
     expect(wrapper.find('.profile-live-dot').exists()).toBe(false)
     expect(wrapper.find('.profile-active-tag').text()).toBe('使用中')
   })
+
+  it('keeps mobile proxy toolbar single-row after speed test, labels fastest action without duplicate zap icon, and guards touch/dock CSS', async () => {
+    const stylesCss = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const redesignCss = readFileSync(resolve(process.cwd(), 'src/styles/redesign.css'), 'utf8')
+
+    // Touch devices must not keep sticky hover box on .group-toggle
+    expect(stylesCss).toMatch(/@media\s*\(hover:\s*hover\)\s*\{\s*\.group-toggle:hover/)
+    // Mobile fastest pill shows text ("最快") and hides the duplicate zap icon next to group-test
+    expect(redesignCss).toMatch(/\.compact\s+\.group-fastest\s+\.icon\s*\{\s*display:\s*none;/)
+    expect(redesignCss).toMatch(/\.compact\s+\.group-fastest\s+\.group-fastest-label\s*\{\s*display:\s*inline;/)
+    // Group title line never wraps into uneven 3-line cards, and dock bottom scrim blocks text bleed
+    expect(redesignCss).toMatch(/\.group-name\s*\{\s*flex-wrap:\s*nowrap;/)
+    expect(redesignCss).toMatch(/\.shell\.compact::after\s*\{/)
+    // Mobile group-now strips leading airport 【PREFIX】 tags so server names stay readable
+    expect(stylesCss).toMatch(/\.compact\s+\.group-now\s+\.chain-exit-prefix\s*\{\s*display:\s*none;/)
+
+    const { wrapper } = await mountPhone()
+    await connect(wrapper)
+    const store = storeOf(wrapper)
+    store.go('proxies')
+    await settle(100)
+
+    // Simulate tested nodes including a failed real node and a failed subscription info pseudo-node
+    const manualGroup = store.snapshot.value.node_catalog.find((g) => g.name === '节点选择')!
+    const realServer = manualGroup.nodes.find((n) => n.name === '香港 02')!
+    store.testResults.value = {
+      ...store.testResults.value,
+      [realServer.name]: { delay: null, failed: true },
+      '香港 01': { delay: 120, failed: false },
+      '新加坡 01': { delay: 45, failed: false },
+      '【KLM】 Traffic Reset: 10 Days Left': { delay: null, failed: true },
+    }
+    await flushPromises()
+
+    // Inactive hide-failed chip stays inside the collapsed drawer instead of squeezing the mobile search bar
+    expect(wrapper.find('[data-testid="hide-failed-nodes"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="active-hide-failed-pill"]').exists()).toBe(false)
+
+    // Fastest button on mobile carries readable text ("最快")
+    const fastestBtn = wrapper.find('[data-testid="pick-fastest-节点选择"]')
+    expect(fastestBtn.exists()).toBe(true)
+    expect(fastestBtn.text()).toBe('最快')
+
+    // Mobile health counter omits verbose "可用 " prefix ("2/3") and excludes non-group/info entries
+    const health = wrapper.find('[data-group-card="节点选择"] .group-health')
+    expect(health.exists()).toBe(true)
+    expect(health.text()).not.toContain('可用')
+
+    // Opening options reveals hide-failed chip; toggling it on and closing options shows removable active pill
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+    const hideChip = wrapper.find('[data-testid="hide-failed-nodes"]')
+    expect(hideChip.exists()).toBe(true)
+    await hideChip.trigger('click')
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+
+    const activeHidePill = wrapper.find('[data-testid="active-hide-failed-pill"]')
+    expect(activeHidePill.exists()).toBe(true)
+    await activeHidePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="active-hide-failed-pill"]').exists()).toBe(false)
+  })
 })

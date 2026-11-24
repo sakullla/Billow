@@ -271,7 +271,7 @@ export function effectiveGroupDelay(
 ): { delay: number | null; failed: boolean; target: string } {
   const chain = resolveChain(group.name, catalog)
   const target = chain[chain.length - 1] || group.now
-  if (!target || ['direct', 'reject', 'reject-drop'].includes(target.toLowerCase())) {
+  if (!target || ['direct', 'reject', 'reject-drop'].includes(target.toLowerCase()) || isInfoNode(target)) {
     return { delay: null, failed: false, target: '' }
   }
   const live = liveResults[target]

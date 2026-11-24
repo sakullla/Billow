@@ -17,7 +17,7 @@ import { createStore, PAGES, resolvePage, STORE, type PageId, type SettingsTab, 
 import { closeTopLayer as dismissTopLayer, layerDepth, onLayerChange } from './lib/ui/focus'
 import { useHotkeys } from './lib/ui/hotkeys'
 import { installInsets, syncSystemBars } from './lib/ui/insets'
-import { detectChrome, type WindowChrome } from './lib/ui/windowChrome'
+import { detectChrome, isWindowDecorated, type WindowChrome } from './lib/ui/windowChrome'
 import { getShortcut, pageShortcutCombo, SHORTCUTS, shortcutBindings, shortcutKeyLabel } from './lib/ui/shortcuts'
 import AppsView from './views/AppsView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -31,7 +31,7 @@ import SettingsView from './views/SettingsView.vue'
 
 const props = defineProps<{ backend?: Backend; width?: number; chrome?: WindowChrome }>()
 /** Custom title bar on Windows (undecorated) and macOS (overlay traffic lights). */
-const chrome = props.chrome !== undefined ? props.chrome : detectChrome()
+const chrome = ref<WindowChrome>(props.chrome !== undefined ? props.chrome : detectChrome())
 
 const store = createStore(props.backend ?? createBackend())
 provide(STORE, store)
@@ -661,6 +661,11 @@ function onGlobalContextMenu(event: MouseEvent) {
 }
 
 onMounted(async () => {
+  if (chrome.value === 'windows') {
+    void isWindowDecorated().then((decorated) => {
+      if (!unmounted && decorated) chrome.value = null
+    })
+  }
   releaseInsets = installInsets()
   void store.backend.onTrayNavigate?.(onTrayNavigate).then((stop) => {
     if (unmounted) stop()
