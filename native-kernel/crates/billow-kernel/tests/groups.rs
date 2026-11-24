@@ -1173,8 +1173,19 @@ async fn provider_registration_keeps_the_first_expected_status_for_a_shared_url(
     );
     let (mut kernel, _) = start(&yaml, &dir, None);
     let groups = kernel.groups().clone();
-    let probed = wait_until(Duration::from_secs(3), || {
-        node.connections.load(Ordering::Relaxed) >= 2
+    // `node.connections` counts the accepted CONNECT before the response is
+    // read and `record_health` runs, so waiting on it can observe the group
+    // while the shared URL has no record yet (pinned `AliveForTestUrl` falls
+    // back to the proxy's global `alive = true` until then). Wait for the
+    // recorded `/shared` outcome instead: a merged filter reaches `only`, and
+    // the kept expected-status 500 records it dead. If the later 204 won, the
+    // record would be alive and this wait would time out.
+    let recorded = wait_until(Duration::from_secs(10), || {
+        let recorded = groups
+            .group_status("B")
+            .and_then(|status| status.members.into_iter().find(|member| member.name == "only"))
+            .is_some_and(|member| !member.alive);
+        recorded && node.connections.load(Ordering::Relaxed) >= 2
     })
     .await;
     let status = groups.group_status("B").expect("B status");
@@ -1182,8 +1193,8 @@ async fn provider_registration_keeps_the_first_expected_status_for_a_shared_url(
     kernel.stop().expect("stop");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        probed,
-        "the merged filter must let the shared URL probe reach `only` (provider URL + shared URL): {status:?}"
+        recorded,
+        "the merged filter must let the shared URL probe reach `only` and record expected-status 500 (provider URL + shared URL): {status:?} ({probes} CONNECTs)"
     );
     let member = status
         .members

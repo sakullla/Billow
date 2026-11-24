@@ -275,11 +275,25 @@ in `evidence/t27-a2/`.
 T28 moved 179 enabled / 135 disagreements to 151 enabled / 107 disagreements
 (55 implemented, 289 no-op, 0 problems; 10 of the removed rows were duplicates
 T27 emitted twice): `BasicOption` knobs for mieru/sudoku, the UDP-relevant
-socket knobs for the shadowquic QUIC endpoint, masque
+socket knobs for the shadowquic QUIC endpoint, masque/TUIC
 `congestion-controller`/`cwnd` on the quinn endpoint, trojan `ss-opts`, and the
-T27 ss/ssr UDP server-name/proxy-DNS boundary. Easytier, OpenVPN, DNS and
-sniffer/tun stay named gaps. Details, remaining per-family rows and unverified
-boundaries are in `evidence/t28-option-parity.{json,md}`.
+T27 ss/ssr UDP server-name/proxy-DNS boundary.
+
+The T28-A3 delivery repair is value-level (the option rows do not move):
+`ss`/`trojan ss-opts` now build five AEADs (`aes-128/192/256-gcm`,
+`chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`, the 24-byte XChaCha nonce
+included), and `bbr_meta_v2` is accepted as the pinned alias of `bbr` while the
+old meta BBR v1 controller stays a named rejection. The remaining PickCipher
+names (ChaCha8/AES-CCM/stream ciphers) and `bbr_meta_v1` are registered as
+value-level gaps. The 107 enabled rows are attributed per family in
+`evidence/t28-option-parity.md`: easytier/wireguard/openvpn need the T6/T7
+userspace stack, the TLS families need uTLS or TLS-in-TLS handshakes, and the
+UDP/XUDP/UoT rows need protocol work; none is silently accepted. The groups
+flake in `provider_registration_keeps_the_first_expected_status_for_a_shared_url`
+was a test-readiness bug (the CONNECT-accept counter is observed before
+`record_health`), fixed by waiting for the recorded `/shared` outcome. Details,
+value-level gaps, per-family owners and unverified boundaries are in
+`evidence/t28-option-parity.{json,md}`.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

@@ -629,8 +629,8 @@ identities of the servers are logged as the session exit.
 | --- | --- | --- | --- |
 | `socks5` | plain, `tls: true` (+ `sni`, `skip-cert-verify`, `alpn`), RFC 1929 auth; the server socket is dialled by the shared dialer so `BasicOption` knobs apply | `udp: true`: RFC 1928 `UDP ASSOCIATE` (mixed inbound and TUN data plane) | `listeners: type: socks` (with users), wrong password |
 | `http` | plain, `tls: true`, Basic auth, extra `headers` | no | `listeners: type: http` (with users) |
-| `ss` | AEAD 2017 `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305` | `udp: true`: AEAD-2017 datagrams | `listeners: type: shadowsocks`, wrong password (TCP and UDP) |
-| `trojan` | TLS, `network: tcp` / `ws` (`ws-opts.path`, `headers`, `v2ray-http-upgrade`) | `udp: true`: `addr|len|CRLF|payload` frames over the TLS stream | `listeners: type: trojan`, wrong password, untrusted certificate (TCP and UDP) |
+| `ss` | AEAD 2017 `aes-128-gcm`, `aes-192-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305` (the stream-cipher list is rejected by name) | `udp: true`: AEAD-2017 datagrams | `listeners: type: shadowsocks`, wrong password (TCP and UDP) |
+| `trojan` | TLS, `network: tcp` / `ws` (`ws-opts.path`, `headers`, `v2ray-http-upgrade`), optional `ss-opts` Shadowsocks AEAD layer (`aes-128/192/256-gcm`, `chacha20-ietf-poly1305`, `xchacha20-ietf-poly1305`) | `udp: true`: `addr|len|CRLF|payload` frames over the TLS stream | `listeners: type: trojan`, wrong password, untrusted certificate (TCP and UDP) |
 | `vless` | `tls: true`, `network: tcp` / `ws` (`ws-opts.path`), `encryption: none` | no | `listeners: type: vless` (tcp and `ws-path`), wrong uuid |
 | `anytls` | TLS, one stream per connection, protocol version 2 | no | `listeners: type: anytls`, wrong password, untrusted certificate |
 | `vmess` | AEAD request header (`alterId: 0`), `cipher: auto`/`aes-128-gcm`/`chacha20-poly1305`/`none`, `tls: true`, `network: tcp`/`ws` (`ws-opts.path`, `headers`), `sni`/`servername` | no | `listeners: type: vmess` (aes-128-gcm, chacha20-poly1305, domain target), wrong uuid |
@@ -921,7 +921,7 @@ loader reads only implemented keys and rejects the rest with the key named.
 With the pinned option tables that means the trojan/vless `smux` block,
 `udp-over-tcp`, `udp-over-tcp-version`, `ech-opts`,
 `shadow-tls-opts`, `restls-opts`, `jls-opts`, `reality-opts`, `grpc-opts`,
-`http-opts`, `h2-opts`, `xhttp-opts`, `ss-opts`, `plugin`/`plugin-opts`, ws
+`http-opts`, `h2-opts`, `xhttp-opts`, a non-AEAD `ss-opts.method`, `plugin`/`plugin-opts`, ws
 early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint`, vless
 `flow`/`packet-addr`/`xudp`/`packet-encoding`, anytls
 `client-metadata`/`idle-session-*`/`min-idle-session`/`disable-reuse`, vmess
@@ -934,9 +934,10 @@ early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint`, vless
 `vless`/`anytls`/`vmess`/`snell`/`trusttunnel` (no UDP association for those
 families; socks5 UDP is implemented). T10's families reject the options
 they do not implement by name: `tuic` `token` (v4/BLAKE3), `udp-relay-mode:
-quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, meta BBR profiles and the
-UDP datagram sizing; the cubic/new_reno/bbr controller, `cwnd`, receive
-windows and `disable-mtu-discovery` are applied to quinn. `hysteria`
+quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, the meta BBR v1 controller and the
+UDP datagram sizing; the cubic/new_reno/bbr/bbr_meta_v2 controller (v2 is the pinned alias of bbr), `cwnd`, receive
+windows and `disable-mtu-discovery` are applied to quinn; `bbr_meta_v1` and
+`bbr-profile` are named. `hysteria`
 `ports`/`hop-interval` (port hopping), `obfs` (XPlus), `protocol:
 faketcp|wechat`, `fast-open`; `recv-window*` and `disable-mtu-discovery` are
 applied. `hysteria2` `ports`/`hop-interval`, `obfs` (Salamander/Gecko),
@@ -956,8 +957,9 @@ needs the WARP CONNECT-IP shape, whose TCP client is in `src/outbound/tcp.rs`
 and does not negotiate window scaling/SACK/timestamps, passive open or urgent
 data), both non-HTTP/3 networks (`h2`, `h3-l4proxy`), `ip-stack.mode: gvisor`
 (the pinned build-tagged dependency), `ip-stack.congestion-controller` beyond
-validation (TCP-stack only), the QUIC congestion knobs and `dialer-proxy` (a
-QUIC endpoint is dialled locally), DNS name servers that are not `udp://` IP
+validation (TCP-stack only), `bbr_meta_v1`/`bbr-profile` (quinn has one BBR
+controller but no v1/profile selector) and `dialer-proxy` (a QUIC endpoint is
+dialled locally), DNS name servers that are not `udp://` IP
 literals, and URI templates (IP flow forwarding); its `udp: false` form loads
 and refuses UDP dials while TCP still uses the tunnel. `shadowquic` rejects `zero-rtt` (JLS 0-RTT needs the pinned
 authenticated session ticket), `quic-versions: v2` (quinn 0.11 implements v1

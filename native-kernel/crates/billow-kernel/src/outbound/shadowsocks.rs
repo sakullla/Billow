@@ -14,9 +14,12 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use aes::Aes192;
+use aes_gcm::aead::consts::U12;
+use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
-use aes_gcm::{Aes128Gcm, Aes256Gcm};
-use chacha20poly1305::ChaCha20Poly1305;
+use aes_gcm::{Aes128Gcm, Aes256Gcm, AesGcm};
+use chacha20poly1305::{ChaCha20Poly1305, XChaCha20Poly1305};
 use rand::RngCore;
 use std::task::Poll as StdPoll;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -27,10 +30,16 @@ use crate::proxies::{ShadowsocksOutbound, SsCipher};
 const TAG_LEN: usize = 16;
 const MAX_PAYLOAD: usize = 0x3FFF;
 
+/// aes-gcm 0.10 only aliases the 128/256-bit AES-GCM types; shadowsocks'
+/// aes-192-gcm is the same construction with a 24-byte key.
+type Aes192Gcm = AesGcm<Aes192, U12>;
+
 enum Aead {
     Aes128(Box<Aes128Gcm>),
+    Aes192(Box<Aes192Gcm>),
     Aes256(Box<Aes256Gcm>),
     Chacha(Box<ChaCha20Poly1305>),
+    Xchacha(Box<XChaCha20Poly1305>),
 }
 
 impl Aead {
@@ -39,36 +48,48 @@ impl Aead {
             SsCipher::Aes128Gcm => Aead::Aes128(Box::new(
                 Aes128Gcm::new_from_slice(key).expect("16-byte key"),
             )),
+            SsCipher::Aes192Gcm => Aead::Aes192(Box::new(
+                Aes192Gcm::new_from_slice(key).expect("24-byte key"),
+            )),
             SsCipher::Aes256Gcm => Aead::Aes256(Box::new(
                 Aes256Gcm::new_from_slice(key).expect("32-byte key"),
             )),
             SsCipher::Chacha20IetfPoly1305 => Aead::Chacha(Box::new(
                 ChaCha20Poly1305::new_from_slice(key).expect("32-byte key"),
             )),
+            SsCipher::Xchacha20IetfPoly1305 => Aead::Xchacha(Box::new(
+                XChaCha20Poly1305::new_from_slice(key).expect("32-byte key"),
+            )),
         }
     }
 
     /// Seal `buffer` in place under `nonce` with no associated data (Mihomo's
     /// writer seals `length || payload` as the plaintext of one record).
-    fn seal(&self, nonce: &[u8; 12], buffer: &mut Vec<u8>) -> Result<(), io::Error> {
+    fn seal(&self, nonce: &[u8], buffer: &mut Vec<u8>) -> Result<(), io::Error> {
         let aad: &[u8] = &[];
         let failed = || io::Error::other("shadowsocks seal failed");
         let tag = match self {
             Aead::Aes128(c) => c
-                .encrypt_in_place_detached(nonce.into(), aad, buffer)
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer)
+                .map_err(|_| failed())?,
+            Aead::Aes192(c) => c
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer)
                 .map_err(|_| failed())?,
             Aead::Aes256(c) => c
-                .encrypt_in_place_detached(nonce.into(), aad, buffer)
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer)
                 .map_err(|_| failed())?,
             Aead::Chacha(c) => c
-                .encrypt_in_place_detached(nonce.into(), aad, buffer)
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer)
+                .map_err(|_| failed())?,
+            Aead::Xchacha(c) => c
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer)
                 .map_err(|_| failed())?,
         };
         buffer.extend_from_slice(&tag);
         Ok(())
     }
 
-    fn open(&self, nonce: &[u8; 12], buffer: &mut Vec<u8>) -> Result<(), io::Error> {
+    fn open(&self, nonce: &[u8], buffer: &mut Vec<u8>) -> Result<(), io::Error> {
         let aad: &[u8] = &[];
         let malformed = || {
             io::Error::new(
@@ -80,23 +101,29 @@ impl Aead {
             return Err(malformed());
         }
         let split = buffer.len() - TAG_LEN;
-        let tag = aes_gcm::aead::generic_array::GenericArray::clone_from_slice(&buffer[split..]);
+        let tag = GenericArray::clone_from_slice(&buffer[split..]);
         buffer.truncate(split);
         match self {
             Aead::Aes128(c) => c
-                .decrypt_in_place_detached(nonce.into(), aad, buffer, &tag)
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer, &tag)
+                .map_err(|_| malformed()),
+            Aead::Aes192(c) => c
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer, &tag)
                 .map_err(|_| malformed()),
             Aead::Aes256(c) => c
-                .decrypt_in_place_detached(nonce.into(), aad, buffer, &tag)
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer, &tag)
                 .map_err(|_| malformed()),
             Aead::Chacha(c) => c
-                .decrypt_in_place_detached(nonce.into(), aad, buffer, &tag)
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer, &tag)
+                .map_err(|_| malformed()),
+            Aead::Xchacha(c) => c
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), aad, buffer, &tag)
                 .map_err(|_| malformed()),
         }
     }
 }
 
-fn increment(nonce: &mut [u8; 12]) {
+fn increment(nonce: &mut [u8]) {
     // SIP004 increments the nonce little-endian (Go shadowaead: `increment`).
     for byte in nonce.iter_mut() {
         *byte = byte.wrapping_add(1);
@@ -129,7 +156,7 @@ fn seal_datagram(cipher: SsCipher, password: &str, plaintext: &[u8]) -> Vec<u8> 
     let aead = session_aead(cipher, password, &salt);
     let mut out = salt;
     let mut body = plaintext.to_vec();
-    let nonce = [0u8; 12];
+    let nonce = vec![0u8; cipher.nonce_len()];
     aead.seal(&nonce, &mut body).expect("datagram seal");
     out.extend_from_slice(&body);
     out
@@ -145,7 +172,7 @@ fn open_datagram(cipher: SsCipher, password: &str, packet: &[u8]) -> io::Result<
     }
     let aead = session_aead(cipher, password, &packet[..key_len]);
     let mut body = packet[key_len..].to_vec();
-    let nonce = [0u8; 12];
+    let nonce = vec![0u8; cipher.nonce_len()];
     aead.open(&nonce, &mut body)?;
     Ok(body)
 }
@@ -185,8 +212,8 @@ pub struct SsStream<S> {
     /// The server's salt is read incrementally; a poll may end midway.
     read_salt: Vec<u8>,
     read_salt_filled: usize,
-    write_nonce: [u8; 12],
-    read_nonce: [u8; 12],
+    write_nonce: Vec<u8>,
+    read_nonce: Vec<u8>,
     /// Sealed bytes waiting to be written (address chunk first, then payload).
     write_buf: Vec<u8>,
     write_pos: usize,
@@ -507,8 +534,8 @@ where
         read_aead: None,
         read_salt: vec![0u8; cipher.key_len()],
         read_salt_filled: 0,
-        write_nonce: [0u8; 12],
-        read_nonce: [0u8; 12],
+        write_nonce: vec![0u8; cipher.nonce_len()],
+        read_nonce: vec![0u8; cipher.nonce_len()],
         write_buf: Vec::new(),
         write_pos: 0,
         pending_len: 0,
@@ -554,7 +581,7 @@ mod tests {
             let mut salt = vec![0u8; cipher.key_len()];
             server.read_exact(&mut salt).await.expect("salt");
             let aead = session_aead(cipher, password, &salt);
-            let mut nonce = [0u8; 12];
+            let mut nonce = vec![0u8; cipher.nonce_len()];
             let mut sealed_len = vec![0u8; 2 + TAG_LEN];
             server.read_exact(&mut sealed_len).await.expect("length");
             aead.open(&nonce, &mut sealed_len).expect("open length");
@@ -571,5 +598,75 @@ mod tests {
         stream.write_all(&expected).await.expect("write");
         stream.flush().await.expect("flush");
         assert_eq!(server_task.await.expect("server"), expected);
+    }
+
+    /// Every implemented cipher (including aes-192-gcm's 24-byte key and
+    /// XChaCha20-Poly1305's 24-byte nonce) seals/opens the bare layer with the
+    /// cipher's own key and nonce sizes, as `core.PickCipher` selects them.
+    #[tokio::test]
+    async fn connect_layer_roundtrips_every_implemented_cipher() {
+        for cipher in [
+            SsCipher::Aes128Gcm,
+            SsCipher::Aes192Gcm,
+            SsCipher::Aes256Gcm,
+            SsCipher::Chacha20IetfPoly1305,
+            SsCipher::Xchacha20IetfPoly1305,
+        ] {
+            let (client, server) = tokio::io::duplex(4096);
+            let password = "layer-pw";
+            let expected = b"header-after-salt".to_vec();
+            let server_task = tokio::spawn(async move {
+                let mut server = server;
+                let mut salt = vec![0u8; cipher.key_len()];
+                server.read_exact(&mut salt).await.expect("salt");
+                let aead = session_aead(cipher, password, &salt);
+                let mut nonce = vec![0u8; cipher.nonce_len()];
+                let mut sealed_len = vec![0u8; 2 + TAG_LEN];
+                server.read_exact(&mut sealed_len).await.expect("length");
+                aead.open(&nonce, &mut sealed_len).expect("open length");
+                increment(&mut nonce);
+                let declared = u16::from_be_bytes([sealed_len[0], sealed_len[1]]) as usize;
+                let mut sealed = vec![0u8; declared + TAG_LEN];
+                server.read_exact(&mut sealed).await.expect("payload");
+                aead.open(&nonce, &mut sealed).expect("open payload");
+                sealed
+            });
+            let mut stream = connect_layer(client, cipher, password)
+                .await
+                .expect("layer");
+            stream.write_all(&expected).await.expect("write");
+            stream.flush().await.expect("flush");
+            assert_eq!(server_task.await.expect("server"), expected, "{cipher:?}");
+        }
+    }
+
+    /// The UDP datagram codec follows the same cipher selection; a wrong
+    /// password must still fail authentication.
+    #[tokio::test]
+    async fn datagram_codec_roundtrips_every_implemented_cipher() {
+        for cipher in [
+            SsCipher::Aes128Gcm,
+            SsCipher::Aes192Gcm,
+            SsCipher::Aes256Gcm,
+            SsCipher::Chacha20IetfPoly1305,
+            SsCipher::Xchacha20IetfPoly1305,
+        ] {
+            let payload = b"datagram";
+            let sealed = seal_datagram(cipher, "pw", payload);
+            assert_eq!(
+                sealed.len(),
+                cipher.key_len() + payload.len() + TAG_LEN,
+                "{cipher:?}"
+            );
+            assert_eq!(
+                open_datagram(cipher, "pw", &sealed).expect("open"),
+                payload,
+                "{cipher:?}"
+            );
+            assert!(
+                open_datagram(cipher, "other", &sealed).is_err(),
+                "{cipher:?}"
+            );
+        }
     }
 }

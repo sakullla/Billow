@@ -44,7 +44,8 @@
     "masque": {
       "before": 7,
       "after": 5,
-      "implementedInT28": true
+      "implementedInT28": true,
+      "note": "5 enabled rows (4 counted in the 107; `dialer-proxy` is rejected by Mihomo too). bbr-profile and the meta BBR v1 value stay named; bbr_meta_v2 is accepted as the pinned alias of bbr (value-level, not a separate matrix row)."
     },
     "trojan": {
       "before": 7,
@@ -55,12 +56,20 @@
   "implementedInT28": [
     "mieru/sudoku BasicOption knobs (tfo, mptcp, interface-name, routing-mark, ip-version) on the shared stream dialer",
     "shadowquic QUIC endpoint socket knobs (interface-name, routing-mark, ip-version; tfo/mptcp accepted as TCP-only no-ops)",
-    "masque congestion-controller (cubic/new_reno/bbr) and cwnd mapped to the quinn endpoint",
-    "trojan ss-opts (Shadowsocks AEAD layer over the TLS/WS stream, method/password validated)"
+    "masque/TUIC congestion-controller cubic/new_reno/bbr plus the pinned bbr_meta_v2 alias of bbr, and cwnd, mapped to the quinn endpoint (bbr_meta_v1 named: quinn has no meta BBR v1 sender)",
+    "trojan ss-opts (Shadowsocks AEAD layer over the TLS/WS stream; aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305)",
+    "ss AEAD cipher set extended to aes-192-gcm (24-byte key) and xchacha20-ietf-poly1305 (24-byte nonce), shared with trojan ss-opts"
   ],
   "remainingByFamily": {
-    "mieru": ["udp: true (UDP association)", "multiplexing levels", "traffic-pattern"],
-    "sudoku": ["udp: true (UoT association)", "http-mask-mode: stream/poll/auto/ws"],
+    "mieru": [
+      "udp: true (UDP association)",
+      "multiplexing levels",
+      "traffic-pattern"
+    ],
+    "sudoku": [
+      "udp: true (UoT association)",
+      "http-mask-mode: stream/poll/auto/ws"
+    ],
     "shadowquic": [
       "zero-rtt",
       "quic-versions: [v2]",
@@ -75,7 +84,7 @@
       "network: h3-l4proxy",
       "bbr-profile (quinn has no profile selector)",
       "ip-stack.mode: gvisor",
-      "dialer-proxy"
+      "dialer-proxy (named; Mihomo also rejects it for the WARP base, so it is not one of the 107)"
     ],
     "trojan": [
       "reality-opts",
@@ -89,5 +98,312 @@
   "alsoInT28": [
     "ss/ssr UDP association resolves the proxy-server name through dns.proxy-server-nameserver and the dialer ip-version instead of the OS resolver",
     "spawned TUN/mixed UDP associations re-enter the PROXY_DNS task-local scope"
-  ]
+  ],
+  "valueLevelGaps": {
+    "note": "These are values inside an implemented option, so the option-level matrix rows stay green; they are registered here instead of being silently accepted.",
+    "ss_and_trojan_ss_opts_cipher": {
+      "implemented": [
+        "aes-128-gcm",
+        "aes-192-gcm",
+        "aes-256-gcm",
+        "chacha20-ietf-poly1305",
+        "xchacha20-ietf-poly1305"
+      ],
+      "namedRejections": [
+        "chacha8-ietf-poly1305",
+        "xchacha8-ietf-poly1305",
+        "aes-128-ccm",
+        "aes-192-ccm",
+        "aes-256-ccm",
+        "rc4-md5",
+        "aes-128-ctr",
+        "aes-192-ctr",
+        "aes-256-ctr",
+        "aes-128-cfb",
+        "aes-192-cfb",
+        "aes-256-cfb",
+        "chacha20",
+        "chacha20-ietf",
+        "xchacha20"
+      ],
+      "reason": "The remaining PickCipher entries are the shadowstream framing ciphers and the ChaCha8/AES-CCM AEADs; they need the pinned shadowstream record/padding layer or a reduced-round/CCM primitive that is not in the tree.",
+      "owner": "requirement decision or a follow-up cipher task; R2 narrowing required if left unimplemented"
+    },
+    "congestion_controller": {
+      "implemented": [
+        "cubic",
+        "new_reno",
+        "bbr",
+        "bbr_meta_v2 (pinned alias of bbr)"
+      ],
+      "namedRejections": [
+        "bbr_meta_v1 (quinn has one BBR controller; no meta BBR v1 sender)"
+      ],
+      "owner": "requirement decision (a meta BBR v1 dependency would be needed)"
+    }
+  },
+  "remainingOwnership": {
+    "note": "107 enabled rows after T28-A3; no row moved in this repair round (the closed gaps are value-level or already-green rows). Owners below are the dependency that blocks the behaviour, not an implementation claim.",
+    "mesh_data_plane": {
+      "easytier": {
+        "rows": 20,
+        "owner": "T6/T7 userspace IP stack/TUN plus the EasyTier OSPF/route host identity; requirement decision to keep the named gap",
+        "examples": [
+          "hostname",
+          "ipv4",
+          "dhcp",
+          "mapped-listeners",
+          "exit-nodes",
+          "proxy-networks",
+          "accept-dns",
+          "tld-dns-zone",
+          "private-mode",
+          "latency-first",
+          "enable-kcp-proxy",
+          "enable-quic-proxy",
+          "tfo",
+          "mptcp",
+          "interface-name",
+          "routing-mark",
+          "ip-version",
+          "enable-encryption alone",
+          "local-private-key alone"
+        ]
+      },
+      "wireguard": {
+        "rows": 11,
+        "owner": "T6/T7 userspace IP stack plus AmneziaWG and the stack resolver; requirement decision",
+        "examples": [
+          "amnezia-wg-option",
+          "dns",
+          "interface-name",
+          "ip-stack.congestion-controller",
+          "ip-stack.mode",
+          "ip-version",
+          "mptcp",
+          "refresh-server-ip-interval",
+          "remote-dns-resolve",
+          "routing-mark",
+          "tfo"
+        ]
+      },
+      "openvpn": {
+        "rows": 7,
+        "owner": "T6/T7 userspace IP stack plus tls-auth/tls-crypt, compression and the CBC data channel; requirement decision",
+        "examples": [
+          "cipher (CBC)",
+          "comp-lzo",
+          "data-ciphers (CBC)",
+          "dns",
+          "ip-stack.congestion-controller",
+          "ip-stack.mode",
+          "remote-dns-resolve"
+        ]
+      }
+    },
+    "protocol_features": {
+      "tuic": {
+        "rows": 9,
+        "owner": "follow-up protocol task (TUIC v4 token/UoT/UDP relay) or requirement decision",
+        "examples": [
+          "token",
+          "udp-relay-mode",
+          "udp-over-stream",
+          "reduce-rtt",
+          "fast-open",
+          "max-datagram-frame-size",
+          "max-udp-relay-packet-size",
+          "bbr-profile",
+          "client-fingerprint"
+        ]
+      },
+      "anytls": {
+        "rows": 9,
+        "owner": "follow-up task (UoT association, session-reuse pool, TLS-in-TLS) or requirement decision",
+        "examples": [
+          "udp",
+          "client-metadata",
+          "idle-session-*",
+          "min-idle-session",
+          "disable-reuse",
+          "shadow-tls-opts",
+          "jls-opts",
+          "client-fingerprint"
+        ]
+      },
+      "vmess": {
+        "rows": 8,
+        "owner": "follow-up task (UDP/XUDP, mKCP, mekya, TLS-mirror) or requirement decision",
+        "examples": [
+          "udp",
+          "xudp",
+          "packet-addr",
+          "packet-encoding",
+          "mekya-opts",
+          "mkcp-opts",
+          "tlsmirror-opts",
+          "client-fingerprint"
+        ]
+      },
+      "hysteria2": {
+        "rows": 7,
+        "owner": "follow-up task (port hopping, obfs, Brutal TX cap/profile) or requirement decision",
+        "examples": [
+          "up",
+          "ports",
+          "hop-interval",
+          "obfs",
+          "realm-opts",
+          "udp-mtu",
+          "bbr-profile"
+        ]
+      },
+      "shadowquic": {
+        "rows": 7,
+        "owner": "follow-up task (JLS 0-RTT, QUIC v2, private Brutal) or requirement decision",
+        "examples": [
+          "zero-rtt",
+          "quic-versions: [v2]",
+          "congestion-controller",
+          "bbr-profile",
+          "cwnd",
+          "up",
+          "down"
+        ]
+      },
+      "hysteria": {
+        "rows": 6,
+        "owner": "follow-up task (port hopping, XPlus, faketcp) or requirement decision",
+        "examples": [
+          "ports",
+          "hop-interval",
+          "obfs",
+          "protocol",
+          "fast-open",
+          "client-fingerprint"
+        ]
+      },
+      "vless": {
+        "rows": 5,
+        "owner": "follow-up task (UDP/XUDP, packet encodings, TLS-in-TLS) or requirement decision",
+        "examples": [
+          "udp",
+          "packet-addr",
+          "packet-encoding",
+          "xudp",
+          "client-fingerprint"
+        ]
+      },
+      "masque": {
+        "rows": 4,
+        "owner": "follow-up task (H2/l4proxy transports, gVisor stack) plus named bbr_meta_v1/bbr-profile; requirement decision",
+        "examples": [
+          "network: h2",
+          "network: h3-l4proxy",
+          "ip-stack.mode: gvisor",
+          "bbr-profile"
+        ]
+      },
+      "trojan": {
+        "rows": 3,
+        "owner": "follow-up task (ShadowTLS/JLS and uTLS) or requirement decision",
+        "examples": [
+          "shadow-tls-opts",
+          "jls-opts",
+          "client-fingerprint"
+        ]
+      },
+      "sudoku": {
+        "rows": 3,
+        "owner": "follow-up task (UoT association, HTTP tunnel modes) or requirement decision",
+        "examples": [
+          "udp",
+          "http-mask-mode"
+        ]
+      },
+      "mieru": {
+        "rows": 3,
+        "owner": "follow-up task (UDP association, multiplexing, traffic pattern) or requirement decision",
+        "examples": [
+          "udp",
+          "multiplexing",
+          "traffic-pattern"
+        ]
+      },
+      "trusttunnel": {
+        "rows": 2,
+        "owner": "follow-up task (UDP, uTLS) or requirement decision",
+        "examples": [
+          "udp",
+          "client-fingerprint"
+        ]
+      },
+      "ss": {
+        "rows": 2,
+        "owner": "follow-up task (UoT framing) or requirement decision",
+        "examples": [
+          "udp-over-tcp",
+          "udp-over-tcp-version"
+        ]
+      },
+      "gost-relay": {
+        "rows": 1,
+        "owner": "follow-up task (uTLS) or requirement decision",
+        "examples": [
+          "client-fingerprint"
+        ]
+      }
+    },
+    "totals": {
+      "easytier": 20,
+      "wireguard": 11,
+      "tuic": 9,
+      "anytls": 9,
+      "vmess": 8,
+      "shadowquic": 7,
+      "openvpn": 7,
+      "hysteria2": 7,
+      "hysteria": 6,
+      "vless": 5,
+      "masque": 4,
+      "trojan": 3,
+      "sudoku": 3,
+      "mieru": 3,
+      "trusttunnel": 2,
+      "ss": 2,
+      "gost-relay": 1,
+      "sum": 107
+    }
+  },
+  "flakeFix": {
+    "test": "native-kernel/crates/billow-kernel/tests/groups.rs::provider_registration_keeps_the_first_expected_status_for_a_shared_url",
+    "cause": "the test waited on node.connections, which the proxy node increments when it accepts the CONNECT, before the probe reads the response and calls record_health; the group status then fell back to the pinned alive=true default (MemberHealth alive=true, delay=None) and the later 204 looked like the registered expected-status",
+    "fix": "wait on the recorded /shared outcome (member 'only' dead) and keep the CONNECT count only as an additional >=2 guard; a regression to the later 204 now times out with the status printed instead of flaking",
+    "evidence": "before: 5/15 runs failed under 8 busy processes; after: 16/16 + 12/12 single runs and 4/4 full groups suites (32/32) passed under the same load; the final wait requires both the recorded /shared outcome and the two CONNECTs"
+  },
+  "validation": {
+    "defaultSuite": {
+      "passed": 420,
+      "failed": 0,
+      "ignored": 91,
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked"
+    },
+    "groupsUnderLoad": "32/32 x4",
+    "optionProbe": {
+      "noop": 289,
+      "implemented": 55,
+      "enabled": 151,
+      "rustRejectMihomoAccept": 107,
+      "problems": 0
+    },
+    "differentials": {
+      "t5": "12/12",
+      "t22": "22 pass, 1 skipped",
+      "t23": "28 pass",
+      "t24": "36 pass, 2 skipped",
+      "t25": "47/49 equal, 2 known"
+    },
+    "runner": "10/10"
+  },
+  "deduplicatedRowsNote": "The 151 enabled rows still contain three duplicate rows emitted by two T27 lists (mieru udp, mieru traffic-pattern, sudoku udp); two of them (mieru udp, sudoku udp) are inside the 107 rust=reject/mihomo=accept rows, so those are 105 unique rows. T28-A2 removed 10 duplicates; the remaining three are left visible rather than silently deduped."
 }

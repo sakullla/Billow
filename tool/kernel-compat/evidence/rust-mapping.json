@@ -397,7 +397,7 @@
       "options": [
         "server",
         "port",
-        "cipher (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)",
+        "cipher (aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305)",
         "password",
         "udp",
         "dialer-proxy (one socks5 hop for UDP)",
@@ -415,15 +415,21 @@
         "udp-over-tcp-version"
       ],
       "evidence": [
+        "tests/protocols.rs::shadowsocks_aes_128_gcm_wrong_password_fails_authentication",
+        "tests/protocols.rs::shadowsocks_aes_192_gcm_roundtrip",
         "tests/protocols.rs::shadowsocks_aes_256_gcm_roundtrip",
+        "tests/protocols.rs::shadowsocks_chacha20_ietf_poly1305_roundtrip",
+        "tests/protocols.rs::shadowsocks_xchacha20_ietf_poly1305_roundtrip",
+        "tests/protocols.rs::shadowsocks_udp_datagram_roundtrip_and_tamper_detection",
         "tests/protocols.rs::shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead",
         "tests/mihomo_peers.rs::shadowsocks_outbound_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::shadowsocks_udp_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo",
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
-        "tests/config.rs::t27_tls_identity_options_are_parsed"
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). AEAD ciphers follow the pinned `core.PickCipher` names for aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305 (the 24-byte XChaCha nonce is honoured); the pinned stream-cipher list, ChaCha8 and AES-CCM remain named rejections (T28 parity evidence)."
     },
     "trojan": {
       "status": "implemented",
@@ -439,7 +445,7 @@
         "ws-opts.headers (Host override)",
         "ws-opts.v2ray-http-upgrade",
         "udp",
-        "ss-opts (enabled/method/password)",
+        "ss-opts (enabled/method/password; aes-128/192/256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305)",
         "dialer-proxy",
         "tfo",
         "mptcp",
@@ -473,11 +479,12 @@
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
         "src/outbound/shadowsocks.rs::tests::connect_layer_seals_the_first_payload_without_an_address_frame",
+        "src/outbound/shadowsocks.rs::tests::connect_layer_roundtrips_every_implemented_cipher",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
-      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated; AES-128-GCM, AES-256-GCM and CHACHA20-IETF-POLY1305 are implemented, other ciphers are named rejections). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
+      "reason": "T28 adds `ss-opts` (a bare Shadowsocks AEAD layer over the TLS/WS stream, method/password validated; AES-128-GCM, AES-192-GCM, AES-256-GCM, CHACHA20-IETF-POLY1305 and XCHACHA20-IETF-POLY1305 are implemented, other PickCipher names are named rejections). The remaining named gaps are the uTLS fingerprint, ECH/REALITY/ShadowTLS/Restls/JLS handshakes and the gRPC transport."
     },
     "vless": {
       "status": "implemented",
@@ -914,7 +921,7 @@
     },
     "masque": {
       "status": "partial",
-      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC `bbr-profile` (quinn has no profile selector), `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
+      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC `bbr-profile` and meta BBR v1 (quinn has one BBR sender, which is the pinned `bbr`/`bbr_meta_v2` alias, and no v1/profile selector), `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
       "options": [
         "server",
         "port",
@@ -941,6 +948,7 @@
         "network: h3-l4proxy",
         "ip-stack.mode: gvisor",
         "bbr-profile",
+        "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)",
         "dialer-proxy",
         "dns: non-udp scheme",
         "uri: template variable"
@@ -954,6 +962,7 @@
         "h3-l4proxy (`network: h3-l4proxy`)",
         "ip-stack.mode: gvisor (the pinned build-tagged gVisor dependency)",
         "bbr-profile",
+        "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)",
         "dialer-proxy",
         "remote-dns-resolve with DNS over TCP/DoT/DoH or `#param` name servers",
         "URI templates / IP flow forwarding (RFC 9484 §8.2)",
@@ -1033,7 +1042,8 @@
         "tests/quic_peers.rs::masque_connect_ip_tcp_timeout_is_reported",
         "tests/quic_peers.rs::masque_connect_ip_tcp_half_close_delivers_eof",
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_tcp_through_masque_connect_ip",
-        "tests/quic_peers.rs::masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin"
+        "tests/quic_peers.rs::masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin",
+        "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr"
       ]
     },
     "sudoku": {
@@ -1130,7 +1140,7 @@
         "udp-over-stream",
         "reduce-rtt",
         "fast-open",
-        "congestion-controller (bbr_meta_v1/bbr_meta_v2 values)",
+        "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)",
         "bbr-profile",
         "max-datagram-frame-size",
         "max-udp-relay-packet-size",

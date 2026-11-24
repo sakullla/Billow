@@ -1916,10 +1916,43 @@ fn t28_masque_quic_controller_and_trojan_ss_opts_are_parsed() {
         "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, bbr-profile: standard}\nrules: ['MATCH,m']\n",
     );
     assert!(error.contains("option 'bbr-profile'"), "{error}");
-    let error = proxy_err(
+    // Pinned `SetCongestionController` treats bbr_meta_v2 as an alias of bbr.
+    load_config(
         "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v2}\nrules: ['MATCH,m']\n",
+        "t",
+    )
+    .expect("masque bbr_meta_v2 loads");
+    let error = proxy_err(
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,m']\n",
     );
-    assert!(error.contains("option 'congestion-controller'"), "{error}");
+    assert!(
+        error.contains("bbr_meta_v1") && error.contains("option 'congestion-controller'"),
+        "{error}"
+    );
+
+    for method in ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "CHACHA20-IETF-POLY1305", "XCHACHA20-IETF-POLY1305"] {
+        load_config(
+            &format!(
+                "proxies:\n  - {{name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {{enabled: true, method: {method}, password: sp}}}}\nrules: ['MATCH,t']\n"
+            ),
+            "t",
+        )
+        .unwrap_or_else(|e| panic!("trojan ss-opts {method}: {e}"));
+    }
+    for cipher in ["aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305"] {
+        load_config(
+            &format!(
+                "proxies:\n  - {{name: s, type: ss, server: 127.0.0.1, port: 1, cipher: {cipher}, password: p}}\nrules: ['MATCH,s']\n"
+            ),
+            "t",
+        )
+        .unwrap_or_else(|e| panic!("ss cipher {cipher}: {e}"));
+    }
+    // Stream ciphers stay named rejections until their framing is ported.
+    let error = proxy_err(
+        "proxies:\n  - {name: s, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-cfb, password: p}\nrules: ['MATCH,s']\n",
+    );
+    assert!(error.contains("option 'cipher' value 'aes-256-cfb'"), "{error}");
 
     load_config(
         "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {enabled: true, method: AES-256-GCM, password: sp}}\nrules: ['MATCH,t']\n",

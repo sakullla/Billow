@@ -104,10 +104,12 @@ pub(crate) fn congestion_tuning(name: Option<&str>, cwnd: u32) -> (CongestionCon
     let controller = match name {
         Some("cubic") => CongestionController::Cubic,
         Some("new_reno") => CongestionController::NewReno,
-        Some("bbr") => CongestionController::Bbr,
+        // Pinned `congestion.SetCongestionController`: `bbr_meta_v2` is a
+        // fallthrough alias of `bbr` (both use the v2 BBR sender).
+        Some("bbr") | Some("bbr_meta_v2") => CongestionController::Bbr,
         _ => CongestionController::Default,
     };
-    let initial = if name == Some("bbr") {
+    let initial = if matches!(name, Some("bbr") | Some("bbr_meta_v2")) {
         let packets = if cwnd == 0 { 32 } else { cwnd };
         Some(u64::from(packets) * 1200)
     } else {
@@ -280,6 +282,16 @@ mod tests {
         );
         assert_eq!(
             congestion_tuning(Some("bbr"), 0),
+            (CongestionController::Bbr, Some(32 * 1200))
+        );
+        // Pinned `common.SetCongestionController`: "bbr_meta_v2" shares the
+        // `bbr` branch (and the cwnd-derived initial window).
+        assert_eq!(
+            congestion_tuning(Some("bbr_meta_v2"), 64),
+            (CongestionController::Bbr, Some(64 * 1200))
+        );
+        assert_eq!(
+            congestion_tuning(Some("bbr_meta_v2"), 0),
             (CongestionController::Bbr, Some(32 * 1200))
         );
         assert_eq!(

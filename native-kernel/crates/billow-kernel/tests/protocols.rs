@@ -751,8 +751,10 @@ async fn ss_peer(cipher: billow_kernel::proxies::SsCipher, password: &'static st
 /// really checks the wire format.
 enum TestAead {
     Aes128(aes_gcm::Aes128Gcm),
+    Aes192(aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>),
     Aes256(aes_gcm::Aes256Gcm),
     Chacha(chacha20poly1305::ChaCha20Poly1305),
+    Xchacha(chacha20poly1305::XChaCha20Poly1305),
 }
 
 impl TestAead {
@@ -762,27 +764,46 @@ impl TestAead {
             billow_kernel::proxies::SsCipher::Aes128Gcm => {
                 TestAead::Aes128(aes_gcm::Aes128Gcm::new_from_slice(key).unwrap())
             }
+            billow_kernel::proxies::SsCipher::Aes192Gcm => {
+                TestAead::Aes192(aes_gcm::AesGcm::new_from_slice(key).unwrap())
+            }
             billow_kernel::proxies::SsCipher::Aes256Gcm => {
                 TestAead::Aes256(aes_gcm::Aes256Gcm::new_from_slice(key).unwrap())
             }
             billow_kernel::proxies::SsCipher::Chacha20IetfPoly1305 => TestAead::Chacha(
                 chacha20poly1305::ChaCha20Poly1305::new_from_slice(key).unwrap(),
             ),
+            billow_kernel::proxies::SsCipher::Xchacha20IetfPoly1305 => TestAead::Xchacha(
+                chacha20poly1305::XChaCha20Poly1305::new_from_slice(key).unwrap(),
+            ),
         }
     }
 
-    fn seal(&self, nonce: &[u8; 12], buffer: &mut Vec<u8>) {
+    fn seal(&self, nonce: &[u8], buffer: &mut Vec<u8>) {
+        use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::aead::AeadInPlace;
         let tag = match self {
-            TestAead::Aes128(c) => c.encrypt_in_place_detached(nonce.into(), &[], buffer),
-            TestAead::Aes256(c) => c.encrypt_in_place_detached(nonce.into(), &[], buffer),
-            TestAead::Chacha(c) => c.encrypt_in_place_detached(nonce.into(), &[], buffer),
+            TestAead::Aes128(c) => {
+                c.encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer)
+            }
+            TestAead::Aes192(c) => {
+                c.encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer)
+            }
+            TestAead::Aes256(c) => {
+                c.encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer)
+            }
+            TestAead::Chacha(c) => {
+                c.encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer)
+            }
+            TestAead::Xchacha(c) => {
+                c.encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer)
+            }
         }
         .expect("seal");
         buffer.extend_from_slice(&tag);
     }
 
-    fn open(&self, nonce: &[u8; 12], buffer: &mut Vec<u8>) -> Result<(), String> {
+    fn open(&self, nonce: &[u8], buffer: &mut Vec<u8>) -> Result<(), String> {
         use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::aead::AeadInPlace;
         if buffer.len() < 16 {
@@ -792,9 +813,21 @@ impl TestAead {
         let tag = GenericArray::clone_from_slice(&buffer[split..]);
         buffer.truncate(split);
         match self {
-            TestAead::Aes128(c) => c.decrypt_in_place_detached(nonce.into(), &[], buffer, &tag),
-            TestAead::Aes256(c) => c.decrypt_in_place_detached(nonce.into(), &[], buffer, &tag),
-            TestAead::Chacha(c) => c.decrypt_in_place_detached(nonce.into(), &[], buffer, &tag),
+            TestAead::Aes128(c) => {
+                c.decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer, &tag)
+            }
+            TestAead::Aes192(c) => {
+                c.decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer, &tag)
+            }
+            TestAead::Aes256(c) => {
+                c.decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer, &tag)
+            }
+            TestAead::Chacha(c) => {
+                c.decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer, &tag)
+            }
+            TestAead::Xchacha(c) => {
+                c.decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], buffer, &tag)
+            }
         }
         .map(|_| ())
         .map_err(|_| "authentication failed".to_string())
@@ -806,7 +839,7 @@ impl TestAead {
 struct SsPeerWriter {
     aead: TestAead,
     salt: Vec<u8>,
-    nonce: [u8; 12],
+    nonce: Vec<u8>,
     started: bool,
 }
 
@@ -822,7 +855,7 @@ impl SsPeerWriter {
         SsPeerWriter {
             aead: TestAead::new(cipher, &key),
             salt,
-            nonce: [0u8; 12],
+            nonce: vec![0u8; cipher.nonce_len()],
             started: false,
         }
     }
@@ -851,7 +884,7 @@ impl SsPeerWriter {
 /// primitives a Mihomo server uses, and a wrong password fails the tag check.
 struct SsStreamDecoder {
     aead: TestAead,
-    nonce: [u8; 12],
+    nonce: Vec<u8>,
 }
 
 fn ss_server_decoder(
@@ -866,7 +899,7 @@ fn ss_server_decoder(
     );
     SsStreamDecoder {
         aead: TestAead::new(cipher, &key),
-        nonce: [0u8; 12],
+        nonce: vec![0u8; cipher.nonce_len()],
     }
 }
 
@@ -902,7 +935,7 @@ impl SsStreamDecoder {
     }
 }
 
-fn next_nonce(nonce: &mut [u8; 12]) {
+fn next_nonce(nonce: &mut [u8]) {
     for b in nonce.iter_mut() {
         *b = b.wrapping_add(1);
         if *b != 0 {
@@ -1889,8 +1922,18 @@ async fn ss_case(cipher: billow_kernel::proxies::SsCipher) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_aes_192_gcm_roundtrip() {
+    ss_case(billow_kernel::proxies::SsCipher::Aes192Gcm).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shadowsocks_aes_256_gcm_roundtrip() {
     ss_case(billow_kernel::proxies::SsCipher::Aes256Gcm).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shadowsocks_xchacha20_ietf_poly1305_roundtrip() {
+    ss_case(billow_kernel::proxies::SsCipher::Xchacha20IetfPoly1305).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

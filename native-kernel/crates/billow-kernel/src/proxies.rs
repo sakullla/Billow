@@ -27,33 +27,57 @@ use crate::config::ConfigError;
 use crate::keys::{parse_uuid, Secret};
 use crate::outbound::ipstack::IpPrefix;
 
-/// Shadowsocks AEAD 2017 ciphers (16/32-byte keys, 16-byte tags).
+/// Shadowsocks AEAD 2017 ciphers (16/24/32-byte keys, 16-byte tags).
+///
+/// The pinned `core.PickCipher` also has the stream-cipher list and the
+/// ChaCha8/AES-CCM AEADs; those are registered by name in the T28 parity
+/// evidence instead of being silently accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SsCipher {
     Aes128Gcm,
+    Aes192Gcm,
     Aes256Gcm,
     Chacha20IetfPoly1305,
+    Xchacha20IetfPoly1305,
 }
 
 impl SsCipher {
     pub fn key_len(self) -> usize {
         match self {
             SsCipher::Aes128Gcm => 16,
-            SsCipher::Aes256Gcm | SsCipher::Chacha20IetfPoly1305 => 32,
+            SsCipher::Aes192Gcm => 24,
+            SsCipher::Aes256Gcm
+            | SsCipher::Chacha20IetfPoly1305
+            | SsCipher::Xchacha20IetfPoly1305 => 32,
         }
     }
 
-    /// Size of the pre-shared key (Mihomo `aeadList` KeySize: 16/24/32), which
-    /// differs from the AEAD key length only for aes-192-gcm (not supported).
+    /// Size of the pre-shared key (Mihomo `aeadList` KeySize: 16/24/32). The
+    /// KDF output and the AEAD key size are the same for every implemented
+    /// entry, including aes-192-gcm.
     pub fn psk_len(self) -> usize {
         self.key_len()
     }
 
+    /// AEAD nonce size: 24 bytes for XChaCha20-Poly1305, 12 for the rest.
+    pub fn nonce_len(self) -> usize {
+        match self {
+            SsCipher::Xchacha20IetfPoly1305 => 24,
+            _ => 12,
+        }
+    }
+
+    /// The list shown in "not implemented" errors.
+    pub const SUPPORTED: &'static str =
+        "aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305";
+
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
+        match name.to_ascii_lowercase().as_str() {
             "aes-128-gcm" => Some(SsCipher::Aes128Gcm),
+            "aes-192-gcm" => Some(SsCipher::Aes192Gcm),
             "aes-256-gcm" => Some(SsCipher::Aes256Gcm),
             "chacha20-ietf-poly1305" => Some(SsCipher::Chacha20IetfPoly1305),
+            "xchacha20-ietf-poly1305" => Some(SsCipher::Xchacha20IetfPoly1305),
             _ => None,
         }
     }
@@ -61,8 +85,10 @@ impl SsCipher {
     pub fn as_str(self) -> &'static str {
         match self {
             SsCipher::Aes128Gcm => "aes-128-gcm",
+            SsCipher::Aes192Gcm => "aes-192-gcm",
             SsCipher::Aes256Gcm => "aes-256-gcm",
             SsCipher::Chacha20IetfPoly1305 => "chacha20-ietf-poly1305",
+            SsCipher::Xchacha20IetfPoly1305 => "xchacha20-ietf-poly1305",
         }
     }
 }
@@ -2753,7 +2779,8 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
     let cipher_name = entry.required_string("cipher")?;
     let cipher = SsCipher::from_name(&cipher_name).ok_or_else(|| {
         entry.unsupported(format!(
-            "option 'cipher' value '{cipher_name}' is not implemented (supported: aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)"
+            "option 'cipher' value '{cipher_name}' is not implemented (supported: {})",
+            SsCipher::SUPPORTED
         ))
     })?;
     let password = Secret::new(entry.required_string("password")?);
@@ -2888,16 +2915,12 @@ fn parse_trojan_ss_opts(entry: &mut Entry<'_>) -> Result<Option<TrojanSsOpts>, C
         .filter(|value| !value.is_empty())
         .unwrap_or("AES-128-GCM")
         .to_string();
-    let cipher = match method.to_ascii_uppercase().as_str() {
-        "AES-128-GCM" => SsCipher::Aes128Gcm,
-        "AES-256-GCM" => SsCipher::Aes256Gcm,
-        "CHACHA20-IETF-POLY1305" => SsCipher::Chacha20IetfPoly1305,
-        other => {
-            return Err(entry.unsupported(format!(
-                "option 'ss-opts.method' value '{other}' is not implemented (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305)"
-            )))
-        }
-    };
+    let cipher = SsCipher::from_name(&method).ok_or_else(|| {
+        entry.unsupported(format!(
+            "option 'ss-opts.method' value '{method}' is not implemented (supported: {})",
+            SsCipher::SUPPORTED
+        ))
+    })?;
     Ok(Some(TrojanSsOpts {
         cipher,
         password: Secret::new(password),
@@ -4204,18 +4227,26 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         }
     }
     // Congestion tuning maps onto quinn's transport config. cubic/new_reno/bbr
-    // exist in quinn; the meta BBR variants do not, so they are rejected by
-    // name rather than silently downgraded.
+    // exist in quinn; the pinned meta BBR v2 is an alias of bbr, while the old
+    // meta BBR v1 controller has no quinn equivalent and is named.
     let congestion_controller = match entry
         .string("congestion-controller")?
         .filter(|value| !value.is_empty())
     {
         None => None,
         Some(value) => match value.as_str() {
-            "cubic" | "new_reno" | "bbr" => Some(value),
+            // `bbr_meta_v2` falls through to the same sender as `bbr` in the
+            // pinned `common.SetCongestionController`; only the old meta BBR
+            // v1 controller has no quinn equivalent.
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
+            "bbr_meta_v1" => {
+                return Err(entry.unsupported(
+                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
+                ))
+            }
             other => {
                 return Err(entry.unsupported(format!(
-                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr; quinn has no meta BBR variant)"
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
                 )))
             }
         },
@@ -4505,10 +4536,18 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
     {
         None => None,
         Some(value) => match value.as_str() {
-            "cubic" | "new_reno" | "bbr" => Some(value),
+            // `bbr_meta_v2` falls through to the same sender as `bbr` in the
+            // pinned `common.SetCongestionController`; only the old meta BBR
+            // v1 controller has no quinn equivalent.
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
+            "bbr_meta_v1" => {
+                return Err(entry.unsupported(
+                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
+                ))
+            }
             other => {
                 return Err(entry.unsupported(format!(
-                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr; quinn has no meta BBR variant)"
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
                 )))
             }
         },
