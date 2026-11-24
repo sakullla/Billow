@@ -1,0 +1,212 @@
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/serde_yaml/src/mapping.rs:81:18
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry {
+   |                  ^^^^^^^^^               ^^^^^ the same lifetime is hidden here
+   |                  |
+   |                  the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry<'_> {
+   |                                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:188:17
+    |
+188 |     pub fn iter(&self) -> Iter {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+188 |     pub fn iter(&self) -> Iter<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:197:21
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut {
+    |                     ^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut<'_> {
+    |                                          ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:204:17
+    |
+204 |     pub fn keys(&self) -> Keys {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+204 |     pub fn keys(&self) -> Keys<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:218:19
+    |
+218 |     pub fn values(&self) -> Values {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+218 |     pub fn values(&self) -> Values<'_> {
+    |                                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:225:23
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut {
+    |                       ^^^^^^^^^     ^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut<'_> {
+    |                                              ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/number.rs:555:34
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected {
+    |                                  ^^^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+    |                                  |
+    |                                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected<'_> {
+    |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> vendor/serde_yaml/src/value/de.rs:1231:30
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected {
+     |                              ^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+     |                              |
+     |                              the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected<'_> {
+     |                                                  ++++
+
+warning: `serde_yaml` (lib) generated 8 warnings (run `cargo fix --lib -p serde_yaml` to apply 8 suggestions)
+warning: function `seed` is never used
+  --> src/bundled_geo.rs:99:8
+   |
+99 | pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_delays` is never used
+   --> src/nodes.rs:666:8
+    |
+666 | pub fn fetch_delays(
+    |        ^^^^^^^^^^^^
+
+warning: function `fetch_delays_with_progress` is never used
+   --> src/nodes.rs:675:8
+    |
+675 | pub fn fetch_delays_with_progress(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_installed`, `matching_installed`, and `test_group` are never used
+    --> src/profile.rs:2574:12
+     |
+2421 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+2574 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+2596 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+4391 |     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+     |            ^^^^^^^^^^
+
+warning: function `filter_installed` is never used
+   --> src/takeover.rs:228:8
+    |
+228 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+    --> src/takeover.rs:1107:12
+     |
+1093 | impl HostVpn {
+     | ------------ methods in this implementation
+...
+1107 |     pub fn calls(&self) -> &[String] {
+     |            ^^^^^
+...
+1111 |     pub fn last_excluded(&self) -> &[String] {
+     |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+    --> src/takeover.rs:1141:12
+     |
+1141 | pub struct RecordingVpn {
+     |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+    --> src/takeover.rs:1150:12
+     |
+1149 | impl RecordingVpn {
+     | ----------------- associated function in this implementation
+1150 |     pub fn granted() -> Self {
+     |            ^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow` (lib) generated 9 warnings
+warning: `billow` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t29-a3.Bx7Q9n/src-tauri-target/debug/deps/billow_lib-a348cec30b23a6a2)
+
+running 1 test
+test profile::tests::desktop_packaged_runtime_starts_offline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 259 filtered out; finished in 6.26s
+
+     Running unittests src/main.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t29-a3.Bx7Q9n/src-tauri-target/debug/deps/billow-59cf639d95aee454)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+offline_exit=0

@@ -3,8 +3,8 @@
 - 状态：**入口已就绪，真机测量未执行**（T29 于 2026-11-24 复核，物理 iPhone/iPad 仍为 `unavailable`）。
 - 需求：`docs/requirements/2026-11-20-native-rust-kernel.md` 的 R3（整个 VPN 系统扩展峰值 ≤ 40,000,000 字节，十进制）与 R4（重复使用后资源可回收、空闲基线稳定）。
 - 本次环境（T29）：macOS 27.0 / Xcode 27.2 / iOS 27.2 SDK；模拟器 iPhone 18 Pro（iOS 27.0）已启动。`xcrun devicectl list devices` 显示 iPhone 15 Pro Max 与 iPad 均为 `unavailable`。
-- T29 复核候选：`billow-kernel 0.1.0`，sha256 `be00302e352abc51d36cb040183d2f9a927b04719e79e7261893a6f6a3e51521`；模拟器 C ABI smoke、宿主源集 typecheck 与两个扩展的 simulator/device unsigned 构建均通过，但**仍没有真机峰值、系统终止或逐轮基线数字**。
-- 模拟器 smoke 进程的 `peakRssBytes`（T29 为 28,491,776）是 smoke 二进制本身的读数，不是扩展峰值，不能作为 R3 依据。已执行的构建与 smoke 见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 与 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
+- T29 复核候选：`billow-kernel 0.1.0`，sha256 `c4467fe99d524635e079d79c09a7125bd58d7f76331af9a8c2698eab04d3400b`（T29-A3，2026-11-24，候选 `ec862c2`；A1/A2 的 `be00302e…`/`39df438` 为返修前候选）；模拟器 C ABI smoke 20/20、宿主源集 typecheck 与两个扩展的 simulator/device unsigned 构建均通过，但**仍没有真机峰值、系统终止或逐轮基线数字**。
+- 模拟器 smoke 进程的 `peakRssBytes`（T29-A3 为 28,524,544；A1 为 28,491,776）是 smoke 二进制本身的读数，不是扩展峰值，不能作为 R3 依据。已执行的构建与 smoke 见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 与 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
 
 ## 1. 被测对象与身份
 
@@ -29,7 +29,7 @@
    - 返回一个 JSON 对象，当前键：`running`、`version`、`generation`、`reloads`、`peakRssBytes`（`getrusage(RUSAGE_SELF).ru_maxrss`，Darwin 为字节）、`inPackets/inBytes/outPackets/outBytes`、`tcpOpened/tcpClosed/tcpRejected/tcpFlows/tcpFlowHigh`、`udpDatagrams/udpReplies/udpFlows/udpFlowHigh`、`dnsQueries/dnsFailures`、`invalidPackets/fragments/unsupportedProtocols/icmpDropped`、`droppedInbound/droppedEgress`、`queueHigh/queuedPackets`。
    - 扩展的 `RustTunnelProvider.handleAppMessage` 处理 `command == "status"` 时，把该对象放在回复的 `stats` 键下。
    - **Rust 侧解析（T26-A4 唯一落地部分）**：`src-tauri/src/ios_vpn.rs` 的 `IosStatus` 增加了可选 `stats`（`IosStats`，键名与内核 JSON 一致），`ios_vpn_status` 会把宿主 status 回复里的 `stats` 原样解码；单测覆盖了带 `stats`、不带 `stats`（Mihomo）与未知计数键三种回复。它只保证“宿主给什么就解码什么”。
-   - **宿主/TS 尚未透传（T7/宿主侧缺口）**：扩展 `RustTunnelProvider` 的 `status` 回复确实带 `stats`，但 Swift 宿主 `ProviderStatus`（`Shared/BillowVPNError.swift`）没有 `stats` 字段，Codable 解码时丢弃；`BillowMobileBridge.statusDictionary` 只输出 `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt`，`ProviderSupport.writeStatus` 也只写这些键。因此 `status/rust.json` 没有 counts，真机上 `ios_vpn_status("rust").stats` 仍是 `None`。补齐 `ProviderStatus`/`statusDictionary`/`writeStatus` 与前端类型属于 T7 之后的宿主侧工作，不是当前候选已交付的能力。
+   - **宿主/TS 尚未透传（T7/宿主侧缺口，T29-A3 在 `ec862c2` 上复核仍未变）**：扩展 `RustTunnelProvider` 的 `status` 回复确实带 `stats`，但 Swift 宿主 `ProviderStatus`（`Shared/BillowVPNError.swift`）没有 `stats` 字段，Codable 解码时丢弃；`BillowMobileBridge.statusDictionary` 只输出 `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt`，`ProviderSupport.writeStatus` 也只写这些键；前端 `src/lib/types.ts` 的 `IosVpnStatus` 同样没有 `stats`。因此 `status/rust.json` 没有 counts，真机上 `ios_vpn_status("rust").stats` 仍是 `None`。T26-A4 只落地了 Rust 侧解码，补齐 `ProviderStatus`/`statusDictionary`/`writeStatus` 与前端类型属于 T7 之后的宿主侧工作，不是当前候选已交付的能力；**不得把“Rust 侧已能解码”写成“命令可直接读取”。**
    - 用途与限制：宿主透传补齐前，`tcpFlows/queuedPackets/generation/reloads` 只能按 `tool/ios/verify-device.md` 记录的调试器/扩展日志口径读取；`peakRssBytes` 只在扩展进程内可读，且仍是 RSS 旁证，R3 判定以系统 `phys_footprint` 为准。
 2. **系统指标 `phys_footprint`（判定 R3 的口径）**
    - 系统因内存压力终止扩展看的是该进程的 physical footprint，不是 RSS。
@@ -104,5 +104,5 @@ xcrun xctrace record --device <UDID> --template 'Allocations' --instrument 'VM T
 - 代码侧的输入已就绪：缓冲/队列上限见 `tool/kernel-compat/evidence/t7-ios-ffi.md` 的 Bounds 表；reload 会关闭全部流与关联并递增 `generation`；`stats` 暴露高水位与丢弃计数。
 - 宿主设置入口与资源准备已接通（T7-A2）：设置 → 内核 → iOS 扩展可读取两个扩展、选择、准备当前配置、连接/断开/重载并显示错误码；`ios_vpn_prepare_active` 负责 staging，`ResourcesInstaller` 对同一版本同时保留 mihomo/rust manifest。
 - T7-A3 修正：宿主 target 使用独立条件 `BILLOW_ENGINE_HOST`，`Shared/PacketPump.swift` 只在两个扩展 target 编译；`tool/ios/verify-host-sources.sh` 用真实源集同时 typecheck 宿主/两个扩展。准备后调用 `ios_vpn_prune`（保留新版本与运行中扩展报告的版本）避免 `versions/<hash>` 累积；扩展 `installed` 改为检查 Bundle/PlugIns 中的 `.appex`，未启动时设置页显示“已安装（未启动）”；staging 也会移除 `sniffer.enable: true`（本内核未实现嗅探，域名规则退化为目标 IP/DNS 结果）。
-- T29 复核（2026-11-24）：候选 `billow-kernel 0.1.0` sha256 `be00302e…`；模拟器 C ABI smoke 20/20、宿主/双扩展 typecheck、四个 unsigned 扩展构建均通过；物理设备仍 unavailable，**不能把模拟器结果当作 R3/R4**。详见 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
+- T29 复核（2026-11-24）：A3 在候选 `ec862c2` 上重建 `billow-kernel 0.1.0`（sha256 `c4467fe9…`）与两个 iOS archive，模拟器 C ABI smoke 20/20、宿主/双扩展 typecheck、四个 unsigned 扩展构建均通过；物理设备仍 unavailable，**不能把模拟器结果当作 R3/R4**。宿主 stats 透传（Swift + TS 类型）仍未落地，`ios_vpn_status("rust").stats` 保持 `None`；详见 `tool/kernel-compat/evidence/t29-platform-matrix.md`。
 - 下一步：在真机执行本表并附原始 trace/状态 JSON；结构化计数暂从扩展 status 回复的 `stats`（调试器/扩展日志）读取，宿主把 `stats` 透传进 `ios_vpn_status("rust")` 与 `status/rust.json` 之后才可改为从命令直接取。
