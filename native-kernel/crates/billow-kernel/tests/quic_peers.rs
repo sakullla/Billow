@@ -847,6 +847,21 @@ async fn hysteria2_transport_options_are_parsed() {
     // An empty `up` asks for nothing and is accepted, like Mihomo's decoder.
     let empty = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, up: ''}\nrules:\n  - MATCH,h2\n";
     assert!(billow_kernel::load_config(empty, "hysteria2-up-empty.yaml").is_ok());
+
+    // Gecko carries the pinned packet-size range; zero selects the pinned
+    // 512/1200 defaults at dial time.
+    let gecko = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, obfs: gecko, obfs-password: s, obfs-min-packet-size: 600, obfs-max-packet-size: 1300}\nrules:\n  - MATCH,h2\n";
+    let config = billow_kernel::load_config(gecko, "hysteria2-gecko.yaml").unwrap();
+    match &config.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Hysteria2(proxy) => {
+            assert_eq!(proxy.obfs.as_deref(), Some("gecko"));
+            assert_eq!(proxy.obfs_min_packet_size, 600);
+            assert_eq!(proxy.obfs_max_packet_size, 1300);
+        }
+        other => panic!("expected hysteria2, got {other:?}"),
+    }
+    let bad_range = "mixed-port: 17890\nproxies:\n  - {name: h2, type: hysteria2, server: 127.0.0.1, port: 443, password: p, obfs: gecko, obfs-password: s, obfs-min-packet-size: 1300, obfs-max-packet-size: 600}\nrules:\n  - MATCH,h2\n";
+    assert!(billow_kernel::load_config(bad_range, "hysteria2-gecko-bad.yaml").is_err());
 }
 
 // ---------------------------------------------------------------------------

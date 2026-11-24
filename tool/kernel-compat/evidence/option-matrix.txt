@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t31-a1-target/debug/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t31-a3-target/debug/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 289, implemented cases: 86, enabled cases: 120, problems: 0
+# no-op cases: 291, implemented cases: 87, enabled cases: 119, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -202,6 +202,8 @@ noop    hysteria2 udp-mtu                      rust=accept mihomo=accept
 noop    hysteria2 cwnd                         rust=accept mihomo=accept
 noop    hysteria2 bbr-profile                  rust=accept mihomo=accept
 noop    hysteria2 realm-opts                   rust=accept mihomo=accept
+noop    hysteria2 obfs-min-packet-size         rust=accept mihomo=accept
+noop    hysteria2 obfs-max-packet-size         rust=accept mihomo=accept
 noop    mieru   udp                          rust=accept mihomo=accept
 noop    mieru   tfo                          rust=accept mihomo=accept
 noop    mieru   mptcp                        rust=accept mihomo=accept
@@ -370,6 +372,7 @@ impl    hysteria2 up                           rust=accept mihomo=accept
 impl    hysteria2 ports                        rust=accept mihomo=accept
 impl    hysteria2 hop-interval                 rust=accept mihomo=accept
 impl    hysteria2 realm-opts                   rust=accept mihomo=accept
+impl    hysteria2 obfs: gecko                  rust=accept mihomo=accept
 impl    hysteria2 udp-mtu                      rust=accept mihomo=accept
 impl    hysteria2 bbr-profile                  rust=accept mihomo=accept
 impl    vmess   mkcp-opts                    rust=accept mihomo=accept
@@ -436,7 +439,6 @@ enabled hysteria protocol                     rust=reject mihomo=accept
 enabled hysteria fast-open                    rust=reject mihomo=accept
 enabled hysteria ech-opts                     rust=reject mihomo=reject
 enabled hysteria client-fingerprint           rust=reject mihomo=accept
-enabled hysteria2 obfs                         rust=reject mihomo=reject
 enabled hysteria2 ech-opts                     rust=reject mihomo=reject
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   multiplexing                 rust=reject mihomo=accept

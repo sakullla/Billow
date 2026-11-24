@@ -230,7 +230,6 @@ const t10Enabled = [
   ['hysteria', 'fast-open', 'fast-open: true'],
   ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
   ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['hysteria2', 'obfs', 'obfs: salamander'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
 // T13/T17 families: explicit forms, because some rejected values are not
@@ -460,6 +459,8 @@ add('hysteria2', 'udp-mtu', '0')
 add('hysteria2', 'cwnd', '0')
 add('hysteria2', 'bbr-profile', "''")
 add('hysteria2', 'realm-opts', '{enable: false}')
+add('hysteria2', 'obfs-min-packet-size', '0')
+add('hysteria2', 'obfs-max-packet-size', '0')
 
 // T13/T17 families: no-op forms accepted by both engines.
 for (const type of ['mieru', 'sudoku']) {
@@ -625,7 +626,8 @@ for (const [type, key, base, option] of [
   ['hysteria2', 'up', bases.hysteria2.on, 'up: 50 Mbps'],
   ['hysteria2', 'ports', bases.hysteria2.on, 'ports: "443,8443"'],
   ['hysteria2', 'hop-interval', bases.hysteria2.on, 'hop-interval: 10'],
-  ['hysteria2', 'realm-opts', bases.hysteria2.on, 'realm-opts: {enable: true, server-url: "https://realm.example"}'],
+  ['hysteria2', 'realm-opts', bases.hysteria2.on, 'realm-opts: {enable: true, server-url: "https://realm.example", stun-servers: ["stun.example:3478"]}'],
+  ['hysteria2', 'obfs: gecko', bases.hysteria2.on, 'obfs: gecko, obfs-password: p, obfs-min-packet-size: 512, obfs-max-packet-size: 1200'],
   ['hysteria2', 'udp-mtu', bases.hysteria2.on, 'udp-mtu: 1200'],
   ['hysteria2', 'bbr-profile', bases.hysteria2.on, 'bbr-profile: standard'],
   ['vmess', 'mkcp-opts', bases.vmess.off, 'network: mkcp, mkcp-opts: {mtu: 1350, seed: s, header: srtp}'],

@@ -17,6 +17,7 @@ pub mod h3;
 pub mod http;
 pub mod hysteria;
 pub mod hysteria2;
+pub mod hysteria2_realm;
 pub mod ipstack;
 pub mod jls;
 pub mod masque;

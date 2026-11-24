@@ -65,6 +65,49 @@ pub fn bind_loopback_udp() -> std::net::UdpSocket {
     panic!("no unused loopback udp port in 64 attempts");
 }
 
+/// A loopback STUN binding server. It answers every binding request with an
+/// XOR-MAPPED-ADDRESS carrying the sender's observed address, which is what
+/// the Hysteria2 realm discovery needs on a host with no NAT in front of it.
+pub fn stun_server() -> u16 {
+    let socket = bind_loopback_udp();
+    let port = socket.local_addr().expect("local addr").port();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 1500];
+        loop {
+            let Ok((read, from)) = socket.recv_from(&mut buffer) else {
+                return;
+            };
+            if read < 20
+                || u16::from_be_bytes([buffer[0], buffer[1]]) != 0x0001
+                || u32::from_be_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]) != 0x2112A442
+            {
+                continue;
+            }
+            let mut response = Vec::with_capacity(32);
+            response.extend_from_slice(&0x0101u16.to_be_bytes()); // binding success
+            response.extend_from_slice(&12u16.to_be_bytes()); // one attribute
+            response.extend_from_slice(&0x2112A442u32.to_be_bytes());
+            response.extend_from_slice(&buffer[8..20]); // transaction id
+            response.extend_from_slice(&0x0020u16.to_be_bytes()); // XOR-MAPPED-ADDRESS
+            response.extend_from_slice(&8u16.to_be_bytes());
+            response.push(0);
+            response.push(0x01); // IPv4
+            let port = from.port() ^ ((0x2112A442u32 >> 16) as u16);
+            response.extend_from_slice(&port.to_be_bytes());
+            let cookie = 0x2112A442u32.to_be_bytes();
+            let ip = match from.ip() {
+                std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                std::net::IpAddr::V6(_) => continue,
+            };
+            for (index, byte) in ip.iter().enumerate() {
+                response.push(byte ^ cookie[index]);
+            }
+            let _ = socket.send_to(&response, from);
+        }
+    });
+    port
+}
+
 /// A loopback echo server that replies `banner + payload` for every connection,
 /// or a custom mode. Returns its bound port and a task handle.
 pub enum EchoMode {

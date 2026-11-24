@@ -16,10 +16,10 @@
 //! message || padding length (varint) || padding`, then the byte stream.
 //!
 //! Implemented: TCP, `password`, `sni`/`skip-cert-verify`/`alpn`, `up`/`down`
-//! validation, `handshake-timeout`. Rejected by name: `ports`/`hop-interval`
-//! (port hopping), `obfs`/`obfs-password` (Salamander/Gecko packet
-//! obfuscation needs a custom UDP socket wrapper), `realm-opts`, UDP
-//! (`udp-mtu`), and the QUIC congestion/receive-window tuning.
+//! validation, `handshake-timeout`, `ports`/`hop-interval`, `obfs:
+//! salamander|gecko`, `udp-mtu`, `bbr-profile`, `realm-opts` (the rendezvous
+//! is in `hysteria2_realm`) and the QUIC receive/congestion tuning. UDP
+//! sessions are still not relayed.
 //!
 //! A new QUIC connection is created per dial; the pinned client pools one.
 
@@ -28,7 +28,8 @@ use std::time::Duration;
 
 use super::h3;
 use super::quic::{
-    self, BbrProfile, CongestionController, HopConfig, QuicOptions, QuicStream, Salamander,
+    self, BbrProfile, CongestionController, Gecko, HopConfig, Obfs, QuicOptions, QuicStream,
+    Salamander,
 };
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
@@ -98,80 +99,38 @@ pub async fn dial(
     tls: &ClientTls,
     timeout: Duration,
 ) -> Result<Dialed, DialError> {
-    let alpn = if option.alpn.is_empty() {
-        vec!["h3".to_string()]
-    } else {
-        option.alpn.clone()
-    };
-    let mut quic_options = QuicOptions::new(alpn);
-    quic_options.keep_alive = Some(Duration::from_secs(10));
-    quic_options.datagrams = true;
-    if option.udp_mtu != 0 {
-        quic_options.udp_mtu = Some(option.udp_mtu);
-    }
-    if !option.ports.is_empty() {
-        quic_options.hop = Some(HopConfig {
-            ports: option.ports.clone(),
-            interval: Duration::from_secs(option.hop_interval.0),
-            interval_max: Duration::from_secs(option.hop_interval.1),
-        });
-    }
-    match option.obfs.as_deref() {
-        Some("salamander") => {
-            if let Some(password) = &option.obfs_password {
-                quic_options.obfs = Some(Salamander {
-                    password: password.expose().as_bytes().to_vec(),
-                });
-            }
-        }
-        Some("gecko") => {
-            return Err(handshake(
-                "hysteria2",
-                "obfs 'gecko' is not available at dial time (only salamander is implemented)",
-            ))
-        }
-        _ => {}
-    }
-    if let Some(profile) = option.bbr_profile.as_deref().and_then(BbrProfile::parse) {
-        quic_options.bbr_profile = Some(profile);
-    }
-    if option.send_bps > 0 {
-        // The pinned client switches to Brutal when the server does not ask
-        // for automatic bandwidth detection and `up` is set.
-        quic_options.brutal_bps = Some(option.send_bps);
-    }
-    if option.realm.is_some() {
-        return Err(handshake(
-            "hysteria2",
-            "realm-opts is not implemented at dial time (no realm rendezvous client)",
-        ));
-    }
-    // The pinned client always switches hysteria2 to BBR (`SetBBRCongestion`)
-    // with `cwnd` packets (default 32) as the initial window.
-    let packets = if option.cwnd == 0 { 32 } else { option.cwnd };
-    quic_options.congestion_controller = CongestionController::Bbr;
-    quic_options.initial_congestion_window = Some(u64::from(packets) * 1200);
-    if let Some(window) = option.stream_receive_window {
-        quic_options.stream_receive_window = window;
-    }
-    if let Some(window) = option.connection_receive_window {
-        quic_options.connection_receive_window = window;
-    }
+    let quic_options = quic_options(option)?;
     let handshake_timeout = if option.handshake_timeout == 0 {
         timeout
     } else {
         Duration::from_secs(option.handshake_timeout)
     };
-    let (connection, endpoint) = quic::connect(
-        &option.server,
-        &option.server,
-        option.port,
-        &option.tls_settings,
-        tls,
-        &quic_options,
-        handshake_timeout,
-    )
-    .await?;
+    let (connection, endpoint) = if let Some(realm) = &option.realm {
+        // The realm rendezvous owns the UDP socket: STUN discovery, the HTTP
+        // control exchange and hole punching happen before the same socket
+        // carries the QUIC handshake to the returned peer address.
+        super::hysteria2_realm::connect(
+            realm,
+            &option.server,
+            &option.tls_settings,
+            tls,
+            &quic_options,
+            timeout,
+            handshake_timeout,
+        )
+        .await?
+    } else {
+        quic::connect(
+            &option.server,
+            &option.server,
+            option.port,
+            &option.tls_settings,
+            tls,
+            &quic_options,
+            handshake_timeout,
+        )
+        .await?
+    };
 
     // HTTP/3 authentication.
     let session = h3::Session::open(connection.clone(), endpoint.clone())
@@ -224,6 +183,69 @@ pub async fn dial(
         stream: Box::new(stream),
         server,
     })
+}
+
+/// Map the parsed Hysteria2 block onto the shared QUIC transport, including
+/// the pinned "hysteria2 always selects BBR" rule and its initial window.
+fn quic_options(option: &Hysteria2Outbound) -> Result<QuicOptions, DialError> {
+    let alpn = if option.alpn.is_empty() {
+        vec!["h3".to_string()]
+    } else {
+        option.alpn.clone()
+    };
+    let mut quic_options = QuicOptions::new(alpn);
+    quic_options.keep_alive = Some(Duration::from_secs(10));
+    quic_options.datagrams = true;
+    if option.udp_mtu != 0 {
+        quic_options.udp_mtu = Some(option.udp_mtu);
+    }
+    if !option.ports.is_empty() {
+        quic_options.hop = Some(HopConfig {
+            ports: option.ports.clone(),
+            interval: Duration::from_secs(option.hop_interval.0),
+            interval_max: Duration::from_secs(option.hop_interval.1),
+        });
+    }
+    if let (Some(kind), Some(password)) = (option.obfs.as_deref(), &option.obfs_password) {
+        let password = password.expose().as_bytes().to_vec();
+        quic_options.obfs = match kind {
+            "salamander" => Some(Obfs::Salamander(Salamander { password })),
+            "gecko" => Some(Obfs::Gecko(Gecko::new(
+                password,
+                option.obfs_min_packet_size as usize,
+                option.obfs_max_packet_size as usize,
+            ))),
+            other => {
+                return Err(handshake(
+                    "hysteria2",
+                    format!("obfs '{other}' is not implemented"),
+                ))
+            }
+        };
+    }
+    if let Some(profile) = option.bbr_profile.as_deref().and_then(BbrProfile::parse) {
+        quic_options.bbr_profile = Some(profile);
+    }
+    if option.send_bps > 0 {
+        // The pinned client switches to Brutal when the server does not ask
+        // for automatic bandwidth detection and `up` is set.
+        quic_options.brutal_bps = Some(option.send_bps);
+    }
+    // The pinned client always switches hysteria2 to BBR (`SetBBRCongestion`)
+    // with `cwnd` packets (default 32) as the initial window. `bbr-profile` is
+    // the pinned BBR gain profile; quinn has no gain selector, so
+    // `quic::bbr_initial_window` maps the profile onto the window and it wins
+    // over `cwnd` when both are set.
+    let packets = if option.cwnd == 0 { 32 } else { option.cwnd };
+    quic_options.congestion_controller = CongestionController::Bbr;
+    quic_options.initial_congestion_window = Some(u64::from(packets) * 1200);
+    if let Some(window) = option.stream_receive_window {
+        quic_options.stream_receive_window = window;
+    }
+    if let Some(window) = option.connection_receive_window {
+        quic_options.connection_receive_window = window;
+    }
+    Ok(quic_options)
 }
 
 #[cfg(test)]

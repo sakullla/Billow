@@ -17,7 +17,7 @@
     "notImplementedOnPlatform": {
       "windows": "sessions compile but the platform session/TUN path is T6; no Windows run has been recorded"
     },
-    "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run. The Android VpnService fd data plane (feature `android-vpn`) is exercised on macOS arm64 through a packet-preserving UnixDatagram descriptor; the Android target build (NDK absent in this environment) and real-device traffic remain unverified — see tool/kernel-compat/evidence/t26-android-tunnel.json."
+    "note": "Every runtime result here comes from macOS arm64, including the UDP and private-CA cases. A platform difference must be reproduced against the same-platform Mihomo; nothing is claimed for a platform that was not run. The Android VpnService fd data plane (feature `android-vpn`) is exercised on macOS arm64 through a packet-preserving UnixDatagram descriptor; the Android target build (NDK absent in this environment) and real-device traffic remain unverified \u2014 see tool/kernel-compat/evidence/t26-android-tunnel.json."
   },
   "statusVocabulary": {
     "implemented": "the Rust kernel performs the behaviour and a loopback or pinned-Mihomo test observes it",
@@ -608,7 +608,7 @@
         "src/outbound/shadow_tls.rs::tests::framing_prefixes_the_hmac_and_uses_application_data_records"
       ],
       "notes": "Session reuse follows the pinned `anytls/session.Client`: idle sessions are pooled per outbound, `disable-reuse` closes a session when its stream ends, `min-idle-session`/`idle-session-timeout` bound the sweep, a background ticker runs every `idle-session-check-interval` (started on the first pooled session, aborted with the pool), and intervals/timeouts `<= 5s` are normalised to the pinned 30s. `client-metadata` is sent in the settings frame. A UoT association is opened per destination (the pinned `ListenPacketContext` shape) and its AnyTLS server connection honours the same single-socks5 `dialer-proxy` hop as TCP. `shadow-tls-opts`/`restls-opts`/`jls-opts` remain named rejections: rustls cannot set the uTLS session id / rewrite the ClientHello+ServerHello random those modes need. `client-fingerprint` is applied as the closest rustls profile (browser key-exchange list); extension order/ciphers are not reproduced, so the 4 family rows are approximations counted as residuals, never byte parity. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name).",
-      "security": "implemented for jls-opts and shadow-tls-opts version 1: the JLS ClientHello/ServerHello random is sealed and verified over a TCP rustls session built from the recorded-random provider (`src/outbound/jls.rs::tcp_client`, `src/outbound/tls_io.rs`), and ShadowTLS v1 runs the TLS 1.2 camouflage handshake and then hands the raw stream back (pinned `serverV1` splices raw traffic); both verified end to end against the pinned anytls listener (`jls-config`/`shadow-tls` inbound blocks). ShadowTLS v2 (the default) stays a named rejection: its client HMAC over the bytes the handshake read did not match the pinned server hash in verification (`[ShadowTLS] hashcode mismatch`), and v3 needs a ClientHello session-id hook rustls does not expose. Restls stays a named rejection."
+      "security": "implemented for jls-opts and shadow-tls-opts versions 1 and 2: the JLS ClientHello/ServerHello random is sealed and verified over a TCP rustls session built from the recorded-random provider (`src/outbound/jls.rs::tcp_client`, `src/outbound/tls_io.rs`), ShadowTLS v1 runs the TLS 1.2 camouflage handshake and then hands the raw stream back (pinned `serverV1` splices raw traffic), and ShadowTLS v2 frames `HMAC-SHA1(read bytes)[..8]` inside the first TLS application-data record with TLS 1.3 session tickets disabled so the pinned server's write hash boundary matches. All three are verified end to end against the pinned anytls listener (`jls-config`/`shadow-tls` inbound blocks). ShadowTLS v3 stays a named rejection: the account lives in the ClientHello session id and the post-handshake records chain HMAC/kdf state, but rustls generates the session id internally (rewriting it invalidates the transcript). Restls stays a named rejection because it rewrites TLS handshake bytes rustls has already authenticated."
     },
     "vmess": {
       "status": "implemented",
@@ -998,7 +998,7 @@
         "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)",
         "dialer-proxy",
         "remote-dns-resolve with DNS over TCP/DoT/DoH or `#param` name servers",
-        "URI templates / IP flow forwarding (RFC 9484 §8.2)",
+        "URI templates / IP flow forwarding (RFC 9484 \u00a78.2)",
         "ADDRESS_REQUEST from the peer (no address-assignment policy)",
         "IPv6 extension headers and IPv4 fragments (reported and dropped, not reassembled)",
         "ICMP error generation",
@@ -1258,7 +1258,7 @@
     },
     "hysteria2": {
       "status": "partial",
-      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets), the initial/max stream/connection receive windows mapped to quinn, `up` as a Brutal sender (pinned window formula), `bbr-profile` mapped to the BBR initial window (quinn has no profile selector), `udp-mtu` mapped to the QUIC initial path MTU, Salamander obfuscation and `ports`/`hop-interval` port hopping on a wrapped `quinn::AsyncUdpSocket`. `realm-opts` loads and its control/TLS fields are parsed, but the rendezvous client (HTTP control API + STUN + punch) is not implemented at dial time and is refused by name; `obfs: gecko` and `ech-opts` are rejected by name; UDP remains unimplemented (no Hysteria UDP session relay).",
+      "reason": "Hysteria2 over QUIC: HTTP/3 authentication (`/auth`, status 233), one TCP stream per session with the 0x401 request frame, BBR with `cwnd` as the initial window (pinned default 32 packets), the initial/max stream/connection receive windows mapped to quinn, `up` as a Brutal sender (pinned window formula), `bbr-profile` mapped to the BBR initial window (quinn has no profile selector; the profile now takes precedence over `cwnd`), `udp-mtu` mapped to the QUIC initial path MTU, Salamander and Gecko obfuscation, `ports`/`hop-interval` port hopping on a wrapped `quinn::AsyncUdpSocket`, and the realm rendezvous client (HTTP control `/connect`, STUN discovery, HYRLMv1 hole punching, then QUIC over the punched socket). UDP remains unimplemented (no Hysteria UDP session relay) and `ech-opts` is rejected by name, unchanged from T30.",
       "options": [
         "server",
         "port",
@@ -1292,11 +1292,10 @@
         "bbr-profile",
         "obfs: salamander",
         "up (Brutal)",
-        "realm-opts (block parsed; dial refused)"
+        "obfs: gecko"
       ],
       "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
       "notImplemented": [
-        "obfs",
         "ech-opts"
       ],
       "evidence": [
@@ -1316,7 +1315,14 @@
         "tests/mihomo_peers.rs::hysteria2_port_pool_selects_the_listed_port_through_mihomo",
         "src/outbound/quic.rs::tests::layered_socket_obfuscates_and_rewrites_the_hop_port",
         "src/outbound/quic.rs::tests::hop_interval_is_clamped_and_randomised",
-        "tests/quic_peers.rs::hysteria2_transport_options_are_parsed"
+        "tests/quic_peers.rs::hysteria2_transport_options_are_parsed",
+        "src/outbound/quic.rs::tests::bbr_profile_selects_the_initial_window",
+        "src/outbound/quic.rs::tests::gecko_fragments_long_headers_and_reassembles_them",
+        "src/outbound/hysteria2_realm.rs::tests::punch_packets_round_trip_and_reject_a_wrong_key",
+        "src/outbound/hysteria2_realm.rs::tests::stun_response_decodes_the_xor_mapped_address",
+        "tests/mihomo_peers.rs::hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo",
+        "tests/mihomo_peers.rs::hysteria2_realm_reaches_the_receiving_side_through_mihomo"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },

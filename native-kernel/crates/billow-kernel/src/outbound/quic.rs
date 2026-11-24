@@ -14,13 +14,14 @@
 //! `AsyncRead + AsyncWrite` stream. The wrapper keeps the `Connection` and
 //! `Endpoint` alive for as long as the stream is used.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
@@ -191,15 +192,16 @@ pub struct QuicOptions {
     pub brutal_bps: Option<u64>,
     /// Hysteria2 `bbr-profile`: `conservative`/`standard`/`aggressive`.
     /// quinn's BBR has no profile selector, so the profile is mapped to the
-    /// initial window (a documented approximation, not wire-visible).
+    /// initial window (a documented approximation, not wire-visible) and takes
+    /// precedence over `initial_congestion_window` (`cwnd`).
     pub bbr_profile: Option<BbrProfile>,
     /// Hysteria2 `udp-mtu`: the Hysteria UDP session payload MTU. quinn has no
     /// Hysteria UDP session, so it is applied to the QUIC initial path MTU as
     /// `udp-mtu + 3` (the pinned default 1197 comes from 1200 - 3).
     pub udp_mtu: Option<u16>,
-    /// Hysteria2 `obfs: salamander`: BLAKE2b-256 salt/XOR packet obfuscation
-    /// applied at the UDP socket boundary.
-    pub obfs: Option<Salamander>,
+    /// Hysteria2 `obfs`: Salamander's BLAKE2b-256 salt/XOR, and Gecko's
+    /// long-header fragmentation on top, applied at the UDP socket boundary.
+    pub obfs: Option<Obfs>,
     /// Hysteria2 `ports`/`hop-interval`: destination-port hopping.
     pub hop: Option<HopConfig>,
 }
@@ -250,6 +252,32 @@ impl BbrProfile {
             _ => None,
         }
     }
+
+    /// The profile's approximation as the BBR initial window in packets. The
+    /// pinned sender keeps the initial window at `cwnd` (default 32) and
+    /// changes the startup/drain gains instead; quinn exposes only the window,
+    /// so the profile is written here and takes precedence over `cwnd`.
+    pub fn initial_window_packets(self) -> u64 {
+        match self {
+            BbrProfile::Conservative => 24,
+            BbrProfile::Standard => 32,
+            BbrProfile::Aggressive => 40,
+        }
+    }
+
+    pub fn initial_window(self) -> u64 {
+        self.initial_window_packets() * 1200
+    }
+}
+
+/// The congestion window a BBR transport starts with. A `bbr-profile` maps to
+/// its packet count (documented approximation); otherwise the hysteria2 `cwnd`
+/// value passes through.
+pub fn bbr_initial_window(options: &QuicOptions) -> Option<u64> {
+    options
+        .bbr_profile
+        .map(BbrProfile::initial_window)
+        .or(options.initial_congestion_window)
 }
 
 /// Hysteria2 Salamander obfuscation (`sing-quic/hysteria2/salamander.go`):
@@ -263,6 +291,300 @@ impl std::fmt::Debug for Salamander {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Salamander").finish_non_exhaustive()
     }
+}
+
+/// The Hysteria2 packet obfuscators. Gecko is Salamander plus fragmentation of
+/// every long-header packet (pinned `NewGeckoConn` wraps `NewSalamanderConn`).
+#[derive(Clone)]
+pub enum Obfs {
+    Salamander(Salamander),
+    Gecko(Gecko),
+}
+
+impl std::fmt::Debug for Obfs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Obfs::Salamander(salamander) => f.debug_tuple("Salamander").field(salamander).finish(),
+            Obfs::Gecko(gecko) => f.debug_tuple("Gecko").field(gecko).finish(),
+        }
+    }
+}
+
+const GECKO_FRAGMENT_FLAG: u8 = 0x80;
+const GECKO_HEADER_LEN: usize = 5;
+const GECKO_MIN_CHUNKS: usize = 2;
+const GECKO_MAX_CHUNKS: usize = 8;
+const GECKO_DEFAULT_MIN_PACKET_SIZE: usize = 512;
+const GECKO_DEFAULT_MAX_PACKET_SIZE: usize = 1200;
+const GECKO_REASSEMBLY_TTL: Duration = Duration::from_secs(8);
+const GECKO_MAX_REASSEMBLY: usize = 4096;
+const GECKO_MAX_PER_SOURCE: usize = 8;
+const SALAMANDER_SALT_LEN: usize = 8;
+
+/// Hysteria2 Gecko obfuscation (`sing-quic/hysteria2/gecko.go`): Salamander on
+/// every datagram, and every packet whose first byte is a QUIC long header is
+/// split into 2..8 padded chunks:
+///
+/// ```text
+/// 0x80 | message id | (chunk index << 4 | total chunks) | pad length (u16) | pad | chunk
+/// ```
+///
+/// The whole frame is then Salamander-obfuscated, so each fragment carries its
+/// own 8-byte salt. Replies are reassembled with the pinned TTL, per-source and
+/// global caps.
+#[derive(Clone)]
+pub struct Gecko {
+    password: Vec<u8>,
+    min_packet_size: usize,
+    max_packet_size: usize,
+    state: Arc<Mutex<GeckoState>>,
+}
+
+impl std::fmt::Debug for Gecko {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gecko")
+            .field("min_packet_size", &self.min_packet_size)
+            .field("max_packet_size", &self.max_packet_size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct GeckoState {
+    msg_id: u32,
+    reassembly: HashMap<(SocketAddr, u8), GeckoEntry>,
+    per_source: HashMap<SocketAddr, usize>,
+    last_sweep: Option<Instant>,
+}
+
+struct GeckoEntry {
+    chunks: Vec<Option<Vec<u8>>>,
+    received: usize,
+    total: u8,
+    deadline: Instant,
+}
+
+impl Gecko {
+    /// `min`/`max` are the pinned packet sizes; zero selects the pinned
+    /// defaults. The caller validates the range when the block is parsed.
+    pub fn new(password: Vec<u8>, min_packet_size: usize, max_packet_size: usize) -> Gecko {
+        Gecko {
+            password,
+            min_packet_size: if min_packet_size == 0 {
+                GECKO_DEFAULT_MIN_PACKET_SIZE
+            } else {
+                min_packet_size
+            },
+            max_packet_size: if max_packet_size == 0 {
+                GECKO_DEFAULT_MAX_PACKET_SIZE
+            } else {
+                max_packet_size
+            },
+            state: Arc::new(Mutex::new(GeckoState::default())),
+        }
+    }
+
+    fn random_pad_len(&self, chunk_len: usize) -> usize {
+        let base = SALAMANDER_SALT_LEN + GECKO_HEADER_LEN + chunk_len;
+        let low = self.min_packet_size.max(base);
+        if low > self.max_packet_size {
+            return 0;
+        }
+        low - base + (rand::random::<u32>() as usize) % (self.max_packet_size - low + 1)
+    }
+
+    /// One on-wire datagram per QUIC segment. A short-header packet is only
+    /// Salamander-obfuscated; a long-header packet is fragmented first.
+    fn frames(&self, packet: &[u8]) -> Vec<Vec<u8>> {
+        if packet.is_empty() {
+            return Vec::new();
+        }
+        if packet[0] & GECKO_FRAGMENT_FLAG == 0 {
+            return vec![salamander_frame(&self.password, packet)];
+        }
+        let chunks = GECKO_MIN_CHUNKS
+            + (rand::random::<u32>() as usize) % (GECKO_MAX_CHUNKS - GECKO_MIN_CHUNKS + 1);
+        let chunk_size = packet.len() / chunks;
+        if chunk_size == 0 {
+            return vec![salamander_frame(&self.password, packet)];
+        }
+        let msg_id = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let id = state.msg_id.wrapping_add(1);
+            state.msg_id = id;
+            (id & 0xff) as u8
+        };
+        let mut frames = Vec::with_capacity(chunks);
+        for index in 0..chunks {
+            let start = index * chunk_size;
+            let end = if index < chunks - 1 {
+                start + chunk_size
+            } else {
+                packet.len()
+            };
+            let chunk = &packet[start..end];
+            let pad_len = self.random_pad_len(chunk.len());
+            let mut frame = Vec::with_capacity(GECKO_HEADER_LEN + pad_len + chunk.len());
+            frame.push(GECKO_FRAGMENT_FLAG);
+            frame.push(msg_id);
+            frame.push(((index as u8) << 4) | (chunks as u8 & 0x0f));
+            frame.extend_from_slice(&(pad_len as u16).to_be_bytes());
+            if pad_len > 0 {
+                let mut pad = vec![0u8; pad_len];
+                rand::thread_rng().fill_bytes(&mut pad);
+                frame.extend_from_slice(&pad);
+            }
+            frame.extend_from_slice(chunk);
+            frames.push(salamander_frame(&self.password, &frame));
+        }
+        frames
+    }
+
+    /// Feed one de-Salamandered datagram. `Some(message)` once the last chunk
+    /// of a message is present; `None` when it was buffered.
+    fn accept(&self, from: SocketAddr, body: &[u8]) -> Option<Vec<u8>> {
+        if body.len() < GECKO_HEADER_LEN {
+            return None;
+        }
+        if body[0] & GECKO_FRAGMENT_FLAG == 0 {
+            return Some(body.to_vec());
+        }
+        let msg_id = body[1];
+        let chunk_index = body[2] >> 4;
+        let total = body[2] & 0x0f;
+        let pad_len = usize::from(u16::from_be_bytes([body[3], body[4]]));
+        if !(GECKO_MIN_CHUNKS as u8..=GECKO_MAX_CHUNKS as u8).contains(&total)
+            || chunk_index >= total
+        {
+            return None;
+        }
+        let payload_start = GECKO_HEADER_LEN + pad_len;
+        if payload_start > body.len() {
+            return None;
+        }
+        let payload = &body[payload_start..];
+
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state
+            .last_sweep
+            .map(|last| now.duration_since(last) >= GECKO_REASSEMBLY_TTL / 2)
+            .unwrap_or(true)
+        {
+            sweep_expired(&mut state, now);
+        }
+        let key = (from, msg_id);
+        if !state.reassembly.contains_key(&key) {
+            if state.per_source.get(&from).copied().unwrap_or(0) >= GECKO_MAX_PER_SOURCE {
+                return None;
+            }
+            if state.reassembly.len() >= GECKO_MAX_REASSEMBLY {
+                evict_oldest(&mut state);
+            }
+            state.reassembly.insert(
+                key,
+                GeckoEntry {
+                    chunks: vec![None; usize::from(total)],
+                    received: 0,
+                    total,
+                    deadline: now + GECKO_REASSEMBLY_TTL,
+                },
+            );
+            *state.per_source.entry(from).or_insert(0) += 1;
+        }
+        let entry = state.reassembly.get_mut(&key)?;
+        if entry.total != total {
+            return None;
+        }
+        let slot = entry.chunks.get_mut(usize::from(chunk_index))?;
+        if slot.is_some() {
+            return None;
+        }
+        *slot = Some(payload.to_vec());
+        entry.received += 1;
+        if entry.received < usize::from(entry.total) {
+            return None;
+        }
+        let entry = state.reassembly.remove(&key)?;
+        drop_entry_source(&mut state, from);
+        let mut out = Vec::new();
+        for chunk in entry.chunks {
+            out.extend_from_slice(&chunk?);
+        }
+        Some(out)
+    }
+}
+
+fn sweep_expired(state: &mut GeckoState, now: Instant) {
+    let expired: Vec<(SocketAddr, u8)> = state
+        .reassembly
+        .iter()
+        .filter(|(_, entry)| now > entry.deadline)
+        .map(|(key, _)| *key)
+        .collect();
+    for key in expired {
+        if state.reassembly.remove(&key).is_some() {
+            drop_entry_source(state, key.0);
+        }
+    }
+    state.last_sweep = Some(now);
+}
+
+fn evict_oldest(state: &mut GeckoState) {
+    let oldest = state
+        .reassembly
+        .iter()
+        .min_by_key(|(_, entry)| entry.deadline)
+        .map(|(key, _)| *key);
+    if let Some(key) = oldest {
+        if state.reassembly.remove(&key).is_some() {
+            drop_entry_source(state, key.0);
+        }
+    }
+}
+
+fn drop_entry_source(state: &mut GeckoState, from: SocketAddr) {
+    if let Some(count) = state.per_source.get_mut(&from) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            state.per_source.remove(&from);
+        }
+    }
+}
+
+/// `salt[8] || packet XOR BLAKE2b-256(password || salt)`.
+fn salamander_frame(password: &[u8], plain: &[u8]) -> Vec<u8> {
+    let mut salt = [0u8; SALAMANDER_SALT_LEN];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(password);
+    hasher.update(salt);
+    let key = hasher.finalize();
+    let mut out = Vec::with_capacity(SALAMANDER_SALT_LEN + plain.len());
+    out.extend_from_slice(&salt);
+    for (index, byte) in plain.iter().enumerate() {
+        out.push(byte ^ key[index % key.len()]);
+    }
+    out
+}
+
+/// Strip one Salamander salt in place; returns the plain length.
+fn salamander_unframe(password: &[u8], buffer: &mut [u8]) -> usize {
+    if buffer.len() <= SALAMANDER_SALT_LEN {
+        return 0;
+    }
+    let salt: [u8; SALAMANDER_SALT_LEN] = buffer[..SALAMANDER_SALT_LEN]
+        .try_into()
+        .expect("salt slice");
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(password);
+    hasher.update(salt);
+    let key = hasher.finalize();
+    let len = buffer.len() - SALAMANDER_SALT_LEN;
+    for index in 0..len {
+        buffer[index] = buffer[SALAMANDER_SALT_LEN + index] ^ key[index % key.len()];
+    }
+    len
 }
 
 /// Hysteria2 port hopping: every `interval` the next datagram is sent to a
@@ -313,7 +635,7 @@ impl HopState {
 struct LayeredSocket {
     inner: Arc<dyn AsyncUdpSocket>,
     base: SocketAddr,
-    obfs: Option<Salamander>,
+    obfs: Option<Obfs>,
     hop: Option<Arc<HopState>>,
 }
 
@@ -335,9 +657,16 @@ impl LayeredSocket {
         }
     }
 
+    fn salamander(&self) -> Option<&Salamander> {
+        match &self.obfs {
+            Some(Obfs::Salamander(salamander)) => Some(salamander),
+            _ => None,
+        }
+    }
+
     /// One datagram (or each GRO segment) gets an independent salt.
     fn obfuscate(&self, contents: &[u8], segment_size: Option<usize>) -> (Vec<u8>, Option<usize>) {
-        let Some(obfs) = &self.obfs else {
+        let Some(obfs) = self.salamander() else {
             return (contents.to_vec(), segment_size);
         };
         let stride = segment_size.unwrap_or(contents.len());
@@ -366,7 +695,7 @@ impl LayeredSocket {
 
     /// Remove one salt per GRO segment in place and compact the buffer.
     fn deobfuscate(&self, buffer: &mut [u8], meta: &mut RecvMeta) {
-        let Some(obfs) = &self.obfs else {
+        let Some(obfs) = self.salamander() else {
             return;
         };
         let stride = if meta.stride == 0 {
@@ -397,6 +726,61 @@ impl LayeredSocket {
         meta.len = write;
         meta.stride = stride.saturating_sub(8).max(1);
     }
+
+    /// Gecko reads may consume several fragments before one message is
+    /// complete. The inner poll is invoked with a single buffer (see
+    /// `max_receive_segments`), so a reassembled message never needs to
+    /// straddle quinn's receive array.
+    fn poll_recv_gecko(
+        &self,
+        gecko: &Gecko,
+        cx: &mut Context<'_>,
+        bufs: &mut [io::IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<io::Result<usize>> {
+        if bufs.is_empty() || meta.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        loop {
+            let read = {
+                let mut single_bufs = [io::IoSliceMut::new(&mut bufs[0])];
+                let mut single_meta = [RecvMeta::default()];
+                match self.inner.poll_recv(cx, &mut single_bufs, &mut single_meta) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Ready(Ok(0)) => continue,
+                    Poll::Ready(Ok(_)) => {
+                        meta[0] = single_meta[0];
+                        meta[0].len
+                    }
+                }
+            };
+            let from = meta[0].addr;
+            let plain_len = {
+                let buffer = &mut bufs[0][..read];
+                salamander_unframe(&gecko.password, buffer)
+            };
+            let message = {
+                let buffer = &bufs[0][..plain_len];
+                gecko.accept(from, buffer)
+            };
+            let Some(message) = message else {
+                continue;
+            };
+            if message.len() > bufs[0].len() {
+                // A reassembled message too large for quinn's buffer is
+                // dropped, exactly like a truncated inner read.
+                continue;
+            }
+            bufs[0][..message.len()].copy_from_slice(&message);
+            meta[0].len = message.len();
+            meta[0].stride = message.len();
+            if self.hop.is_some() {
+                meta[0].addr = self.base;
+            }
+            return Poll::Ready(Ok(1));
+        }
+    }
 }
 
 impl AsyncUdpSocket for LayeredSocket {
@@ -406,6 +790,25 @@ impl AsyncUdpSocket for LayeredSocket {
 
     fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
         let destination = self.destination(transmit.destination);
+        if let Some(Obfs::Gecko(gecko)) = &self.obfs {
+            let stride = transmit.segment_size.unwrap_or(transmit.contents.len());
+            if stride == 0 {
+                return Ok(());
+            }
+            for segment in transmit.contents.chunks(stride) {
+                for frame in gecko.frames(segment) {
+                    let transmit = Transmit {
+                        destination,
+                        ecn: transmit.ecn,
+                        contents: &frame,
+                        segment_size: None,
+                        src_ip: transmit.src_ip,
+                    };
+                    self.inner.try_send(&transmit)?;
+                }
+            }
+            return Ok(());
+        }
         if self.obfs.is_none() {
             let transmit = Transmit {
                 destination,
@@ -430,6 +833,9 @@ impl AsyncUdpSocket for LayeredSocket {
         bufs: &mut [io::IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
+        if let Some(Obfs::Gecko(gecko)) = &self.obfs {
+            return self.poll_recv_gecko(gecko, cx, bufs, meta);
+        }
         match self.inner.poll_recv(cx, bufs, meta) {
             Poll::Ready(Ok(count)) => {
                 for index in 0..count.min(bufs.len()).min(meta.len()) {
@@ -455,7 +861,11 @@ impl AsyncUdpSocket for LayeredSocket {
     }
 
     fn max_receive_segments(&self) -> usize {
-        self.inner.max_receive_segments()
+        if matches!(self.obfs, Some(Obfs::Gecko(_))) {
+            1
+        } else {
+            self.inner.max_receive_segments()
+        }
     }
 
     fn may_fragment(&self) -> bool {
@@ -742,14 +1152,71 @@ async fn connect_with_crypto(
         addr: bind.to_string(),
         source,
     })?;
+    connect_with_socket(socket, target, server, settings, options, timeout, crypto).await
+}
+
+/// Establish one QUIC connection over an already bound UDP socket (the realm
+/// rendezvous punches on one socket and runs the handshake on it).
+pub async fn connect_over_socket(
+    socket: std::net::UdpSocket,
+    target: SocketAddr,
+    server: &str,
+    settings: &TlsSettings,
+    tls: &ClientTls,
+    options: &QuicOptions,
+    timeout: Duration,
+) -> Result<(Connection, Endpoint), DialError> {
+    if options.alpn.is_empty() {
+        return Err(DialError::Handshake {
+            protocol: "quic",
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a QUIC handshake needs at least one ALPN protocol",
+            ),
+        });
+    }
+    let rustls_config = tls::quic_client_config(settings, tls, &options.alpn, !options.disable_sni)
+        .map_err(|source| DialError::Handshake {
+            protocol: "quic tls",
+            source,
+        })?;
+    let crypto = QuicClientConfig::try_from(rustls_config).map_err(|e| DialError::Handshake {
+        protocol: "quic tls",
+        source: io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
+    })?;
+    connect_with_socket(
+        socket,
+        target,
+        server,
+        settings,
+        options,
+        timeout,
+        Arc::new(crypto),
+    )
+    .await
+}
+
+async fn connect_with_socket(
+    socket: std::net::UdpSocket,
+    target: SocketAddr,
+    server: &str,
+    settings: &TlsSettings,
+    options: &QuicOptions,
+    timeout: Duration,
+    crypto: Arc<dyn quinn::crypto::ClientConfig>,
+) -> Result<(Connection, Endpoint), DialError> {
+    let bind = socket
+        .local_addr()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| target.to_string());
     let runtime = quinn::default_runtime().ok_or_else(|| DialError::Connect {
-        addr: bind.to_string(),
+        addr: bind.clone(),
         source: io::Error::other("quinn has no default async runtime"),
     })?;
     let abstract_socket = runtime
         .wrap_udp_socket(socket)
         .map_err(|source| DialError::Connect {
-            addr: bind.to_string(),
+            addr: bind.clone(),
             source,
         })?;
     let hop_state = options.hop.as_ref().map(|hop| {
@@ -775,7 +1242,7 @@ async fn connect_with_crypto(
         runtime,
     )
     .map_err(|source| DialError::Connect {
-        addr: bind.to_string(),
+        addr: bind.clone(),
         source,
     })?;
 
@@ -853,17 +1320,8 @@ async fn connect_with_crypto(
         }
         CongestionController::Bbr => {
             let mut config = quinn::congestion::BbrConfig::default();
-            if let Some(window) = options.initial_congestion_window {
+            if let Some(window) = bbr_initial_window(options) {
                 config.initial_window(window);
-            } else if let Some(profile) = options.bbr_profile {
-                // quinn's BBR has no upstream profile selector; the gain
-                // difference is approximated with the initial window.
-                let packets = match profile {
-                    BbrProfile::Conservative => 24,
-                    BbrProfile::Standard => 32,
-                    BbrProfile::Aggressive => 40,
-                };
-                config.initial_window(packets * 1200);
             }
             transport.congestion_controller_factory(Arc::new(config));
         }
@@ -966,9 +1424,9 @@ mod tests {
         let socket = Arc::new(LayeredSocket {
             inner,
             base,
-            obfs: Some(Salamander {
+            obfs: Some(Obfs::Salamander(Salamander {
                 password: password.clone(),
-            }),
+            })),
             hop: Some(hop),
         });
 
@@ -1022,5 +1480,119 @@ mod tests {
             assert!(next >= Duration::from_secs(5));
             assert!(next <= Duration::from_secs(7));
         }
+    }
+
+    #[test]
+    fn bbr_profile_selects_the_initial_window() {
+        let mut options = QuicOptions::new(vec!["h3".to_string()]);
+        options.congestion_controller = CongestionController::Bbr;
+        options.initial_congestion_window = Some(48 * 1200);
+        assert_eq!(bbr_initial_window(&options), Some(48 * 1200));
+        options.bbr_profile = Some(BbrProfile::Conservative);
+        assert_eq!(bbr_initial_window(&options), Some(24 * 1200));
+        options.bbr_profile = Some(BbrProfile::Standard);
+        assert_eq!(bbr_initial_window(&options), Some(32 * 1200));
+        options.bbr_profile = Some(BbrProfile::Aggressive);
+        assert_eq!(bbr_initial_window(&options), Some(40 * 1200));
+        // The same value reaches quinn's controller factory, so the profile is
+        // observable beyond the helper.
+        let mut config = quinn::congestion::BbrConfig::default();
+        config.initial_window(bbr_initial_window(&options).unwrap());
+        let controller =
+            Arc::new(config).build(std::time::Instant::now(), 1200);
+        assert_eq!(controller.initial_window(), 40 * 1200);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gecko_fragments_long_headers_and_reassembles_them() {
+        let password = b"hysteria2-gecko-secret".to_vec();
+        let gecko = Gecko::new(password.clone(), 512, 1200);
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let local = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let runtime = quinn::default_runtime().unwrap();
+        let inner = runtime.wrap_udp_socket(local).unwrap();
+        let socket = Arc::new(LayeredSocket {
+            inner,
+            base: server_addr,
+            obfs: Some(Obfs::Gecko(gecko.clone())),
+            hop: None,
+        });
+        let mut plain = vec![0u8; 900];
+        rand::thread_rng().fill_bytes(&mut plain);
+        plain[0] = 0xc0;
+        let transmit = Transmit {
+            destination: server_addr,
+            ecn: None,
+            contents: &plain,
+            segment_size: None,
+            src_ip: None,
+        };
+        let mut poller = socket.clone().create_io_poller();
+        std::future::poll_fn(|cx| poller.as_mut().poll_writable(cx))
+            .await
+            .unwrap();
+        socket.try_send(&transmit).unwrap();
+
+        // Every long-header packet is split into 2..8 padded frames, each one
+        // Salamander-obfuscated and in the configured on-wire range.
+        let mut chunks: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut total = 0u8;
+        let mut frames = 0;
+        let mut buffer = [0u8; 2048];
+        let mut from = None;
+        loop {
+            let Ok((read, source)) = server.recv_from(&mut buffer) else {
+                break;
+            };
+            from = Some(source);
+            frames += 1;
+            let plain_len = salamander_unframe(&password, &mut buffer[..read]);
+            let body = &buffer[..plain_len];
+            assert!(
+                body[0] & GECKO_FRAGMENT_FLAG != 0,
+                "long header was not fragmented"
+            );
+            assert!(
+                (512..=1200).contains(&read),
+                "on-wire frame {read} outside range"
+            );
+            let index = usize::from(body[2] >> 4);
+            let count = body[2] & 0x0f;
+            total = count;
+            let pad = usize::from(u16::from_be_bytes([body[3], body[4]]));
+            if chunks.len() < usize::from(count) {
+                chunks.resize(usize::from(count), None);
+            }
+            chunks[index] = Some(body[GECKO_HEADER_LEN + pad..].to_vec());
+        }
+        assert!((2..=8).contains(&frames), "{frames} gecko frames");
+        assert!((2..=8).contains(&total));
+        let reassembled: Vec<u8> = chunks
+            .into_iter()
+            .map(|chunk| chunk.expect("every chunk arrived"))
+            .flatten()
+            .collect();
+        assert_eq!(reassembled, plain);
+
+        // The server fragments a reply the same way; the layer reassembles it
+        // before quinn sees it.
+        let mut reply = vec![0u8; 400];
+        rand::thread_rng().fill_bytes(&mut reply);
+        reply[0] = 0x80;
+        for frame in gecko.frames(&reply) {
+            server.send_to(&frame, from.unwrap()).unwrap();
+        }
+        let mut received = [0u8; 2048];
+        let mut bufs = [IoSliceMut::new(&mut received)];
+        let mut meta = [RecvMeta::default()];
+        let count = std::future::poll_fn(|cx| socket.poll_recv(cx, &mut bufs, &mut meta))
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(&received[..meta[0].len], &reply[..]);
     }
 }

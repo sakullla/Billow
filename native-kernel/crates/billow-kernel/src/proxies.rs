@@ -1088,6 +1088,10 @@ pub struct Hysteria2Outbound {
     /// `obfs: salamander|gecko` with its password.
     pub obfs: Option<String>,
     pub obfs_password: Option<Secret>,
+    /// `obfs-min-packet-size` / `obfs-max-packet-size`: the Gecko on-wire
+    /// packet-size range (pinned defaults 512/1200); ignored by Salamander.
+    pub obfs_min_packet_size: u32,
+    pub obfs_max_packet_size: u32,
     /// `udp-mtu`: Hysteria UDP session payload MTU (pinned default 1197).
     pub udp_mtu: u16,
     /// `bbr-profile`: conservative/standard/aggressive.
@@ -1105,7 +1109,6 @@ pub struct Hysteria2Realm {
     pub realm_id: Option<String>,
     pub stun_servers: Vec<String>,
     pub tls_settings: TlsSettings,
-    pub proxy: Option<String>,
 }
 
 /// Hysteria v1 (`adapter/outbound/hysteria.go`, `transport/hysteria/core`):
@@ -4549,8 +4552,37 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     }
     // The packet-size knobs are only applied by the pinned client when a Gecko
     // obfs is selected; without one they ask for nothing, so they load.
-    let _ = entry.int("obfs-min-packet-size")?;
-    let _ = entry.int("obfs-max-packet-size")?;
+    let obfs_min_packet_size = entry.int("obfs-min-packet-size")?.unwrap_or(0);
+    let obfs_max_packet_size = entry.int("obfs-max-packet-size")?.unwrap_or(0);
+    let obfs_min_packet_size = if obfs_min_packet_size < 0 {
+        return Err(entry.invalid("option 'obfs-min-packet-size' must not be negative"));
+    } else {
+        u32::try_from(obfs_min_packet_size)
+            .map_err(|_| entry.invalid("option 'obfs-min-packet-size' is out of range"))?
+    };
+    let obfs_max_packet_size = if obfs_max_packet_size < 0 {
+        return Err(entry.invalid("option 'obfs-max-packet-size' must not be negative"));
+    } else {
+        u32::try_from(obfs_max_packet_size)
+            .map_err(|_| entry.invalid("option 'obfs-max-packet-size' is out of range"))?
+    };
+    if obfs.as_deref() == Some("gecko") {
+        let min = if obfs_min_packet_size == 0 {
+            512
+        } else {
+            obfs_min_packet_size
+        };
+        let max = if obfs_max_packet_size == 0 {
+            1200
+        } else {
+            obfs_max_packet_size
+        };
+        if min == 0 || min > max || max > 2048 {
+            return Err(entry.invalid(
+                "obfs packet sizes must satisfy 0 < min <= max <= 2048",
+            ));
+        }
+    }
     let udp_mtu = match entry.int("udp-mtu")? {
         Some(value) if value < 0 || value > i64::from(u16::MAX) => {
             return Err(entry.invalid("option 'udp-mtu' is out of range"))
@@ -4641,6 +4673,8 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
         hop_interval,
         obfs,
         obfs_password,
+        obfs_min_packet_size,
+        obfs_max_packet_size,
         udp_mtu,
         bbr_profile,
         realm,
@@ -4670,7 +4704,6 @@ fn parse_hysteria2_realm(
         "certificate",
         "private-key",
         "alpn",
-        "proxy",
     ];
     reject_block_keys(entry, "realm-opts", block, &keys)?;
     let enable = block_bool(entry, "realm-opts", block, "enable")?;
@@ -4713,15 +4746,12 @@ fn parse_hysteria2_realm(
     let _ = block_string(entry, "realm-opts", block, "fingerprint")?;
     let _ = block_string(entry, "realm-opts", block, "certificate")?;
     let _ = block_string(entry, "realm-opts", block, "private-key")?;
-    let proxy = Some(block_string(entry, "realm-opts", block, "proxy")?)
-        .filter(|value| !value.is_empty());
     Ok(Some(Hysteria2Realm {
         server_url,
         token,
         realm_id,
         stun_servers,
         tls_settings,
-        proxy,
     }))
 }
 

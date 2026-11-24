@@ -2,10 +2,9 @@
 
 Baseline: `evidence/t30-option-closure.md` (11 residual rows inside anytls,
 hysteria2 and vmess: hy2 6, anytls 2, vmess 3). Matrix:
-`evidence/option-matrix.txt` — **289 no-op / 86 implemented / 120 enabled,
-0 problems**. All nine target-family rows are now implemented/impl rows.
-`hysteria2 realm-opts` loads (impl row) but its dial path is still refused; it
-is the only accepted-but-not-dialable T31 option and is called out below.
+`evidence/option-matrix.txt` — **291 no-op / 87 implemented / 119 enabled,
+0 problems**. All T31 target-family rows are implemented/impl rows, including
+`hysteria2 obfs: gecko` and `realm-opts` at dial time.
 
 ## anytls — implemented and verified
 
@@ -40,7 +39,8 @@ AnyTLS password never reaches the sink.
 | `ports`, `hop-interval` | The same wrapper rewrites the destination port to a randomly selected entry of the expanded `ports` range set, and maps replies from that port back to the configured base address (quinn drops a client packet from a changed remote address). A tokio task changes the port every `hop-interval` (pinned defaults: 30 s, minimum 5 s, reversed range collapses to its start). | `tests/mihomo_peers.rs::hysteria2_port_pool_selects_the_listed_port_through_mihomo`, `outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port`, `outbound::quic::tests::hop_interval_is_clamped_and_randomised` |
 | `up` (Brutal) | `src/outbound/quic.rs::Brutal` implements the pinned `transport/hysteria2/congestion/brutal.go` window: `bps * smoothed_rtt * 2 / ack_rate`, with the five one-second ACK/loss slots and the 0.8 ACK-rate floor, exposed through quinn's `Controller::window` (quinn has no separate pacing callback). | `tests/mihomo_peers.rs::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo` |
 | `udp-mtu` | Applied as the QUIC initial path MTU (`udp_mtu + 3`, clamped to 1200..1452; the pinned default 1197 is 1200 - 3). The engine still has no Hysteria2 UDP session relay, so the session MTU itself has no carrier. | `tests/mihomo_peers.rs::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo`, `tests/quic_peers.rs::hysteria2_transport_options_are_parsed` |
-| `bbr-profile` | quinn's BBR has no upstream profile selector; the profile maps to the BBR initial window (conservative/standard/aggressive = 24/32/40 packets). This is a recorded approximation, not profile parity. | the same two tests as `udp-mtu` |
+| `obfs: gecko` | `quic.rs::Gecko` wraps Salamander and fragments every QUIC long-header packet into 2..8 padded chunks (`0x80 \| msg id \| index<<4 \| total \| pad length \| pad \| chunk`), each inside its own Salamander frame; replies are reassembled with the pinned 8 s TTL, per-source (8) and global (4096) caps. `obfs-min-packet-size`/`obfs-max-packet-size` select the on-wire range (defaults 512/1200, validated like the pinned client). | `tests/mihomo_peers.rs::hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo`, `outbound::quic::tests::gecko_fragments_long_headers_and_reassembles_them` |
+| `bbr-profile` | quinn's BBR has no upstream profile selector; the profile maps to the BBR initial window (conservative/standard/aggressive = 24/32/40 packets) and now takes precedence over `cwnd` in the BBR arm. A2 set `cwnd` unconditionally, which made the profile branch unreachable; the mapping is still a recorded approximation, not gain parity. | `tests/mihomo_peers.rs::hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo`, `outbound::quic::tests::bbr_profile_selects_the_initial_window` |
 
 The pinned hysteria2 listener does not share one QUIC transport across a
 comma-separated `listen` list, so a true multi-port hop cannot be exercised
@@ -48,17 +48,36 @@ against it. The pinned peer case therefore uses a single-port pool (proving the
 selection path); the multi-port rewrite and reply mapping are covered at the
 `AsyncUdpSocket` layer.
 
-## hysteria2 — partial / named residuals
+## hysteria2 — realm rendezvous
 
-- `realm-opts` (**accepted but not dialable**): `parse_hysteria2_realm` loads
-  `enable`, `server-url`, `token`, `realm-id`, `stun-servers`, the TLS identity
-  fields, `alpn` and `proxy`, and the option matrix records it as accepted by
-  both engines. The dial path refuses it by name because the pinned
-  rendezvous needs an HTTP control client, STUN discovery and UDP hole punching
-  (sing-quic `hysteria2/realm`), none of which this kernel implements.
-- `obfs: gecko` is refused at dial by name (Salamander is implemented; Gecko
-  adds per-message fragmentation/reassembly and packet-size padding).
-- `udp` remains a registered gap; `ech-opts` is rejected by both engines.
+`src/outbound/hysteria2_realm.rs` implements the pinned client side: URL
+parsing (http/https, path prefix), one UDP socket per address family,
+STUN binding requests with XOR-MAPPED-ADDRESS and the pinned 500 ms/2 s/4 s
+retransmission, `POST /v1/{realm-id}/connect` with the 16-byte nonce and
+32-byte key as hex, `HYRLMv1` punch packets (`salt[8] || SHA256(key||salt) XOR`
+body with HELLO/ACK and up to 1 KiB padding, 100 ms interval, 10 s cap,
+symmetric-NAT port expansion), and the QUIC handshake over the winning punched
+socket (`quic::connect_over_socket`) before the normal `/auth` and `0x401`
+stream. The control request uses the realm TLS block; a plain `http://` URL
+skips TLS. The control client speaks HTTP/1.1: it offers `http/1.1` when the
+block has no ALPN, and refuses a negotiated protocol other than `http/1.1`
+instead of silently mis-framing (the pinned HTTP client also enables h2; every
+hysteria-realm control server written against the pinned API serves HTTP/1.1).
+
+Peer shape: the pinned `type: hysteria2-realm` listener is the control server
+(token required), and a second pinned `type: hysteria2` listener carries
+`realm-opts: {enable, server-url, token, realm-id, stun-servers}` and registers
+to it. A loopback STUN fixture answers both sides; the test waits for the
+pinned server's registration, then the kernel's `realm-opts` dial reaches the
+sink through the punched QUIC connection. The control endpoint is HTTPS
+(`skip-cert-verify` on both sides), so the TLS control path is exercised too. Evidence:
+`tests/mihomo_peers.rs::hysteria2_realm_reaches_the_receiving_side_through_mihomo`,
+`src/outbound/hysteria2_realm.rs::tests::{punch_packets_round_trip_and_reject_a_wrong_key,stun_response_decodes_the_xor_mapped_address,http_responses_decode_content_length_and_chunked_bodies}`.
+
+## hysteria2 — named residuals
+
+- `udp` remains a registered gap (no Hysteria2 UDP session relay).
+- `ech-opts` is rejected by both engines.
 
 ## vmess — implemented and verified
 
@@ -96,8 +115,8 @@ Evidence: `tests/mihomo_peers.rs::vmess_over_tlsmirror_reaches_the_receiving_sid
 
 ## Verification
 
-- `CARGO_TARGET_DIR=<independent> cargo test --manifest-path native-kernel/Cargo.toml --locked`: all suites pass (179 lib, 50 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, 1 doc-test; 86 ignored peer cases).
-- `tool/kernel-compat/peer-tests.sh`: **87 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 port pool, vmess mkcp/mekya/tlsmirror).
-- `node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>`: 289 / 86 / 120, 0 problems; no T31 target row remains as an enabled rejection.
+- `CARGO_TARGET_DIR=<independent> cargo test --manifest-path native-kernel/Cargo.toml --locked`: all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 90 ignored mihomo peer cases).
+- `tool/kernel-compat/peer-tests.sh`: **90 passed, 0 failed** against the pinned Mihomo v1.19.34 binary (the T30 77 plus JLS/ShadowTLS v1, ShadowTLS v2, hy2 obfs/Brutal, hy2 gecko, hy2 bbr-profile, hy2 realm, hy2 port pool, vmess mkcp/mekya/tlsmirror).
+- `node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>`: 291 / 87 / 119, 0 problems; no T31 target row remains as an enabled rejection.
 - `node --test tool/kernel-compat/runner.test.mjs`: 10 passed.
-- Differentials against the same pinned binary: t22 22 pass / 1 skipped / 0 differ; t23 28 pass / 1 persistence / 0 differ; t24 36 pass / 2 skipped / 0 differ / 9 recorded inbound framing differences; t25 47/49 equal / 2 recorded divergences / 0 unexpected; t5 12/12 scenarios / 0 differ.
+- Differentials against the same pinned binary: t22 22 pass / 1 skipped / 0 differ; t23 28 pass / 1 persistence / 0 differ; t24 36 pass / 2 skipped / 0 differ / 7 recorded inbound framing differences; t25 47/49 equal / 2 recorded divergences / 0 unexpected; t5 12/12 scenarios / 0 differ.

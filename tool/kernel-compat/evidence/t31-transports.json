@@ -1,7 +1,7 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T31",
-  "attempt": "T31-A2",
+  "attempt": "T31-A3",
   "baseline": "evidence/t30-option-closure.md",
   "residual_before": {
     "anytls": 2,
@@ -65,6 +65,21 @@
     },
     {
       "family": "hysteria2",
+      "option": "obfs: gecko",
+      "state": "implemented",
+      "verification": [
+        "mihomo_peers::hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo",
+        "outbound::quic::tests::gecko_fragments_long_headers_and_reassembles_them",
+        "quic_peers::hysteria2_transport_options_are_parsed"
+      ],
+      "implementation": [
+        "src/outbound/quic.rs::Gecko (Salamander plus the pinned 2..8-chunk fragmentation, padding and reassembly)",
+        "src/proxies.rs::parse_hysteria2 (obfs-min-packet-size / obfs-max-packet-size, pinned 512/1200 defaults)"
+      ],
+      "note": "Salamander wraps every datagram and only QUIC long-header packets (first byte 0x80) are fragmented: 0x80 | msg id | (index << 4 | total) | pad length | pad | chunk, all inside a Salamander frame with its own salt. Replies are reassembled with the pinned TTL (8 s), per-source (8) and global (4096) caps. Verified end to end against the pinned hysteria2 listener with obfs: gecko, and at the socket layer for the long-header/short-header split."
+    },
+    {
+      "family": "hysteria2",
       "option": "ports / hop-interval",
       "state": "implemented",
       "verification": [
@@ -96,13 +111,14 @@
       "option": "bbr-profile",
       "state": "implemented (mapped)",
       "verification": [
-        "mihomo_peers::hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo",
+        "mihomo_peers::hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo",
+        "outbound::quic::tests::bbr_profile_selects_the_initial_window",
         "quic_peers::hysteria2_transport_options_are_parsed"
       ],
       "implementation": [
-        "src/outbound/quic.rs::QuicOptions::bbr_profile mapped to the BBR initial window"
+        "src/outbound/quic.rs::bbr_initial_window (profile packets win over cwnd; 24/32/40)"
       ],
-      "note": "quinn's BBR has no upstream profile selector, so conservative/standard/aggressive map to 24/32/40 initial packets; the wire behaviour is still BBR and the mapping is recorded as an approximation, not profile parity."
+      "note": "quinn's BBR has no upstream profile selector, so conservative/standard/aggressive map to 24/32/40 initial packets. The A2 build set the hysteria2 `cwnd` window unconditionally, which made the profile branch unreachable; the profile now takes precedence over `cwnd` in the BBR arm, and the pinned peer case exercises the profile without `up`/Brutal. Recorded as an approximation, not profile-gain parity."
     },
     {
       "family": "hysteria2",
@@ -120,15 +136,19 @@
     {
       "family": "hysteria2",
       "option": "realm-opts",
-      "state": "partial",
+      "state": "implemented",
       "verification": [
-        "quic_peers::hysteria2_transport_options_are_parsed",
-        "option-probe: impl hysteria2 realm-opts rust=accept mihomo=accept"
+        "mihomo_peers::hysteria2_realm_reaches_the_receiving_side_through_mihomo",
+        "outbound::hysteria2_realm::tests::punch_packets_round_trip_and_reject_a_wrong_key",
+        "outbound::hysteria2_realm::tests::stun_response_decodes_the_xor_mapped_address",
+        "outbound::hysteria2_realm::tests::http_responses_decode_content_length_and_chunked_bodies",
+        "quic_peers::hysteria2_transport_options_are_parsed"
       ],
       "implementation": [
-        "src/proxies.rs::parse_hysteria2_realm"
+        "src/outbound/hysteria2_realm.rs (control HTTP/1.1 over TLS, STUN, punch, QUIC over the punched socket)",
+        "src/outbound/quic.rs::connect_over_socket"
       ],
-      "note": "The block is parsed and loads (enable/server-url/token/realm-id/stun-servers/SNI/ALPN/proxy), but the dial path refuses it by name because the HTTP control client, STUN discovery and UDP hole punching are not implemented. This is the one accepted-but-not-dialable option and is called out in the result concerns."
+      "note": "The client resolves the control URL, binds one UDP socket per family, discovers its mapped address with STUN binding requests (XOR-MAPPED-ADDRESS), posts /v1/{realm-id}/connect with the nonce/key, punches with HYRLMv1 HELLO/ACK packets (100 ms, 10 s cap, symmetric-NAT candidate expansion) and runs the QUIC handshake over the same socket to the returned peer address. Verified end to end with the pinned `hysteria2-realm` control listener plus a pinned `hysteria2` listener with `realm-opts` registering to it; both sides use a loopback STUN server, so the control HTTP, STUN, punch and post-punch QUIC connection are all exercised. The control client speaks HTTP/1.1 (control servers also serve h2, which this path does not negotiate)."
     },
     {
       "family": "vmess",
@@ -188,11 +208,6 @@
     },
     {
       "family": "hysteria2",
-      "option": "obfs: gecko",
-      "reason": "the pinned Gecko layer fragments and reassembles datagrams with per-message ids; Salamander is implemented, Gecko is refused by name at dial"
-    },
-    {
-      "family": "hysteria2",
       "option": "udp",
       "reason": "no Hysteria2 UDP session relay exists; `udp-mtu` is applied to the QUIC path MTU only"
     },
@@ -203,22 +218,22 @@
     }
   ],
   "matrix": {
-    "noop": 289,
-    "implemented": 86,
-    "enabled": 120,
+    "noop": 291,
+    "implemented": 87,
+    "enabled": 119,
     "problems": 0,
     "target_family_residual": 0,
-    "residual_note": "All nine T31 target rows are implemented or impl rows. `hysteria2 realm-opts` remains the one accepted-but-not-dialable option (partial)."
+    "residual_note": "All T31 target rows are implemented or impl rows. The remaining hysteria2 gaps are `udp` (no UDP session relay) and `ech-opts` (rejected by both engines); the remaining anytls gaps are ShadowTLS v3 and Restls."
   },
   "verification": {
-    "cargo_test": "all suites pass (179 lib, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic, 15 resources, 11 sessions, 11 cli, 10 family_cli, 1 doc-test; 87 ignored peer cases)",
-    "peer_tests": "87 passed, 0 failed (pinned Mihomo v1.19.34)",
-    "option_probe": "289 / 86 / 120, 0 problems",
+    "cargo_test": "all default suites pass (186 lib + 1 ignored, 52 config, 15 controller, 19 dns, 32 groups, 60 protocols, 32 quic peers, 15 resources, 11 sessions, 1 shadowquic, 11 cli, 10 family_cli, 1 doc-test; 90 ignored mihomo peer cases)",
+    "peer_tests": "90 passed, 0 failed (pinned Mihomo v1.19.34), including the new gecko, realm and bbr-profile cases",
+    "option_probe": "291 / 87 / 119, 0 problems (no enabled T31 target row remains)",
     "runner_test": "10 passed",
     "differentials": {
       "t22": "22 pass / 1 skipped / 0 differ",
       "t23": "28 pass / 1 persistence / 0 differ",
-      "t24": "36 pass / 2 skipped / 0 differ / 9 recorded inbound framing differences",
+      "t24": "36 pass / 2 skipped / 0 differ / 7 recorded inbound framing differences",
       "t25": "47/49 equal / 2 recorded divergences / 0 unexpected",
       "t5": "12/12 scenarios / 0 differ"
     }

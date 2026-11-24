@@ -2346,6 +2346,101 @@ fn hysteria2_unreachable_target_is_refused() {
     });
 }
 
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let obfs_password = "hysteria2-gecko-secret";
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}, obfs: gecko, obfs-password: \"{obfs_password}\", obfs-min-packet-size: 512, obfs-max-packet-size: 1200}}\n"
+    );
+    with_quic_peer("hysteria2-gecko", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, obfs: gecko, obfs-password: \"{obfs_password}\", obfs-min-packet-size: 512, obfs-max-packet-size: 1200}}\n"
+        ));
+        let marker = "marker-hysteria2-gecko-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-gecko", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}}}\n"
+    );
+    with_quic_peer("hysteria2-bbr-profile", &listeners, |sink, _mihomo| {
+        // No `up`: this is the BBR-profile path, not the Brutal sender. The
+        // profile maps to the BBR initial window (24/32/40 packets) in
+        // `quic::bbr_initial_window`; the unit test distinguishes the values.
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, bbr-profile: aggressive}}\n"
+        ));
+        let marker = "marker-hysteria2-bbr-profile-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-bbr-profile", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn hysteria2_realm_reaches_the_receiving_side_through_mihomo() {
+    let stun = common::stun_server();
+    let control_port = free_port();
+    let realm_port = free_port();
+    let token = "realm-token";
+    let realm_id = "billow";
+    // The pinned `hysteria2-realm` listener is the control server; the pinned
+    // `hysteria2` listener with `realm-opts` registers to it and answers a
+    // punch event. Both discover their mapped address from the loopback STUN
+    // server, so the punched QUIC connection is the same code path a real
+    // deployment takes (control HTTP + STUN + punch, then QUIC to the peer).
+    let listeners = format!(
+        "  - {{name: realm-control, type: hysteria2-realm, listen: 127.0.0.1, port: {control_port}, certificate: CERT, private-key: KEY, token: \"{token}\"}}\n  - {{name: in-hysteria2, type: hysteria2, listen: 127.0.0.1, port: {realm_port}, certificate: CERT, private-key: KEY, users: {{alice: \"{HYSTERIA2_PASSWORD}\"}}, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n"
+    );
+    // The realm server's own control HTTP must go DIRECT (otherwise the
+    // `MATCH,sink-http` rule would send it to the test sink); forwarded target
+    // traffic keeps the HTTP sink so it answers the tunnel handshake.
+    let rule = format!("DST-PORT,{control_port},DIRECT\n  - MATCH,sink-http");
+    with_quic_peer_rule("hysteria2-realm", &listeners, &rule, |sink, mihomo| {
+        // Registration happens after the listener binds; the control answers
+        // `realm_not_found` until then.
+        let mut registered = false;
+        for _ in 0..200 {
+            let log = mihomo.log();
+            if log.contains("re-registered with control") || log.contains("registered realm=") {
+                registered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(registered, "the pinned realm server did not register: {}", mihomo.log());
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: hysteria2, server: 127.0.0.1, port: {realm_port}, password: \"{HYSTERIA2_PASSWORD}\", skip-cert-verify: true, realm-opts: {{enable: true, server-url: \"https://127.0.0.1:{control_port}\", skip-cert-verify: true, token: \"{token}\", realm-id: \"{realm_id}\", stun-servers: [\"127.0.0.1:{stun}\"]}}}}\n"
+        ));
+        let marker = "marker-hysteria2-realm-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("hysteria2-realm", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
 // ---------------------------------------------------------------------------
 // shadowquic (T15): JLS replaces the TLS random, so the pinned listener needs a
 // camouflage upstream (`jls-upstream`) for unauthenticated traffic. The tests
