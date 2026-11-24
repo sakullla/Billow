@@ -1767,6 +1767,10 @@ async fn serve_udp_associate_inner(
     let mut direct_v4 = true;
     let mut socks5: Option<outbound::socks5::Socks5Udp> = None;
     let mut ss: Option<outbound::udp::SsUdp> = None;
+    let mut ss_uot: Option<outbound::udp::SsUot> = None;
+    let mut vless: Option<outbound::udp::VlessUdp> = None;
+    let mut anytls: Option<outbound::udp::AnytlsUot> = None;
+    let mut vmess: Option<outbound::udp::VmessUdp> = None;
     let mut trojan: Option<outbound::udp::TrojanUdp> = None;
     let mut ssr: Option<outbound::udp::SsrUdp> = None;
     let mut gost: Option<outbound::gost_relay::GostRelayUdp> = None;
@@ -1780,6 +1784,10 @@ async fn serve_udp_associate_inner(
     let mut direct_buf: Option<Vec<u8>> = None;
     let mut socks5_buf: Option<Vec<u8>> = None;
     let mut ss_buf: Option<Vec<u8>> = None;
+    let mut ss_uot_buf: Option<Vec<u8>> = None;
+    let mut vless_buf: Option<Vec<u8>> = None;
+    let mut anytls_buf: Option<Vec<u8>> = None;
+    let mut vmess_buf: Option<Vec<u8>> = None;
     let mut trojan_buf: Option<Vec<u8>> = None;
     let mut ssr_buf: Option<Vec<u8>> = None;
     let mut gost_buf: Option<Vec<u8>> = None;
@@ -1794,6 +1802,10 @@ async fn serve_udp_associate_inner(
     let mut direct_eof = false;
     let mut socks5_eof = false;
     let mut ss_eof = false;
+    let mut ss_uot_eof = false;
+    let mut vless_eof = false;
+    let mut anytls_eof = false;
+    let mut vmess_eof = false;
     let mut trojan_eof = false;
     let mut ssr_eof = false;
     let mut gost_eof = false;
@@ -1815,6 +1827,26 @@ async fn serve_udp_associate_inner(
             ss = None;
             ss_buf = None;
             ss_eof = false;
+        }
+        if ss_uot_eof {
+            ss_uot = None;
+            ss_uot_buf = None;
+            ss_uot_eof = false;
+        }
+        if vless_eof {
+            vless = None;
+            vless_buf = None;
+            vless_eof = false;
+        }
+        if anytls_eof {
+            anytls = None;
+            anytls_buf = None;
+            anytls_eof = false;
+        }
+        if vmess_eof {
+            vmess = None;
+            vmess_buf = None;
+            vmess_eof = false;
         }
         if trojan_eof {
             trojan = None;
@@ -2002,6 +2034,117 @@ async fn serve_udp_associate_inner(
                                 }
                             }
                             socks5
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::Shadowsocks(option)
+                            if option.udp && option.udp_over_tcp =>
+                        {
+                            if ss_uot.is_none() {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::udp::SsUot::connect(
+                                    option,
+                                    &outgoing,
+                                    &hops,
+                                    limits.dial_timeout,
+                                    &context.runtime.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        ss_uot = Some(association);
+                                        ss_uot_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "ss UoT association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            ss_uot
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::Vless(option) if option.udp => {
+                            if vless.is_none() {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::udp::VlessUdp::connect(
+                                    option,
+                                    &hops,
+                                    limits.dial_timeout,
+                                    &context.runtime.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        vless = Some(association);
+                                        vless_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "vless UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            vless
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::Anytls(option) if option.udp => {
+                            if anytls.is_none() {
+                                match outbound::udp::AnytlsUot::connect(
+                                    option,
+                                    &outgoing,
+                                    &context.runtime.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        anytls = Some(association);
+                                        anytls_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "anytls UoT association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            anytls
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::Vmess(option) if option.udp => {
+                            if vmess.is_none() {
+                                match outbound::udp::VmessUdp::connect(
+                                    option,
+                                    &outgoing,
+                                    &context.runtime.tls,
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        vmess = Some(association);
+                                        vmess_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "vmess UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            vmess
                                 .as_mut()
                                 .expect("connected above")
                                 .send(&outgoing, payload)
@@ -2261,6 +2404,102 @@ async fn serve_udp_associate_inner(
                     failed = true;
                 }
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, ss_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (ss_uot.as_mut(), ss_uot_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if ss_uot.is_some() && !ss_uot_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        ss_uot_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, ss_uot_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (vless.as_mut(), vless_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if vless.is_some() && !vless_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        vless_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, vless_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (anytls.as_mut(), anytls_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if anytls.is_some() && !anytls_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        anytls_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, anytls_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (vmess.as_mut(), vmess_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if vmess.is_some() && !vmess_eof => {
+                match &received {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        vmess_eof = true;
+                        failed = true;
+                    }
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, vmess_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {
                         let mut reply = outbound::udp::reply_header(&from);
                         reply.extend_from_slice(&buffer[..read]);

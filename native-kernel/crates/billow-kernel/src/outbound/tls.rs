@@ -23,8 +23,48 @@ use tokio_rustls::client::TlsStream;
 
 use crate::proxies::TlsSettings;
 
-fn provider() -> Arc<CryptoProvider> {
-    Arc::new(ring::default_provider())
+/// Names the pinned `component/tls.GetFingerprint` recognises. rustls cannot
+/// emit a uTLS ClientHello, so these are applied as the closest rustls
+/// profile: the browser key-exchange list (X25519 + P-256, no P-384), which is
+/// what every recognised uTLS preset offers. Unknown names keep the standard
+/// handshake, exactly like the pinned fallback (`GetFingerprint` warns and the
+/// caller continues with `crypto/tls`).
+pub fn known_client_fingerprint(name: &str) -> bool {
+    matches!(
+        name,
+        "chrome"
+            | "firefox"
+            | "safari"
+            | "ios"
+            | "android"
+            | "edge"
+            | "360"
+            | "qq"
+            | "random"
+            | "chrome120"
+            | "firefox120"
+            | "safari16"
+            | "chrome_psk"
+            | "chrome_psk_shuffle"
+            | "chrome_padding_psk_shuffle"
+            | "chrome_pq"
+            | "chrome_pq_psk"
+            | "randomized"
+    )
+}
+
+/// Provider with the client-fingerprint approximation applied.
+fn provider_for(fingerprint: Option<&str>) -> Arc<CryptoProvider> {
+    let mut base = ring::default_provider();
+    if let Some(name) = fingerprint {
+        if known_client_fingerprint(name) {
+            base.kx_groups.retain(|group| {
+                group.name() == rustls::NamedGroup::X25519
+                    || group.name() == rustls::NamedGroup::secp256r1
+            });
+        }
+    }
+    Arc::new(base)
 }
 
 /// Trust anchors for one kernel: the platform store plus the configuration's
@@ -373,7 +413,7 @@ fn client_config_with(
     tls13_only: bool,
     enable_sni: bool,
 ) -> io::Result<Arc<ClientConfig>> {
-    let provider = provider();
+    let provider = provider_for(settings.client_fingerprint.as_deref());
     let builder = ClientConfig::builder_with_provider(provider.clone());
     let builder = if tls13_only {
         builder

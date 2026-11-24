@@ -13,14 +13,15 @@
 use std::collections::HashMap;
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use ring::digest::{digest, SHA256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use super::{connect_tcp, handshake, tls, DialError, Dialed, Target};
+use super::{connect_tcp, handshake, tls, BoxStream, DialError, Dialed, Target};
 use crate::proxies::AnytlsOutbound;
 
 use super::tls::ClientTls;
@@ -79,13 +80,17 @@ pub fn hello(password: &str) -> Vec<u8> {
     out
 }
 
-fn settings() -> Vec<u8> {
-    b"client=\npadding-md5=\nv=2".to_vec()
+fn settings(client_metadata: Option<&str>) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"client=");
+    out.extend_from_slice(client_metadata.unwrap_or("").as_bytes());
+    out.extend_from_slice(b"\npadding-md5=\nv=2");
+    out
 }
 
 struct StreamState {
     synack: Mutex<Option<tokio::sync::oneshot::Sender<io::Result<()>>>>,
-    recv: tokio::sync::Notify,
+    recv: Mutex<Option<std::task::Waker>>,
     inbox: Mutex<Vec<u8>>,
     closed: Mutex<Option<io::Result<()>>>,
     fin_sent: AtomicBool,
@@ -98,13 +103,46 @@ impl StreamState {
             *closed = Some(Err(error));
         }
         drop(closed);
-        self.recv.notify_waiters();
+        self.wake();
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = self.recv.lock().expect("anytls waker").take() {
+            waker.wake();
+        }
     }
 }
 
 struct Session<W> {
     writer: tokio::sync::Mutex<W>,
     streams: Mutex<HashMap<u32, Arc<StreamState>>>,
+    next_sid: AtomicU32,
+    active: AtomicUsize,
+    closed: AtomicBool,
+    shutdown: tokio::sync::Notify,
+    /// Called (once per transition to zero active streams) by the stream drop
+    /// so the outbound's idle-session pool can take the session back.
+    idle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl<W> Session<W> {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Stop the receive loop and fail every open stream. Frames already queued
+    /// on the socket are not drained; the peer observes a closed connection.
+    fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            self.shutdown.notify_waiters();
+            for state in self.streams.lock().expect("anytls streams").values() {
+                state.fail(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "anytls session closed",
+                ));
+            }
+        }
+    }
 }
 
 impl<W: AsyncWrite + Unpin> Session<W> {
@@ -161,7 +199,7 @@ fn poll_session_write<W: AsyncWrite + Unpin>(
 }
 
 /// The AnyTLS stream handed to the relay.
-pub struct AnytlsStream<W> {
+pub struct AnytlsStream<W: AsyncWrite + Unpin + Send> {
     session: Arc<Session<W>>,
     state: Arc<StreamState>,
     sid: u32,
@@ -235,10 +273,34 @@ impl<W: AsyncWrite + Unpin + Send> AsyncRead for AnytlsStream<W> {
             if let Some(result) = this.state.closed.lock().expect("anytls closed").take() {
                 return Poll::Ready(result);
             }
-            let notified = this.state.recv.notified();
-            match std::future::Future::poll(Pin::new(&mut Box::pin(notified)), cx) {
-                Poll::Ready(()) => {}
-                Poll::Pending => return Poll::Pending,
+            *this.state.recv.lock().expect("anytls waker") = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin + Send> Drop for AnytlsStream<W> {
+    fn drop(&mut self) {
+        let _ = self
+            .session
+            .streams
+            .lock()
+            .expect("anytls streams")
+            .remove(&self.sid);
+        if self
+            .session
+            .active
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
+        {
+            let hook = self
+                .session
+                .idle_hook
+                .lock()
+                .expect("anytls idle hook")
+                .clone();
+            if let Some(hook) = hook {
+                hook();
             }
         }
     }
@@ -252,7 +314,11 @@ where
 {
     let mut header = [0u8; HEADER];
     'frames: loop {
-        if reader.read_exact(&mut header).await.is_err() {
+        let read = tokio::select! {
+            _ = session.shutdown.notified() => break 'frames,
+            result = reader.read_exact(&mut header) => result,
+        };
+        if read.is_err() {
             break;
         }
         let cmd = header[0];
@@ -276,7 +342,7 @@ where
                         .lock()
                         .expect("anytls inbox")
                         .extend_from_slice(&data);
-                    state.recv.notify_waiters();
+                    state.wake();
                 }
             }
             CMD_SYNACK => {
@@ -297,7 +363,7 @@ where
             CMD_FIN => {
                 if let Some(state) = &state {
                     *state.closed.lock().expect("anytls closed") = Some(Ok(()));
-                    state.recv.notify_waiters();
+                    state.wake();
                 }
             }
             CMD_ALERT => {
@@ -318,6 +384,7 @@ where
             _ => {}
         }
     }
+    session.closed.store(true, Ordering::Release);
     for state in session.streams.lock().expect("anytls streams").values() {
         state.fail(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -326,53 +393,267 @@ where
     }
 }
 
-pub async fn dial(
+/// The concrete writer of a pooled AnyTLS session (both halves come from
+/// `tokio::io::split` over the boxed TLS/WebSocket stream).
+pub type BoxWriter = tokio::io::WriteHalf<BoxStream>;
+
+/// One AnyTLS stream over a pooled session, as handed to the UDP relay.
+pub type AnyUotStream = AnytlsStream<BoxWriter>;
+
+/// One idle session plus the server address it was dialled at.
+struct IdleSession {
+    session: Arc<Session<BoxWriter>>,
+    server: std::net::SocketAddr,
+    since: Instant,
+}
+
+/// Per-outbound idle-session pool (pinned `anytls/session.Client`).
+///
+/// `client-metadata` is sent in the settings frame of every new session;
+/// `disable-reuse` never pools (a stream's session is closed when it ends);
+/// the check interval is applied lazily on acquire/release instead of with the
+/// pinned background ticker, and `idle-session-timeout` / `min-idle-session`
+/// decide which idle sessions are kept. The pool is runtime state, not part of
+/// the configuration, so equality ignores it.
+#[derive(Default)]
+pub struct AnytlsPool {
+    idle: Mutex<Vec<IdleSession>>,
+    check_interval: u64,
+    timeout: u64,
+    min_idle: usize,
+}
+
+impl std::fmt::Debug for AnytlsPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnytlsPool")
+            .field("check_interval", &self.check_interval)
+            .field("timeout", &self.timeout)
+            .field("min_idle", &self.min_idle)
+            .finish()
+    }
+}
+
+impl PartialEq for AnytlsPool {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for AnytlsPool {}
+
+impl AnytlsPool {
+    pub fn new(
+        check_interval: u64,
+        timeout: u64,
+        min_idle: usize,
+        _disable_reuse: bool,
+    ) -> Arc<AnytlsPool> {
+        Arc::new(AnytlsPool {
+            idle: Mutex::new(Vec::new()),
+            check_interval,
+            timeout,
+            min_idle,
+        })
+    }
+
+    /// The pinned check interval only decides how often expired sessions are
+    /// swept; sweeping at the next acquire/release is equivalent for a client.
+    pub fn check_interval(&self) -> u64 {
+        self.check_interval
+    }
+
+    fn sweep(&self) {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(self.timeout);
+        let mut idle = self.idle.lock().expect("anytls pool");
+        let mut kept = Vec::with_capacity(idle.len());
+        for (index, session) in idle.drain(..).enumerate() {
+            let expired = now.duration_since(session.since) >= timeout;
+            if !expired || index < self.min_idle {
+                if expired {
+                    // The minimum-idle set is refreshed, as the pinned sweep
+                    // does, so it is not immediately eligible again.
+                    kept.push(IdleSession {
+                        since: now,
+                        ..session
+                    });
+                } else {
+                    kept.push(session);
+                }
+            } else {
+                session.session.close();
+            }
+        }
+        *idle = kept;
+    }
+
+    fn take(&self) -> Option<(Arc<Session<BoxWriter>>, std::net::SocketAddr)> {
+        self.sweep();
+        let mut idle = self.idle.lock().expect("anytls pool");
+        loop {
+            let session = idle.pop()?;
+            if !session.session.is_closed() {
+                return Some((session.session, session.server));
+            }
+        }
+    }
+
+    fn put(&self, session: Arc<Session<BoxWriter>>, server: std::net::SocketAddr) {
+        if session.is_closed() {
+            return;
+        }
+        self.sweep();
+        self.idle
+            .lock()
+            .expect("anytls pool")
+            .push(IdleSession {
+                session,
+                server,
+                since: Instant::now(),
+            });
+    }
+}
+
+async fn open_session(
     option: &AnytlsOutbound,
-    target: &Target,
     tls: &ClientTls,
-) -> Result<Dialed, DialError> {
+) -> Result<(Arc<Session<BoxWriter>>, std::net::SocketAddr), DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("anytls", e))?;
-    let mut stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
-        .await
-        .map_err(|e| handshake("anytls tls", e))?;
-    stream
-        .write_all(&hello(option.password.expose()))
-        .await
-        .map_err(|e| handshake("anytls", e))?;
-    let mut opening = frame(CMD_SETTINGS, 0, &settings());
-    opening.extend_from_slice(&frame(CMD_SYN, 1, &[]));
-    opening.extend_from_slice(&frame(CMD_PSH, 1, &write_destination(target)));
+    let mut stream: BoxStream = Box::new(
+        tls::wrap(tcp, &option.server, &option.tls_settings, tls)
+            .await
+            .map_err(|e| handshake("anytls tls", e))?,
+    );
+    let mut opening = hello(option.password.expose());
+    opening.extend_from_slice(&frame(
+        CMD_SETTINGS,
+        0,
+        &settings(option.client_metadata.as_deref()),
+    ));
     stream
         .write_all(&opening)
         .await
         .map_err(|e| handshake("anytls", e))?;
     stream.flush().await.map_err(|e| handshake("anytls", e))?;
-
     let (reader, writer) = tokio::io::split(stream);
+    let session = Arc::new(Session {
+        writer: tokio::sync::Mutex::new(writer),
+        streams: Mutex::new(HashMap::new()),
+        next_sid: AtomicU32::new(0),
+        active: AtomicUsize::new(0),
+        closed: AtomicBool::new(false),
+        shutdown: tokio::sync::Notify::new(),
+        idle_hook: Mutex::new(None),
+    });
+    tokio::spawn(recv_loop(reader, session.clone()));
+    // Install the return/close hook once the session exists.
+    let weak_session = Arc::downgrade(&session);
+    let hook: Arc<dyn Fn() + Send + Sync> = if option.disable_reuse {
+        Arc::new(move || {
+            if let Some(session) = weak_session.upgrade() {
+                session.close();
+            }
+        })
+    } else {
+        let weak_pool = Arc::downgrade(&option.session_pool);
+        Arc::new(move || {
+            if let (Some(session), Some(pool)) = (weak_session.upgrade(), weak_pool.upgrade()) {
+                pool.put(session, server);
+            }
+        })
+    };
+    *session.idle_hook.lock().expect("anytls idle hook") = Some(hook);
+    Ok((session, server))
+}
+
+async fn acquire_session(
+    option: &AnytlsOutbound,
+    tls: &ClientTls,
+) -> Result<(Arc<Session<BoxWriter>>, std::net::SocketAddr), DialError> {
+    if !option.disable_reuse {
+        if let Some((session, server)) = option.session_pool.take() {
+            return Ok((session, server));
+        }
+    }
+    open_session(option, tls).await
+}
+
+/// Open one stream on `session`, sending the destination first.
+async fn open_stream(
+    session: Arc<Session<BoxWriter>>,
+    target: &Target,
+) -> Result<AnytlsStream<BoxWriter>, DialError> {
+    let sid = session.next_sid.fetch_add(1, Ordering::AcqRel) + 1;
     // The server's success/failure report for this stream (SYNACK).
     let (syn_tx, _syn_rx) = tokio::sync::oneshot::channel();
     let state = Arc::new(StreamState {
         synack: Mutex::new(Some(syn_tx)),
-        recv: tokio::sync::Notify::new(),
+        recv: Mutex::new(None),
         inbox: Mutex::new(Vec::new()),
         closed: Mutex::new(None),
         fin_sent: AtomicBool::new(false),
     });
-    let mut streams = HashMap::new();
-    streams.insert(1u32, state.clone());
-    let session = Arc::new(Session {
-        writer: tokio::sync::Mutex::new(writer),
-        streams: Mutex::new(streams),
-    });
-    tokio::spawn(recv_loop(reader, session.clone()));
+    session
+        .streams
+        .lock()
+        .expect("anytls streams")
+        .insert(sid, state.clone());
+    session.active.fetch_add(1, Ordering::AcqRel);
+    let mut opening = frame(CMD_SYN, sid, &[]);
+    opening.extend_from_slice(&frame(CMD_PSH, sid, &write_destination(target)));
+    if let Err(error) = session.send(&opening).await {
+        let _ = session.streams.lock().expect("anytls streams").remove(&sid);
+        session.active.fetch_sub(1, Ordering::AcqRel);
+        return Err(handshake("anytls", error));
+    }
+    Ok(AnytlsStream {
+        session,
+        state,
+        sid,
+        delivered: 0,
+    })
+}
+
+pub async fn dial(
+    option: &AnytlsOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<Dialed, DialError> {
+    let (session, server) = acquire_session(option, tls).await?;
+    let stream = open_stream(session, target).await?;
     Ok(Dialed {
-        stream: Box::new(AnytlsStream {
-            session,
-            state,
-            sid: 1,
-            delivered: 0,
-        }),
+        stream: Box::new(stream),
         server,
     })
+}
+
+/// UoT magic destination (`sing/common/uot.RequestDestination(2)`).
+pub const UOT_MAGIC: &str = "sp.v2.udp-over-tcp.arpa";
+
+/// Open the AnyTLS stream a UDP association uses: a stream to the UoT magic
+/// destination followed by the v2 request (`isConnect=1`, destination).
+pub async fn dial_uot(
+    option: &AnytlsOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<(AnytlsStream<BoxWriter>, std::net::SocketAddr), DialError> {
+    let (session, server) = acquire_session(option, tls).await?;
+    let magic = Target {
+        host: UOT_MAGIC.to_string(),
+        port: 0,
+    };
+    let mut stream = open_stream(session, &magic).await?;
+    let mut request = Vec::with_capacity(1 + target.host.len() + 9);
+    request.push(1); // isConnect
+    request.extend_from_slice(&write_destination(target));
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|e| handshake("anytls uot", e))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| handshake("anytls uot", e))?;
+    Ok((stream, server))
 }

@@ -405,15 +405,15 @@
         "mptcp",
         "interface-name",
         "routing-mark",
-        "ip-version"
+        "ip-version",
+        "udp-over-tcp",
+        "udp-over-tcp-version: 1|2"
       ],
-      "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
+      "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; `udp-over-tcp: true` switches to sing UoT (v2 magic `sp.v2.udp-over-tcp.arpa`, v1 legacy framing) instead; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
       "cipherNamedRejections": "The pinned ss outbound uses `sing-shadowsocks2` and accepts 39 method names; the other 34 are rejected by name (never silently accepted): legacy AEAD additions (chacha8-ietf-poly1305, xchacha8-ietf-poly1305, rabbit128-poly1305, aes-128/192/256-ccm, aes-128/256-gcm-siv, aegis-128l, aegis-256, aez-384, deoxys-ii-256-128, lea-128/192/256-gcm, ascon128, ascon128a), shadowstream (aes-128/192/256-ctr, aes-128/192/256-cfb, rc4-md5, chacha20-ietf, xchacha20, chacha20), `none`, and 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm. `DUMMY` is not an ss method in the pinned engine either. The full value matrix and the pinned `-t` verdicts are in evidence/t28-option-parity.{md,json}.",
       "notImplemented": [
         "plugin",
-        "plugin-opts",
-        "udp-over-tcp",
-        "udp-over-tcp-version"
+        "plugin-opts"
       ],
       "evidence": [
         "tests/protocols.rs::shadowsocks_aes_128_gcm_wrong_password_fails_authentication",
@@ -428,7 +428,9 @@
         "tests/mihomo_peers.rs::shadowsocks_udp_wrong_password_never_reaches_the_echo",
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
         "tests/config.rs::t27_tls_identity_options_are_parsed",
-        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed"
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
+        "tests/mihomo_peers.rs::shadowsocks_uot_reaches_the_echo_through_mihomo",
+        "tests/mihomo_peers.rs::shadowsocks_uot_v1_reaches_the_echo_through_mihomo"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). AEAD ciphers follow the pinned ss outbound (`sing-shadowsocks2`) names for aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305 (the 24-byte XChaCha nonce is honoured); every other pinned-accepted name (the shadowstream list, ChaCha8/AES-CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon AEADs, `none` and the `2022-blake3-*` methods) is a named rejection, enumerated value by value in evidence/t28-option-parity.{md,json}."
     },
@@ -513,14 +515,13 @@
         "fingerprint",
         "certificate",
         "private-key",
-        "ws-headers"
+        "ws-headers",
+        "udp (XUDP default, packet-addr via packet-encoding)",
+        "packet-encoding: packetaddr|packet|xudp",
+        "client-fingerprint (rustls approximation)"
       ],
-      "udp": "not implemented: `udp: true` is rejected (needs packet-addr/XUDP); `udp: false` loads",
+      "udp": "implemented: `udp: true` uses XUDP by default (pinned `NewVless`), `packet-encoding: packetaddr|packet` selects packet-addr framing; tested against the pinned vless listener (XUDP and packet-addr)",
       "notImplemented": [
-        "udp: true",
-        "packet-addr: true",
-        "xudp: true",
-        "packet-encoding",
         "grpc-opts",
         "http-opts",
         "h2-opts",
@@ -530,7 +531,6 @@
         "shadow-tls-opts",
         "restls-opts",
         "jls-opts",
-        "client-fingerprint",
         "flow (xtls-rprx-vision)"
       ],
       "evidence": [
@@ -543,7 +543,10 @@
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
-        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/config.rs::t30_datagram_and_fingerprint_options_are_accepted",
+        "tests/mihomo_peers.rs::vless_udp_xudp_reaches_the_echo_through_mihomo",
+        "tests/mihomo_peers.rs::vless_udp_packet_addr_reaches_the_echo_through_mihomo"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). `ws-headers` is declared by the pinned VlessOption but never read (WSOpts.Headers is the applied map), so it is accepted as the same inert key."
     },
@@ -565,21 +568,21 @@
         "name-cert-verify",
         "fingerprint",
         "certificate",
-        "private-key"
-      ],
-      "udp": "not implemented: `udp: true` is rejected (needs UoT); `udp: false` loads",
-      "notImplemented": [
-        "udp: true",
+        "private-key",
+        "udp (UoT over an AnyTLS stream)",
         "client-metadata",
         "idle-session-check-interval",
         "idle-session-timeout",
         "min-idle-session",
-        "disable-reuse: true",
+        "disable-reuse",
+        "client-fingerprint (rustls approximation)"
+      ],
+      "udp": "implemented: `udp: true` opens a UoT stream (`sp.v2.udp-over-tcp.arpa`) and frames `u16 length || payload`; the idle-session pool honours the reuse knobs; tested against the pinned anytls listener",
+      "notImplemented": [
         "ech-opts",
         "shadow-tls-opts",
         "restls-opts",
-        "jls-opts",
-        "client-fingerprint"
+        "jls-opts"
       ],
       "evidence": [
         "tests/mihomo_peers.rs::anytls_outbound_reaches_the_receiving_side_through_mihomo",
@@ -587,9 +590,10 @@
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
-        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/mihomo_peers.rs::anytls_udp_uot_reaches_the_echo_through_mihomo"
       ],
-      "notes": "shadow-tls-opts/restls-opts/jls-opts are declared by the pinned anytls type and applied (they add a security mode to the TLS config), so a non-empty block is a registered rejection; the same keys on socks5/http/ss are not declared there and are ignored. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
+      "notes": "Session reuse follows the pinned `anytls/session.Client`: idle sessions are pooled per outbound, `disable-reuse` closes a session when its stream ends, `min-idle-session`/`idle-session-timeout` bound the sweep (swept lazily on acquire/release rather than by a background ticker), and `client-metadata` is sent in the settings frame. `shadow-tls-opts`/`restls-opts`/`jls-opts` remain named rejections: rustls cannot set the uTLS session id / rewrite the ClientHello+ServerHello random those modes need. `client-fingerprint` is applied as the closest rustls profile (browser key-exchange list); extension order/ciphers are not reproduced. BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
     "vmess": {
       "status": "implemented",
@@ -615,15 +619,16 @@
         "name-cert-verify",
         "fingerprint",
         "certificate",
-        "private-key"
-      ],
-      "udp": "not implemented: `udp: true` is rejected (no VMess UDP command); `udp: false` loads",
-      "notImplemented": [
-        "udp: true",
-        "alterId > 0",
+        "private-key",
+        "udp",
         "packet-addr",
         "xudp",
-        "packet-encoding",
+        "packet-encoding: packetaddr|packet|xudp",
+        "client-fingerprint (rustls approximation)"
+      ],
+      "udp": "implemented: `command 2` UDP with one record per datagram, plus packet-addr (magic destination) and XUDP (mux frames); tested against the pinned vmess listener",
+      "notImplemented": [
+        "alterId > 0",
         "global-padding",
         "authenticated-length",
         "grpc-opts",
@@ -637,8 +642,7 @@
         "jls-opts",
         "tlsmirror-opts",
         "mekya-opts",
-        "mkcp-opts",
-        "client-fingerprint"
+        "mkcp-opts"
       ],
       "evidence": [
         "src/outbound/vmess.rs::tests::request_body_layout_is_fixed",
@@ -651,7 +655,8 @@
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
         "tests/config.rs::t27_tls_identity_options_are_parsed",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
-        "tests/protocols.rs::name_cert_verify_checks_the_configured_name"
+        "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
+        "tests/mihomo_peers.rs::vmess_udp_modes_reach_the_echo_through_mihomo"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
@@ -1251,7 +1256,8 @@
         "initial-stream-receive-window",
         "max-stream-receive-window",
         "initial-connection-receive-window",
-        "max-connection-receive-window"
+        "max-connection-receive-window",
+        "client-fingerprint (rustls approximation)"
       ],
       "udp": "not implemented: the engine has no Hysteria2 UDP session relay; `udp` traffic routed to Hysteria2 is dropped and logged",
       "notImplemented": [
@@ -1262,8 +1268,7 @@
         "realm-opts",
         "udp-mtu",
         "bbr-profile",
-        "ech-opts",
-        "client-fingerprint"
+        "ech-opts"
       ],
       "evidence": [
         "src/outbound/h3.rs::tests::varint_round_trip",

@@ -1,0 +1,107 @@
+{
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T30",
+  "attempt": "T30-A1",
+  "matrix": {
+    "noop": 289,
+    "implemented": 75,
+    "enabled": 131,
+    "disagreements_total": 87,
+    "target_family_disagreements": 11,
+    "problems": 0
+  },
+  "before": {
+    "enabled": 151,
+    "implemented": 55,
+    "target_family_rust_reject_rows": {
+      "vless": 5,
+      "anytls": 9,
+      "ss": 2,
+      "hysteria2": 7,
+      "vmess": 8
+    }
+  },
+  "after": {
+    "implemented_and_verified": {
+      "vless": [
+        "udp (XUDP default)",
+        "xudp",
+        "packet-addr",
+        "packet-encoding",
+        "client-fingerprint (rustls approximation)"
+      ],
+      "anytls": [
+        "udp (UoT)",
+        "client-metadata",
+        "idle-session-check-interval",
+        "idle-session-timeout",
+        "min-idle-session",
+        "disable-reuse",
+        "client-fingerprint (rustls approximation)"
+      ],
+      "ss": [
+        "udp-over-tcp",
+        "udp-over-tcp-version"
+      ],
+      "vmess": [
+        "udp",
+        "xudp",
+        "packet-addr",
+        "packet-encoding",
+        "client-fingerprint (rustls approximation)"
+      ],
+      "hysteria2": [
+        "client-fingerprint (rustls approximation)"
+      ]
+    },
+    "named_residuals": {
+      "anytls": [
+        "shadow-tls-opts",
+        "jls-opts"
+      ],
+      "vmess": [
+        "mkcp-opts",
+        "mekya-opts",
+        "tlsmirror-opts"
+      ],
+      "hysteria2": [
+        "up",
+        "ports",
+        "hop-interval",
+        "realm-opts",
+        "udp-mtu",
+        "bbr-profile"
+      ]
+    }
+  },
+  "tests": {
+    "default": "cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel (all suites pass; 72 ignored peer cases)",
+    "peers": [
+      "vless_udp_xudp_reaches_the_echo_through_mihomo",
+      "vless_udp_packet_addr_reaches_the_echo_through_mihomo",
+      "anytls_udp_uot_reaches_the_echo_through_mihomo",
+      "shadowsocks_uot_reaches_the_echo_through_mihomo",
+      "shadowsocks_uot_v1_reaches_the_echo_through_mihomo",
+      "vmess_udp_modes_reach_the_echo_through_mihomo",
+      "full pinned peer suite: 72 passed, 0 failed",
+      "node --test tool/kernel-compat/runner.test.mjs: 10 passed"
+    ],
+    "matrix": "node tool/kernel-compat/option-probe.mjs --rust <release>/billow-kernel --mihomo .cache/baseline/mihomo-a55a9073f9b7 --out evidence/option-matrix.txt (0 problems)",
+    "differentials": "t22/t23/t24/t25/t5 differential scripts were not re-run in this attempt; the default suite and the complete pinned peer suite (72 cases, incl. the new UDP/UoT cases) pass, and the option matrix reports 0 problems."
+  },
+  "limitations": [
+    "uTLS client-fingerprint: rustls cannot emit a uTLS ClientHello; known pinned names are validated and applied as the closest rustls profile (browser key-exchange list) and documented as an approximation. Extension order/cipher list are not reproduced.",
+    "anytls shadow-tls-opts/jls-opts need a client-controlled ClientHello session id / ServerHello random; rustls exposes neither, so non-empty blocks stay named rejections.",
+    "vmess mkcp/mekya/tlsmirror are separate transports (KCP/mekya session/TLS mirror) and remain named rejections.",
+    "hysteria2 port hopping/Salamander+Gecko obfs/Brutal up/realm/udp-mtu/bbr-profile require the pinned packet-connection layer and senders quinn does not expose (and the engine has no Hysteria2 UDP relay); they remain named rejections with the reason.",
+    "AnyTLS session-reuse sweep runs lazily on acquire/release instead of the pinned background ticker; client-metadata/reuse/idle bounds are applied."
+  ],
+  "files": [
+    "native-kernel/crates/billow-kernel/src/proxies.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/{vless,anytls,vmess,udp,tls}.rs",
+    "native-kernel/crates/billow-kernel/src/engine.rs",
+    "native-kernel/crates/billow-kernel/tests/{config,mihomo_peers}.rs",
+    "native-kernel/README.md",
+    "tool/kernel-compat/{README.md,option-probe.mjs,evidence/rust-mapping.json,evidence/option-matrix.txt}"
+  ]
+}

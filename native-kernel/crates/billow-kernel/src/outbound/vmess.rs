@@ -40,6 +40,8 @@ use crate::proxies::{VmessCipher, VmessNetwork, VmessOutbound};
 const VERSION: u8 = 1;
 const OPTION_CHUNK_STREAM: u8 = 1;
 const COMMAND_TCP: u8 = 1;
+const COMMAND_UDP: u8 = 2;
+const COMMAND_MUX: u8 = 3;
 const ATYP_IPV4: u8 = 1;
 const ATYP_DOMAIN: u8 = 2;
 const ATYP_IPV6: u8 = 3;
@@ -245,6 +247,18 @@ pub fn request_body(
     cipher: VmessCipher,
     target: &Target,
 ) -> Vec<u8> {
+    request_body_command(req_iv, req_key, resp_v, cipher, target, COMMAND_TCP)
+}
+
+/// Unsealed request header for `command` (`1` TCP, `2` UDP, `3` mux).
+pub fn request_body_command(
+    req_iv: &[u8; 16],
+    req_key: &[u8; 16],
+    resp_v: u8,
+    cipher: VmessCipher,
+    target: &Target,
+    command: u8,
+) -> Vec<u8> {
     let security = match cipher {
         VmessCipher::Aes128Gcm => 3u8,
         VmessCipher::Chacha20Poly1305 => 4u8,
@@ -261,23 +275,25 @@ pub fn request_body(
     let p = padding[0] & 0x0f;
     out.push((p << 4) | security);
     out.push(0);
-    out.push(COMMAND_TCP);
-    out.extend_from_slice(&target.port.to_be_bytes());
-    if let Ok(ip) = target.host.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(v4) => {
-                out.push(ATYP_IPV4);
-                out.extend_from_slice(&v4.octets());
+    out.push(command);
+    if command != COMMAND_MUX {
+        out.extend_from_slice(&target.port.to_be_bytes());
+        if let Ok(ip) = target.host.parse::<std::net::IpAddr>() {
+            match ip {
+                std::net::IpAddr::V4(v4) => {
+                    out.push(ATYP_IPV4);
+                    out.extend_from_slice(&v4.octets());
+                }
+                std::net::IpAddr::V6(v6) => {
+                    out.push(ATYP_IPV6);
+                    out.extend_from_slice(&v6.octets());
+                }
             }
-            std::net::IpAddr::V6(v6) => {
-                out.push(ATYP_IPV6);
-                out.extend_from_slice(&v6.octets());
-            }
+        } else {
+            out.push(ATYP_DOMAIN);
+            out.push(target.host.len().min(255) as u8);
+            out.extend_from_slice(&target.host.as_bytes()[..target.host.len().min(255)]);
         }
-    } else {
-        out.push(ATYP_DOMAIN);
-        out.push(target.host.len().min(255) as u8);
-        out.extend_from_slice(&target.host.as_bytes()[..target.host.len().min(255)]);
     }
     if p > 0 {
         out.extend_from_slice(&padding[1..1 + p as usize]);
@@ -415,6 +431,90 @@ impl<S> VmessStream<S> {
         }
     }
 
+}
+
+impl<S: AsyncRead + Unpin> VmessStream<S> {
+    /// Consume the server's response header (the pinned packet connections do
+    /// this lazily on their first read, not when the request is written).
+    pub(crate) async fn read_response_header(
+        &mut self,
+        key: &[u8; 16],
+        iv: &[u8; 16],
+        resp_v: u8,
+    ) -> io::Result<()> {
+        read_response(&mut self.inner, key, iv, resp_v).await
+    }
+
+    /// Read exactly one body record (one VMess chunk). The UDP packet modes
+    /// put one datagram in each record; this API keeps that boundary instead
+    /// of concatenating records like the `AsyncRead` implementation.
+    pub async fn read_record(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let mut length = [0u8; 2];
+        self.inner.read_exact(&mut length).await?;
+        let length = u16::from_be_bytes(length) as usize;
+        if length > MAX_RECORD || length < self.read_cipher.overhead() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vmess UDP record length out of range",
+            ));
+        }
+        let mut sealed = vec![0u8; length];
+        self.inner.read_exact(&mut sealed).await?;
+        let nonce = chunk_nonce(self.read_count, &self.read_iv);
+        self.read_count = self.read_count.wrapping_add(1);
+        let plain = self.read_cipher.open(&nonce, &sealed)?;
+        if plain.len() > out.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vmess UDP datagram larger than the buffer",
+            ));
+        }
+        out[..plain.len()].copy_from_slice(&plain);
+        Ok(plain.len())
+    }
+}
+
+/// One VMess UDP association: one TCP transport, one command, one datagram per
+/// record.
+pub struct VmessPacket {
+    stream: VmessStream<BoxStream>,
+    response: Option<ResponseState>,
+}
+
+struct ResponseState {
+    key: [u8; 16],
+    iv: [u8; 16],
+    v: u8,
+}
+
+impl VmessPacket {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > CHUNK_SIZE - self.stream.write_cipher.overhead() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "vmess UDP datagram exceeds one record",
+            ));
+        }
+        self.stream.write_all(payload).await?;
+        self.stream.flush().await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        if let Some(response) = self.response.take() {
+            // The pinned packet connections read the response header lazily on
+            // their first read; the server only writes it with the first reply.
+            self.stream
+                .read_response_header(&response.key, &response.iv, response.v)
+                .await?;
+        }
+        match self.stream.read_record(buffer).await {
+            Ok(length) => Ok(Some(length)),
+            // A clean EOF ends the association; a broken/forged record is an
+            // error so the relay marks the session failed instead of spinning.
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl<S: AsyncWrite + Unpin> VmessStream<S> {
@@ -661,6 +761,41 @@ pub async fn dial(
     target: &Target,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
+    let (stream, server, _) = dial_command(option, target, tls, COMMAND_TCP).await?;
+    Ok(Dialed {
+        stream: Box::new(stream),
+        server,
+    })
+}
+
+/// VMess UDP associations: command 2 with one datagram per record. The caller
+/// chooses the destination (XUDP frames carry their own, packet-addr uses the
+/// magic destination, plain UDP binds this one).
+pub async fn dial_packet(
+    option: &VmessOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<VmessPacket, DialError> {
+    let (stream, _server, response) = dial_command(option, target, tls, COMMAND_UDP).await?;
+    Ok(VmessPacket { stream, response })
+}
+
+/// XUDP: command mux (3) and the mux frames carry the UDP destinations.
+pub async fn dial_mux(
+    option: &VmessOutbound,
+    target: &Target,
+    tls: &ClientTls,
+) -> Result<VmessPacket, DialError> {
+    let (stream, _server, response) = dial_command(option, target, tls, COMMAND_MUX).await?;
+    Ok(VmessPacket { stream, response })
+}
+
+async fn dial_command(
+    option: &VmessOutbound,
+    target: &Target,
+    tls: &ClientTls,
+    command: u8,
+) -> Result<(VmessStream<BoxStream>, std::net::SocketAddr, Option<ResponseState>), DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("vmess", e))?;
     let mut stream: BoxStream = match &option.network {
@@ -717,7 +852,7 @@ pub async fn dial(
     resp_iv.copy_from_slice(&Sha256::digest(req_iv)[..16]);
 
     let key = cmd_key(&option.uuid);
-    let header = request_body(&req_iv, &req_key, resp_v, option.cipher, target);
+    let header = request_body_command(&req_iv, &req_key, resp_v, option.cipher, target, command);
     let unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -728,19 +863,24 @@ pub async fn dial(
         .await
         .map_err(|e| handshake("vmess", e))?;
     stream.flush().await.map_err(|e| handshake("vmess", e))?;
-    read_response(&mut stream, &resp_key, &resp_iv, resp_v)
-        .await
-        .map_err(|e| handshake("vmess response", e))?;
+    // TCP reads the response header now (the pinned client does it on its
+    // first read, and the header precedes the first payload byte). The packet
+    // connections must defer it: the server writes it with the first reply.
+    let pending = if command == COMMAND_TCP {
+        read_response(&mut stream, &resp_key, &resp_iv, resp_v)
+            .await
+            .map_err(|e| handshake("vmess response", e))?;
+        None
+    } else {
+        Some(ResponseState {
+            key: resp_key,
+            iv: resp_iv,
+            v: resp_v,
+        })
+    };
 
-    let stream: BoxStream = Box::new(VmessStream::new(
-        stream,
-        option.cipher,
-        req_iv,
-        req_key,
-        resp_iv,
-        resp_key,
-    ));
-    Ok(Dialed { stream, server })
+    let stream = VmessStream::new(stream, option.cipher, req_iv, req_key, resp_iv, resp_key);
+    Ok((stream, server, pending))
 }
 
 #[cfg(test)]

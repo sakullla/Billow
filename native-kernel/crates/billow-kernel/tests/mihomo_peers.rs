@@ -2713,3 +2713,168 @@ fn sudoku_multiplex_handles_concurrent_streams() {
         assert!(sink.wait_marker("marker-sudoku-mux-concurrent-1", Duration::from_secs(10)));
     });
 }
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vless_udp_xudp_reaches_the_echo_through_mihomo() {
+    // `udp: true` without packet-encoding is XUDP (pinned `NewVless`), so the
+    // kernel must speak the mux/XUDP frames the vless listener's sing handler
+    // gives to the UDP target.
+    let port = free_port();
+    let listeners = listener(
+        "vless",
+        port,
+        &format!(", certificate: CERT, private-key: KEY, users: [{{username: u1, uuid: {UUID}}}]"),
+    );
+    with_udp_peer("vless-udp-xudp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vless, server: 127.0.0.1, port: {port}, uuid: {UUID}, tls: true, skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-vless-xudp-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the XUDP datagram through the vless listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vless_udp_packet_addr_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = listener(
+        "vless",
+        port,
+        &format!(", certificate: CERT, private-key: KEY, users: [{{username: u1, uuid: {UUID}}}]"),
+    );
+    with_udp_peer("vless-udp-packetaddr", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: vless, server: 127.0.0.1, port: {port}, uuid: {UUID}, tls: true, skip-cert-verify: true, udp: true, packet-encoding: packetaddr}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-vless-packetaddr-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the packet-addr datagram through the vless listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn anytls_udp_uot_reaches_the_echo_through_mihomo() {
+    // AnyTLS UDP is UoT over a dedicated stream (`sing` handler's magic
+    // destination); the listener must resolve it and forward the datagram.
+    let port = free_port();
+    let listeners = listener(
+        "anytls",
+        port,
+        &format!(", certificate: CERT, private-key: KEY, users: {{user1: \"{ANYTLS_PASSWORD}\"}}"),
+    );
+    with_udp_peer("anytls-udp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: anytls, server: 127.0.0.1, port: {port}, password: \"{ANYTLS_PASSWORD}\", sni: localhost, skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-anytls-uot-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the UoT datagram through the anytls listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowsocks_uot_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer("ss-uot", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, cipher: aes-256-gcm, password: \"{SS_PASSWORD}\", udp-over-tcp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-ss-uot-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the UoT datagram through the ss listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowsocks_uot_v1_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = listener(
+        "shadowsocks",
+        port,
+        &format!(", cipher: aes-256-gcm, password: \"{SS_PASSWORD}\""),
+    );
+    with_udp_peer("ss-uot-v1", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, cipher: aes-256-gcm, password: \"{SS_PASSWORD}\", udp-over-tcp: true, udp-over-tcp-version: 1}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-ss-uot-v1-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the legacy UoT framing must still reach the echo"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn vmess_udp_modes_reach_the_echo_through_mihomo() {
+    // Plain command-2 UDP, packet-addr and XUDP against the pinned vmess
+    // listener. Each mode gets its own kernel so the association is fresh.
+    let port = free_port();
+    let listeners = vmess_listener(port, UUID, 0);
+    with_udp_peer("vmess-udp", &listeners, |_mihomo, _| {
+        for extra in [
+            "",
+            ", packet-encoding: packetaddr",
+            ", packet-encoding: xudp",
+        ] {
+            let echo = UdpEcho::start();
+            let (running, _) = start_kernel(&format!(
+                "  - {{name: p0, type: vmess, server: 127.0.0.1, port: {port}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true{extra}}}\n"
+            ));
+            let (_control, relay) = udp_associate(running.proxy);
+            let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+            let payload = format!("marker-vmess-udp{extra}");
+            send_datagram(relay, target, payload.as_bytes());
+            assert_eq!(
+                echo.received(),
+                vec![payload.as_bytes().to_vec()],
+                "the UDP echo must receive the datagram for vmess{extra}"
+            );
+        }
+    });
+}

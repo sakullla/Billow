@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t28a4-release-target/release/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t30-release/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 289, implemented cases: 55, enabled cases: 151, problems: 0
+# no-op cases: 289, implemented cases: 75, enabled cases: 131, problems: 0
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept
@@ -343,45 +343,47 @@ impl    hysteria2 initial-stream-receive-window rust=accept mihomo=accept
 impl    hysteria2 max-stream-receive-window    rust=accept mihomo=accept
 impl    hysteria2 initial-connection-receive-window rust=accept mihomo=accept
 impl    hysteria2 max-connection-receive-window rust=accept mihomo=accept
+impl    vless   udp                          rust=accept mihomo=accept
+impl    vless   xudp                         rust=accept mihomo=accept
+impl    vless   packet-addr                  rust=accept mihomo=accept
+impl    vless   packet-encoding              rust=accept mihomo=accept
+impl    vless   client-fingerprint           rust=accept mihomo=accept
+impl    anytls  udp                          rust=accept mihomo=accept
+impl    anytls  client-metadata              rust=accept mihomo=accept
+impl    anytls  idle-session-check-interval  rust=accept mihomo=accept
+impl    anytls  idle-session-timeout         rust=accept mihomo=accept
+impl    anytls  min-idle-session             rust=accept mihomo=accept
+impl    anytls  disable-reuse                rust=accept mihomo=accept
+impl    anytls  client-fingerprint           rust=accept mihomo=accept
+impl    ss      udp-over-tcp                 rust=accept mihomo=accept
+impl    ss      udp-over-tcp-version         rust=accept mihomo=accept
+impl    vmess   udp                          rust=accept mihomo=accept
+impl    vmess   packet-addr                  rust=accept mihomo=accept
+impl    vmess   xudp                         rust=accept mihomo=accept
+impl    vmess   packet-encoding              rust=accept mihomo=accept
+impl    vmess   client-fingerprint           rust=accept mihomo=accept
+impl    hysteria2 client-fingerprint           rust=accept mihomo=accept
 impl    mieru   basic-options                rust=accept mihomo=accept
 impl    sudoku  basic-options                rust=accept mihomo=accept
 impl    shadowquic basic-options                rust=accept mihomo=accept
 impl    masque  congestion-controller        rust=accept mihomo=accept
 impl    trojan  ss-opts                      rust=accept mihomo=accept
 enabled ss      plugin                       rust=reject mihomo=reject
-enabled ss      udp-over-tcp                 rust=reject mihomo=accept
-enabled ss      udp-over-tcp-version         rust=reject mihomo=accept
 enabled trojan  reality-opts                 rust=reject mihomo=reject
 enabled trojan  ech-opts                     rust=reject mihomo=reject
 enabled trojan  shadow-tls-opts              rust=reject mihomo=accept
 enabled trojan  restls-opts                  rust=reject mihomo=reject
 enabled trojan  jls-opts                     rust=reject mihomo=accept
 enabled trojan  client-fingerprint           rust=reject mihomo=accept
-enabled vless   udp                          rust=reject mihomo=accept
-enabled vless   packet-addr                  rust=reject mihomo=accept
-enabled vless   xudp                         rust=reject mihomo=accept
-enabled vless   packet-encoding              rust=reject mihomo=accept
 enabled vless   reality-opts                 rust=reject mihomo=reject
 enabled vless   ech-opts                     rust=reject mihomo=reject
 enabled vless   shadow-tls-opts              rust=reject mihomo=reject
 enabled vless   restls-opts                  rust=reject mihomo=reject
 enabled vless   jls-opts                     rust=reject mihomo=reject
-enabled vless   client-fingerprint           rust=reject mihomo=accept
-enabled anytls  udp                          rust=reject mihomo=accept
-enabled anytls  client-metadata              rust=reject mihomo=accept
-enabled anytls  idle-session-check-interval  rust=reject mihomo=accept
-enabled anytls  idle-session-timeout         rust=reject mihomo=accept
-enabled anytls  min-idle-session             rust=reject mihomo=accept
-enabled anytls  disable-reuse                rust=reject mihomo=accept
 enabled anytls  ech-opts                     rust=reject mihomo=reject
 enabled anytls  shadow-tls-opts              rust=reject mihomo=accept
 enabled anytls  restls-opts                  rust=reject mihomo=reject
 enabled anytls  jls-opts                     rust=reject mihomo=accept
-enabled anytls  client-fingerprint           rust=reject mihomo=accept
-enabled vmess   udp                          rust=reject mihomo=accept
-enabled vmess   packet-addr                  rust=reject mihomo=accept
-enabled vmess   xudp                         rust=reject mihomo=accept
-enabled vmess   packet-encoding              rust=reject mihomo=accept
 enabled vmess   global-padding               rust=reject mihomo=reject
 enabled vmess   authenticated-length         rust=reject mihomo=reject
 enabled vmess   reality-opts                 rust=reject mihomo=reject
@@ -392,7 +394,6 @@ enabled vmess   jls-opts                     rust=reject mihomo=reject
 enabled vmess   tlsmirror-opts               rust=reject mihomo=accept
 enabled vmess   mekya-opts                   rust=reject mihomo=accept
 enabled vmess   mkcp-opts                    rust=reject mihomo=accept
-enabled vmess   client-fingerprint           rust=reject mihomo=accept
 enabled snell   udp                          rust=reject mihomo=reject
 enabled snell   reuse                        rust=reject mihomo=reject
 enabled snell   mode                         rust=reject mihomo=reject
@@ -436,7 +437,6 @@ enabled hysteria2 realm-opts                   rust=reject mihomo=accept
 enabled hysteria2 udp-mtu                      rust=reject mihomo=accept
 enabled hysteria2 bbr-profile                  rust=reject mihomo=accept
 enabled hysteria2 ech-opts                     rust=reject mihomo=reject
-enabled hysteria2 client-fingerprint           rust=reject mihomo=accept
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   multiplexing                 rust=reject mihomo=accept
 enabled mieru   traffic-pattern              rust=reject mihomo=reject

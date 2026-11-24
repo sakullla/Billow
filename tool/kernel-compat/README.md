@@ -302,6 +302,12 @@ was a test-readiness bug (the CONNECT-accept counter is observed before
 value-level gaps, per-family owners and unverified boundaries are in
 `evidence/t28-option-parity.{json,md}`.
 
+The T30 closure (`evidence/t30-option-closure.{json,md}`) moves vless/anytls/
+ss/vmess datagram, UoT/session and fingerprint rows to implemented and verifies
+them against the pinned listeners; the remaining target-family rejections are
+named in the mapping and README (anytls security modes, vmess mkcp/mekya/
+tlsmirror, hysteria2 port hopping/obfs/Brutal/realm/udp-mtu/bbr-profile).
+
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every
 `partial` claim must say what is missing, and every family in the peer matrix must have a

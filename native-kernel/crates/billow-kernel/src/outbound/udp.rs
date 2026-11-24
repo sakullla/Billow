@@ -641,6 +641,776 @@ impl TrojanUdp {
     }
 }
 
+/// One dedicated TCP stream toward the proxy server, honouring the
+/// `dialer-proxy` chain exactly like the TCP dial path: direct, or through one
+/// socks5 hop's CONNECT tunnel.
+async fn server_stream(
+    server: &str,
+    port: u16,
+    via: &[&crate::proxies::Proxy],
+    timeout: std::time::Duration,
+    tls: &ClientTls,
+) -> Result<BoxStream, DialError> {
+    match via.len() {
+        1 => Ok(Box::new(connect_tcp(server, port).await?)),
+        2 => match &via[1].protocol {
+            crate::proxies::Protocol::Socks5(hop) => {
+                let (read, write) = super::with_dialer(
+                    via[1].dialer.clone(),
+                    super::socks5::tunnel(hop, server, port, &[], timeout, tls),
+                )
+                .await?;
+                Ok(super::joined(read, write))
+            }
+            other => Err(DialError::Chain(format!(
+                "udp through {}({}): only a socks5 hop can carry a UDP association",
+                via[1].name,
+                other_type(other)
+            ))),
+        },
+        _ => Err(DialError::Chain(format!(
+            "udp with a multi-hop dialer-proxy chain ({} hops) is not implemented (at most one socks5 hop)",
+            via.len() - 1
+        ))),
+    }
+}
+
+/// VLESS UDP association. The pinned outbound never uses the bare UDP command:
+/// `packet-encoding: packetaddr|packet` selects packet-addr, and the default
+/// (no packet-addr) selects XUDP, so the kernel speaks exactly those two
+/// framings. XUDP frames are the mux frames (`len | sid | status | option |
+/// network | address | u16 len | data`); packet-addr frames are the 2-byte
+/// length records of the vless `PacketConn` with the destination inside the
+/// payload.
+pub struct VlessUdp {
+    stream: BoxStream,
+    mode: VlessUdpMode,
+    sid: u16,
+    first: bool,
+    bound: Option<Target>,
+    /// The VLESS response header (`version || addon length || addon`) arrives
+    /// with the first server write; the pinned client consumes it lazily on its
+    /// first read, so the association does the same.
+    response_pending: bool,
+}
+
+enum VlessUdpMode {
+    Xudp,
+    PacketAddr,
+}
+
+impl VlessUdp {
+    pub async fn connect(
+        option: &crate::proxies::VlessOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<VlessUdp, DialError> {
+        debug_assert!(option.udp);
+        let stream = server_stream(&option.server, option.port, via, timeout, tls).await?;
+        let stream: BoxStream = if option.tls {
+            Box::new(
+                super::tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
+                    .await
+                    .map_err(|e| handshake("vless-udp tls", e))?,
+            )
+        } else {
+            stream
+        };
+        let mut stream: BoxStream = match &option.network {
+            crate::proxies::VlessNetwork::Tcp => stream,
+            crate::proxies::VlessNetwork::Ws(ws) => {
+                let host = option
+                    .tls_settings
+                    .sni
+                    .clone()
+                    .unwrap_or_else(|| option.server.clone());
+                Box::new(
+                    super::ws::connect(
+                        stream,
+                        &host,
+                        &ws.path,
+                        &ws.headers,
+                        ws.v2ray_http_upgrade,
+                    )
+                    .await
+                    .map_err(|e| handshake("vless-udp ws", e))?,
+                )
+            }
+        };
+        let mode = if option.xudp {
+            let header = super::vless::request_header_command(&option.uuid, None, super::vless::CMD_MUX);
+            stream
+                .write_all(&header)
+                .await
+                .map_err(|e| handshake("vless-udp", e))?;
+            VlessUdpMode::Xudp
+        } else {
+            let magic = Target {
+                host: PACKETADDR_MAGIC.to_string(),
+                port: 443,
+            };
+            let header = super::vless::request_header_command(
+                &option.uuid,
+                Some(&magic),
+                super::vless::CMD_UDP,
+            );
+            stream
+                .write_all(&header)
+                .await
+                .map_err(|e| handshake("vless-udp", e))?;
+            VlessUdpMode::PacketAddr
+        };
+        stream
+            .flush()
+            .await
+            .map_err(|e| handshake("vless-udp", e))?;
+        Ok(VlessUdp {
+            stream,
+            mode,
+            sid: 1,
+            first: true,
+            bound: None,
+            response_pending: true,
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        match self.mode {
+            VlessUdpMode::Xudp => {
+                let addr = vmess_address(target);
+                let mut frame = Vec::with_capacity(2 + 5 + addr.len() + 2 + payload.len());
+                frame.extend_from_slice(&((5 + addr.len()) as u16).to_be_bytes());
+                frame.extend_from_slice(&self.sid.to_be_bytes());
+                frame.push(if self.first { 1 } else { 2 }); // new | keep
+                frame.push(1); // option data
+                frame.push(2); // network UDP
+                frame.extend_from_slice(&addr);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+                frame.extend_from_slice(payload);
+                self.first = false;
+                self.stream.write_all(&frame).await?;
+                self.stream.flush().await
+            }
+            VlessUdpMode::PacketAddr => {
+                // Packet-addr carries only IP destinations; resolve a name the
+                // way the pinned `ResolveUDP` does before framing.
+                let addr = match resolve(target).await {
+                    Ok(addr) => addr,
+                    Err(error) => return Err(error),
+                };
+                let mut plain = packet_addr_bytes(addr.ip(), addr.port());
+                plain.extend_from_slice(payload);
+                let mut frame = Vec::with_capacity(2 + plain.len());
+                frame.extend_from_slice(&(plain.len() as u16).to_be_bytes());
+                frame.extend_from_slice(&plain);
+                self.stream.write_all(&frame).await?;
+                self.stream.flush().await
+            }
+        }
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        if self.response_pending {
+            let mut header = [0u8; 2];
+            if self.stream.read_exact(&mut header).await.is_err() {
+                return Ok(None);
+            }
+            if header[0] != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unexpected vless response version",
+                ));
+            }
+            if header[1] > 0 {
+                let mut addon = vec![0u8; header[1] as usize];
+                if self.stream.read_exact(&mut addon).await.is_err() {
+                    return Ok(None);
+                }
+            }
+            self.response_pending = false;
+        }
+        match self.mode {
+            VlessUdpMode::PacketAddr => {
+                let mut length = [0u8; 2];
+                if self.stream.read_exact(&mut length).await.is_err() {
+                    return Ok(None);
+                }
+                let length = u16::from_be_bytes(length) as usize;
+                if length > MAX_DATAGRAM {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "vless packet-addr record too long",
+                    ));
+                }
+                let mut plain = vec![0u8; length];
+                if self.stream.read_exact(&mut plain).await.is_err() {
+                    return Ok(None);
+                }
+                let Some((target, header)) = parse_packet_address(&plain, 0) else {
+                    return Ok(None);
+                };
+                let payload = &plain[header..];
+                if payload.len() > buffer.len() {
+                    return Ok(None);
+                }
+                buffer[..payload.len()].copy_from_slice(payload);
+                Ok(Some((target, payload.len())))
+            }
+            VlessUdpMode::Xudp => loop {
+                let mut header = [0u8; 6];
+                if self.stream.read_exact(&mut header).await.is_err() {
+                    return Ok(None);
+                }
+                let length = u16::from_be_bytes([header[0], header[1]]) as usize;
+                let status = header[4];
+                let option = header[5];
+                let mut target: Option<Target> = None;
+                if length > 4 {
+                    let mut extra = vec![0u8; length - 4];
+                    if self.stream.read_exact(&mut extra).await.is_err() {
+                        return Ok(None);
+                    }
+                    // extra = network(1) + vmess address (port first).
+                    if extra[0] == 2 {
+                        target = parse_vmess_address(&extra[1..]);
+                    }
+                }
+                if status == 3 {
+                    return Ok(None);
+                }
+                if status != 2 || option & 1 == 0 {
+                    continue;
+                }
+                let mut length_bytes = [0u8; 2];
+                if self.stream.read_exact(&mut length_bytes).await.is_err() {
+                    return Ok(None);
+                }
+                let length = u16::from_be_bytes(length_bytes) as usize;
+                if length > buffer.len() {
+                    return Ok(None);
+                }
+                self.stream.read_exact(&mut buffer[..length]).await.map_err(|_| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "vless xudp frame cut")
+                })?;
+                let target = target.or_else(|| self.bound.clone()).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "vless xudp reply without a destination")
+                })?;
+                if self.bound.is_none() {
+                    self.bound = Some(target.clone());
+                }
+                return Ok(Some((target, length)));
+            },
+        }
+    }
+}
+
+const PACKETADDR_MAGIC: &str = "sp.packet-addr.v2fly.arpa";
+
+/// vlESS request destination is the vmess `AddressSerializer` order: port
+/// first, then ATYP 1/2/3 (v4, fqdn, v6).
+pub(crate) fn vmess_address(target: &Target) -> Vec<u8> {
+    let mut out = Vec::with_capacity(target.host.len() + 9);
+    out.extend_from_slice(&target.port.to_be_bytes());
+    if let Ok(ip) = target.host.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                out.push(1);
+                out.extend_from_slice(&v4.octets());
+            }
+            std::net::IpAddr::V6(v6) => {
+                out.push(3);
+                out.extend_from_slice(&v6.octets());
+            }
+        }
+    } else {
+        out.push(2);
+        out.push(target.host.len() as u8);
+        out.extend_from_slice(target.host.as_bytes());
+    }
+    out
+}
+
+/// UoT `AddrParser` (`sing/common/uot`): family byte 0 IPv4, 1 IPv6, 2 FQDN,
+/// then the address and the port (different from SOCKS5's 1/4/3).
+fn uot_address(target: &Target) -> Vec<u8> {
+    let mut out = Vec::with_capacity(target.host.len() + 9);
+    if let Ok(ip) = target.host.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                out.push(0);
+                out.extend_from_slice(&v4.octets());
+            }
+            std::net::IpAddr::V6(v6) => {
+                out.push(1);
+                out.extend_from_slice(&v6.octets());
+            }
+        }
+    } else {
+        out.push(2);
+        out.push(target.host.len().min(255) as u8);
+        out.extend_from_slice(&target.host.as_bytes()[..target.host.len().min(255)]);
+    }
+    out.extend_from_slice(&target.port.to_be_bytes());
+    out
+}
+
+fn parse_uot_address(bytes: &[u8], offset: usize) -> Option<(Target, usize)> {
+    let family = *bytes.get(offset)?;
+    let mut cursor = offset + 1;
+    let host = match family {
+        0 => {
+            let octets = bytes.get(cursor..cursor + 4)?;
+            cursor += 4;
+            std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]).to_string()
+        }
+        1 => {
+            let octets = bytes.get(cursor..cursor + 16)?;
+            cursor += 16;
+            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(octets).ok()?).to_string()
+        }
+        2 => {
+            let len = *bytes.get(cursor)? as usize;
+            cursor += 1;
+            let name = bytes.get(cursor..cursor + len)?;
+            cursor += len;
+            String::from_utf8_lossy(name).to_string()
+        }
+        _ => return None,
+    };
+    let port = u16::from_be_bytes([*bytes.get(cursor)?, *bytes.get(cursor + 1)?]);
+    Some((Target { host, port }, cursor + 2 - offset))
+}
+
+/// Packet-addr serializer (`sing-vmess/packetaddr`): ATYP 1 IPv4, 2 IPv6,/// then the address and port. No domain form exists, so the caller resolves.
+fn packet_addr_bytes(ip: IpAddr, port: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(19);
+    match ip {
+        IpAddr::V4(v4) => {
+            out.push(1);
+            out.extend_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            out.push(2);
+            out.extend_from_slice(&v6.octets());
+        }
+    }
+    out.extend_from_slice(&port.to_be_bytes());
+    out
+}
+
+fn parse_packet_address(bytes: &[u8], offset: usize) -> Option<(Target, usize)> {
+    let atyp = *bytes.get(offset)?;
+    let mut cursor = offset + 1;
+    let host = match atyp {
+        1 => {
+            let octets = bytes.get(cursor..cursor + 4)?;
+            cursor += 4;
+            std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]).to_string()
+        }
+        2 => {
+            let octets = bytes.get(cursor..cursor + 16)?;
+            cursor += 16;
+            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(octets).ok()?).to_string()
+        }
+        _ => return None,
+    };
+    let port = u16::from_be_bytes([*bytes.get(cursor)?, *bytes.get(cursor + 1)?]);
+    Some((Target { host, port }, cursor + 2 - offset))
+}
+
+fn parse_vmess_address(bytes: &[u8]) -> Option<Target> {    if bytes.len() < 3 {
+        return None;
+    }
+    let port = u16::from_be_bytes([bytes[0], bytes[1]]);
+    let atyp = bytes[2];
+    let mut pos = 3;
+    let host = match atyp {
+        1 => {
+            let octets = bytes.get(pos..pos + 4)?;
+            pos += 4;
+            std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]).to_string()
+        }
+        3 => {
+            let octets = bytes.get(pos..pos + 16)?;
+            pos += 16;
+            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(octets).ok()?).to_string()
+        }
+        2 => {
+            let len = *bytes.get(pos)? as usize;
+            pos += 1;
+            let name = bytes.get(pos..pos + len)?;
+            String::from_utf8_lossy(name).to_string()
+        }
+        _ => return None,
+    };
+    Some(Target { host, port })
+}
+
+/// AnyTLS UoT association: a dedicated AnyTLS stream to the UoT magic
+/// destination, then `u16 length || payload` in both directions. One stream is
+/// bound to one destination (the pinned `ListenPacketContext` shape), so a
+/// second destination is refused instead of misdelivered.
+pub struct AnytlsUot {
+    stream: super::anytls::AnyUotStream,
+    bound: Target,
+}
+
+impl AnytlsUot {
+    pub async fn connect(
+        option: &crate::proxies::AnytlsOutbound,
+        target: &Target,
+        tls: &ClientTls,
+    ) -> Result<AnytlsUot, DialError> {
+        debug_assert!(option.udp);
+        let (stream, _server) = super::anytls::dial_uot(option, target, tls).await?;
+        Ok(AnytlsUot {
+            stream,
+            bound: target.clone(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        if target != &self.bound {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "anytls UoT association is bound to its first destination",
+            ));
+        }
+        let mut frame = Vec::with_capacity(2 + payload.len());
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).await?;
+        self.stream.flush().await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let mut length = [0u8; 2];
+        if self.stream.read_exact(&mut length).await.is_err() {
+            return Ok(None);
+        }
+        let length = u16::from_be_bytes(length) as usize;
+        if length > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "anytls UoT datagram larger than the buffer",
+            ));
+        }
+        if self.stream.read_exact(&mut buffer[..length]).await.is_err() {
+            return Ok(None);
+        }
+        Ok(Some((self.bound.clone(), length)))
+    }
+}
+
+/// VMess UDP association: XUDP (mux frames), packet-addr (magic destination
+/// plus the ip:port inside the record) or plain `command 2` bound to one
+/// destination, matching the pinned `NewVmess` resolution.
+pub struct VmessUdp {
+    packet: super::vmess::VmessPacket,
+    mode: VmessUdpMode,
+    bound: Target,
+    sid: u16,
+    first: bool,
+    read_buf: Vec<u8>,
+}
+
+enum VmessUdpMode {
+    Xudp,
+    PacketAddr,
+    Plain,
+}
+
+impl VmessUdp {
+    pub async fn connect(
+        option: &crate::proxies::VmessOutbound,
+        target: &Target,
+        tls: &ClientTls,
+    ) -> Result<VmessUdp, DialError> {
+        debug_assert!(option.udp);
+        let mode = if option.xudp {
+            VmessUdpMode::Xudp
+        } else if option.packet_addr {
+            VmessUdpMode::PacketAddr
+        } else {
+            VmessUdpMode::Plain
+        };
+        let packet = match mode {
+            VmessUdpMode::Xudp => {
+                // The mux command carries no destination in the request.
+                let ignored = Target {
+                    host: "0.0.0.0".to_string(),
+                    port: 0,
+                };
+                super::vmess::dial_mux(option, &ignored, tls).await?
+            }
+            VmessUdpMode::PacketAddr => {
+                let magic = Target {
+                    host: PACKETADDR_MAGIC.to_string(),
+                    port: 443,
+                };
+                super::vmess::dial_packet(option, &magic, tls).await?
+            }
+            VmessUdpMode::Plain => super::vmess::dial_packet(option, target, tls).await?,
+        };
+        Ok(VmessUdp {
+            packet,
+            mode,
+            bound: target.clone(),
+            sid: 1,
+            first: true,
+            read_buf: Vec::new(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        match self.mode {
+            VmessUdpMode::Xudp => {
+                let addr = vmess_address(target);
+                let mut frame = Vec::with_capacity(2 + 5 + addr.len() + 2 + payload.len());
+                frame.extend_from_slice(&((5 + addr.len()) as u16).to_be_bytes());
+                frame.extend_from_slice(&self.sid.to_be_bytes());
+                frame.push(if self.first { 1 } else { 2 });
+                frame.push(1);
+                frame.push(2);
+                frame.extend_from_slice(&addr);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+                frame.extend_from_slice(payload);
+                self.first = false;
+                self.packet.send(&frame).await
+            }
+            VmessUdpMode::PacketAddr => {
+                let addr = resolve(target).await?;
+                let mut plain = packet_addr_bytes(addr.ip(), addr.port());
+                plain.extend_from_slice(payload);
+                self.packet.send(&plain).await
+            }
+            VmessUdpMode::Plain => {
+                if target != &self.bound {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "vmess plain UDP is bound to its first destination",
+                    ));
+                }
+                self.packet.send(payload).await
+            }
+        }
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        match self.mode {
+            VmessUdpMode::Plain => {
+                return self
+                    .packet
+                    .recv(buffer)
+                    .await
+                    .map(|read| read.map(|len| (self.bound.clone(), len)))
+            }
+            VmessUdpMode::PacketAddr => {
+                let mut record = vec![0u8; MAX_DATAGRAM];
+                let Some(read) = self.packet.recv(&mut record).await? else {
+                    return Ok(None);
+                };
+                let Some((target, header)) = parse_packet_address(&record[..read], 0) else {
+                    return Ok(None);
+                };
+                let payload = &record[header..read];
+                buffer[..payload.len()].copy_from_slice(payload);
+                return Ok(Some((target, payload.len())));
+            }
+            VmessUdpMode::Xudp => loop {
+                if let Some(result) = self.take_xudp_frame(buffer)? {
+                    return Ok(Some(result));
+                }
+                let mut record = vec![0u8; MAX_DATAGRAM];
+                let Some(read) = self.packet.recv(&mut record).await? else {
+                    return Ok(None);
+                };
+                self.read_buf.extend_from_slice(&record[..read]);
+                if self.read_buf.len() > 8 * MAX_DATAGRAM {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "vmess xudp frame buffer exceeded",
+                    ));
+                }
+            },
+        }
+    }
+
+    fn take_xudp_frame(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        loop {
+            if self.read_buf.len() < 6 {
+                return Ok(None);
+            }
+            let length = u16::from_be_bytes([self.read_buf[0], self.read_buf[1]]) as usize;
+            let status = self.read_buf[4];
+            let option = self.read_buf[5];
+            let extras = length.saturating_sub(4);
+            let mut cursor = 6 + extras;
+            if cursor + 2 > self.read_buf.len() {
+                return Ok(None);
+            }
+            if status == 3 {
+                self.read_buf.clear();
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "vmess xudp stream ended",
+                ));
+            }
+            let data_len =
+                u16::from_be_bytes([self.read_buf[cursor], self.read_buf[cursor + 1]]) as usize;
+            cursor += 2;
+            if cursor + data_len > self.read_buf.len() {
+                return Ok(None);
+            }
+            let target = if extras > 1 {
+                parse_vmess_address(&self.read_buf[7..6 + extras])
+            } else {
+                None
+            };
+            let payload = self.read_buf[cursor..cursor + data_len].to_vec();
+            self.read_buf.drain(..cursor + data_len);
+            if status != 2 || option & 1 == 0 {
+                continue;
+            }
+            let target = target.or_else(|| Some(self.bound.clone())).unwrap();
+            let len = payload.len().min(buffer.len());
+            buffer[..len].copy_from_slice(&payload[..len]);
+            return Ok(Some((target, len)));
+        }
+    }
+}
+
+
+/// UoT magic destination, then v2 (`u16 length`) or legacy v1 (address +
+/// `u16 length`) frames.
+pub struct SsUot {
+    stream: super::shadowsocks::SsStream<BoxStream>,
+    version: u8,
+    bound: Target,
+}
+
+impl SsUot {
+    pub async fn connect(
+        option: &crate::proxies::ShadowsocksOutbound,
+        target: &Target,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<SsUot, DialError> {
+        debug_assert!(option.udp_over_tcp);
+        let server = server_stream(&option.server, option.port, via, timeout, tls).await?;
+        let magic = Target {
+            host: if option.udp_over_tcp_version == 1 {
+                "sp.udp-over-tcp.arpa".to_string()
+            } else {
+                "sp.v2.udp-over-tcp.arpa".to_string()
+            },
+            port: 0,
+        };
+        let mut stream = super::shadowsocks::connect(
+            server,
+            option.cipher,
+            option.password.expose(),
+            &SocksAddr::encode(&magic),
+        )
+        .await
+        .map_err(|e| handshake("ss-uot", e))?;
+        if option.udp_over_tcp_version != 1 {
+            // v2 request: isConnect=1 plus the bound destination.
+            let mut request = vec![1u8];
+            request.extend_from_slice(&SocksAddr::encode(target));
+            stream
+                .write_all(&request)
+                .await
+                .map_err(|e| handshake("ss-uot", e))?;
+            stream.flush().await.map_err(|e| handshake("ss-uot", e))?;
+        }
+        Ok(SsUot {
+            stream,
+            version: option.udp_over_tcp_version,
+            bound: target.clone(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        if self.version != 1 && target != &self.bound {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ss UoT v2 association is bound to its first destination",
+            ));
+        }
+        let mut frame = Vec::with_capacity(target.host.len() + 4 + payload.len());
+        if self.version == 1 {
+            frame.extend_from_slice(&uot_address(target));
+        }
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).await?;
+        self.stream.flush().await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let mut target = self.bound.clone();
+        // v1 frames start with the UoT `AddrParser` source address.
+        if self.version == 1 {
+            let mut family = [0u8; 1];
+            if self.stream.read_exact(&mut family).await.is_err() {
+                return Ok(None);
+            }
+            let mut address = vec![family[0]];
+            match family[0] {
+                0 => {
+                    let mut rest = [0u8; 6];
+                    if self.stream.read_exact(&mut rest).await.is_err() {
+                        return Ok(None);
+                    }
+                    address.extend_from_slice(&rest);
+                }
+                1 => {
+                    let mut rest = [0u8; 18];
+                    if self.stream.read_exact(&mut rest).await.is_err() {
+                        return Ok(None);
+                    }
+                    address.extend_from_slice(&rest);
+                }
+                2 => {
+                    let mut length = [0u8; 1];
+                    if self.stream.read_exact(&mut length).await.is_err() {
+                        return Ok(None);
+                    }
+                    address.push(length[0]);
+                    let mut rest = vec![0u8; length[0] as usize + 2];
+                    if self.stream.read_exact(&mut rest).await.is_err() {
+                        return Ok(None);
+                    }
+                    address.extend_from_slice(&rest);
+                }
+                _ => return Ok(None),
+            }
+            match parse_uot_address(&address, 0) {
+                Some((parsed, _)) => target = parsed,
+                None => return Ok(None),
+            }
+        }
+        let mut length = [0u8; 2];
+        if self.stream.read_exact(&mut length).await.is_err() {
+            return Ok(None);
+        }
+        let length = u16::from_be_bytes(length) as usize;
+        if length > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ss UoT datagram larger than the buffer",
+            ));
+        }
+        if self.stream.read_exact(&mut buffer[..length]).await.is_err() {
+            return Ok(None);
+        }
+        Ok(Some((target, length)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

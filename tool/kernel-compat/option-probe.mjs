@@ -238,7 +238,6 @@ const t10Enabled = [
   ['hysteria2', 'udp-mtu', 'udp-mtu: 1200'],
   ['hysteria2', 'bbr-profile', 'bbr-profile: standard'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['hysteria2', 'client-fingerprint', 'client-fingerprint: chrome'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
 // T13/T17 families: explicit forms, because some rejected values are not
 // booleans (`multiplexing: MULTIPLEXING_LOW`, `http-mask-mode: stream`) and
@@ -601,6 +600,34 @@ for (const [type, key, option] of [
   ['hysteria2', 'max-connection-receive-window', 'max-connection-receive-window: 1024'],
 ]) {
   implemented.push({ type, key, base: bases[type].on, option })
+}
+
+// T30: datagram/UoT/session/fingerprint closure for vless, anytls, ss, vmess
+// and hysteria2's uTLS name. Each form must load (behaviour is covered by the
+// protocol and mihomo peer tests).
+for (const [type, key, base, option] of [
+  ['vless', 'udp', bases.vless.on, 'udp: true'],
+  ['vless', 'xudp', bases.vless.on, 'udp: true, xudp: true'],
+  ['vless', 'packet-addr', bases.vless.on, 'udp: true, packet-encoding: packetaddr'],
+  ['vless', 'packet-encoding', bases.vless.on, 'udp: true, packet-encoding: xudp'],
+  ['vless', 'client-fingerprint', bases.vless.on, 'client-fingerprint: chrome'],
+  ['anytls', 'udp', bases.anytls.off, 'udp: true'],
+  ['anytls', 'client-metadata', bases.anytls.off, 'client-metadata: m'],
+  ['anytls', 'idle-session-check-interval', bases.anytls.off, 'idle-session-check-interval: 30'],
+  ['anytls', 'idle-session-timeout', bases.anytls.off, 'idle-session-timeout: 30'],
+  ['anytls', 'min-idle-session', bases.anytls.off, 'min-idle-session: 1'],
+  ['anytls', 'disable-reuse', bases.anytls.off, 'disable-reuse: true'],
+  ['anytls', 'client-fingerprint', bases.anytls.off, 'client-fingerprint: chrome'],
+  ['ss', 'udp-over-tcp', bases.ss.off, 'udp-over-tcp: true'],
+  ['ss', 'udp-over-tcp-version', bases.ss.off, 'udp-over-tcp: true, udp-over-tcp-version: 2'],
+  ['vmess', 'udp', bases.vmess.off, 'udp: true'],
+  ['vmess', 'packet-addr', bases.vmess.off, 'udp: true, packet-encoding: packetaddr'],
+  ['vmess', 'xudp', bases.vmess.off, 'udp: true, packet-encoding: xudp'],
+  ['vmess', 'packet-encoding', bases.vmess.off, 'udp: true, packet-encoding: xudp'],
+  ['vmess', 'client-fingerprint', bases.vmess.on, 'client-fingerprint: chrome'],
+  ['hysteria2', 'client-fingerprint', bases.hysteria2.on, 'client-fingerprint: chrome'],
+]) {
+  implemented.push({ type, key, base, option })
 }
 
 // T28 second batch: the shared stream dialer families (mieru/sudoku) now take

@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use crate::config::ConfigError;
 use crate::keys::{parse_uuid, Secret};
@@ -113,6 +114,12 @@ pub struct TlsSettings {
     /// TLS handshake is built (Mihomo's `NewTLSKeyPairLoader`).
     pub certificate: Option<String>,
     pub private_key: Option<String>,
+    /// `client-fingerprint`: the pinned engine hands this name to uTLS. rustls
+    /// cannot reproduce a uTLS ClientHello byte for byte, so a known name is
+    /// applied as the closest rustls profile (the browser key-exchange list)
+    /// and an unknown name keeps the standard handshake, exactly like the
+    /// pinned `GetFingerprint` fallback. `None`/`none` is the standard client.
+    pub client_fingerprint: Option<String>,
 }
 
 /// `ip-version` (Mihomo `constant.DNSPrefer`): controls which addresses a
@@ -218,6 +225,10 @@ pub struct ShadowsocksOutbound {
     pub password: Secret,
     /// Shadowsocks AEAD UDP datagrams to the server (Mihomo's SS UDP).
     pub udp: bool,
+    /// `udp-over-tcp`: carry UDP datagrams as UoT inside the Shadowsocks TCP
+    /// stream (`sing` UoT v2 by default, `udp-over-tcp-version: 1` legacy).
+    pub udp_over_tcp: bool,
+    pub udp_over_tcp_version: u8,
     pub dialer_proxy: Option<String>,
 }
 
@@ -257,6 +268,12 @@ pub struct VlessOutbound {
     pub tls: bool,
     pub tls_settings: TlsSettings,
     pub network: VlessNetwork,
+    /// `udp: true`: the pinned server accepts the UDP command, XUDP or the
+    /// packet-addr framing (the resolved mode is stored below).
+    pub udp: bool,
+    pub packet_addr: bool,
+    pub xudp: bool,
+    pub packet_encoding: Option<String>,
     pub dialer_proxy: Option<String>,
 }
 
@@ -274,6 +291,18 @@ pub struct AnytlsOutbound {
     pub port: u16,
     pub password: Secret,
     pub tls_settings: TlsSettings,
+    /// `udp: true`: datagrams travel as UoT over a dedicated AnyTLS stream.
+    pub udp: bool,
+    /// `client-metadata`: the `client=` value of the session settings frame.
+    pub client_metadata: Option<String>,
+    /// Session reuse knobs; seconds as the pinned type declares them.
+    pub idle_session_check_interval: u64,
+    pub idle_session_timeout: u64,
+    pub min_idle_session: usize,
+    pub disable_reuse: bool,
+    /// Idle-session pool shared by every connection of this outbound. It is
+    /// not part of the configuration identity, so equality ignores it.
+    pub session_pool: Arc<crate::outbound::anytls::AnytlsPool>,
     pub dialer_proxy: Option<String>,
 }
 
@@ -347,6 +376,11 @@ pub struct VmessOutbound {
     pub tls: bool,
     pub tls_settings: TlsSettings,
     pub network: VmessNetwork,
+    /// `udp: true` with `xudp`/`packet-addr` (Mihomo's VMess UDP modes).
+    pub udp: bool,
+    pub packet_addr: bool,
+    pub xudp: bool,
+    pub packet_encoding: Option<String>,
     pub dialer_proxy: Option<String>,
 }
 
@@ -1706,12 +1740,21 @@ impl<'a> Entry<'a> {
         Ok(server)
     }
 
-    fn required_string(&mut self, key: &str) -> Result<String, ConfigError> {
-        match self.string(key)? {
+    fn required_string(&mut self, key: &str) -> Result<String, ConfigError> {        match self.string(key)? {
             Some(v) if !v.is_empty() => Ok(v),
             Some(_) => Err(self.invalid(format!("option '{key}' must not be empty"))),
             None => Err(self.invalid(format!("missing required option '{key}'"))),
         }
+    }
+
+    /// `client-fingerprint` for the families whose pinned type declares it.
+    /// The pinned `GetFingerprint` treats an empty/`none` value as "standard
+    /// handshake" and warns for unknown names instead of failing; the value is
+    /// kept so the TLS builder can apply its rustls approximation.
+    fn client_fingerprint(&mut self) -> Result<Option<String>, ConfigError> {
+        Ok(self
+            .string("client-fingerprint")?
+            .filter(|value| !value.is_empty() && value != "none"))
     }
 
     /// TLS options the type declares: `socks5` has no `sni`/`alpn`, `http` no
@@ -2785,6 +2828,17 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
     })?;
     let password = Secret::new(entry.required_string("password")?);
     let udp = entry.bool("udp")?.unwrap_or(false);
+    let udp_over_tcp = entry.bool("udp-over-tcp")?.unwrap_or(false);
+    let version = entry.int("udp-over-tcp-version")?.unwrap_or(0);
+    let udp_over_tcp_version = match version {
+        0 | 2 => 2,
+        1 => 1,
+        other => {
+            return Err(entry.unsupported(format!(
+                "option 'udp-over-tcp-version' value {other} is not implemented (1 or 2)"
+            )))
+        }
+    };
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let plugin = entry.string("plugin")?;
     // `plugin-opts` is only read when a plugin is configured (see
@@ -2817,7 +2871,10 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
         port,
         cipher,
         password,
-        udp,
+        // Pinned `NewShadowSocks`: UoT implies UDP.
+        udp: udp || udp_over_tcp,
+        udp_over_tcp,
+        udp_over_tcp_version,
         dialer_proxy,
     })
 }
@@ -2949,6 +3006,7 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
     }
     let tls = entry.bool("tls")?.unwrap_or(false);
     let mut tls_settings = entry.tls_settings(true, true, tls)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     // `servername` is the pinned type's alias for `sni`.
     if tls_settings.sni.is_none() {
         tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
@@ -2970,21 +3028,19 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
             "option 'network: ws' requires 'tls: true' (not implemented without TLS)",
         ));
     }
-    if let Some(value) = entry.bool("udp")? {
-        if value {
-            return Err(entry.unsupported("option 'udp' is not implemented for vless"));
-        }
-    }
-    for key in ["packet-addr", "xudp"] {
-        if entry.bool(key)?.unwrap_or(false) {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
-        }
-    }
-    if entry
-        .get("packet-encoding")
-        .is_some_and(|value| !is_noop_value(value))
-    {
-        return Err(entry.unsupported("option 'packet-encoding' is not implemented"));
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let packet_addr_flag = entry.bool("packet-addr")?.unwrap_or(false);
+    let xudp_flag = entry.bool("xudp")?.unwrap_or(false);
+    let packet_encoding = entry.string("packet-encoding")?.filter(|value| !value.is_empty());
+    // Pinned `NewVless`: `packetaddr`/`packet` select packet-addr, anything
+    // else keeps `packet-addr` and turns XUDP on whenever packet-addr is off
+    // (so the default `udp: true` is XUDP). XUDP then wins over packet-addr.
+    let (mut packet_addr, xudp) = match packet_encoding.as_deref() {
+        Some("packetaddr") | Some("packet") => (true, false),
+        _ => (packet_addr_flag, if !packet_addr_flag { true } else { xudp_flag }),
+    };
+    if xudp {
+        packet_addr = false;
     }
     // The pinned `VlessOption` declares `ws-headers` but no code path reads it
     // (`WSOpts.Headers` is the one applied), so accepting it is exact parity.
@@ -3035,6 +3091,10 @@ fn parse_vless(entry: &mut Entry<'_>) -> Result<VlessOutbound, ConfigError> {
         tls,
         tls_settings,
         network,
+        udp,
+        packet_addr,
+        xudp,
+        packet_encoding,
         dialer_proxy,
     })
 }
@@ -3043,27 +3103,53 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
     let password = Secret::new(entry.required_string("password")?);
-    let tls_settings = entry.tls_settings(true, true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, true)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    for key in [
-        "client-metadata",
-        "idle-session-check-interval",
-        "idle-session-timeout",
-        "min-idle-session",
-    ] {
+    // Session reuse (pinned `session.Client`): a non-positive interval is
+    // clamped to the pinned 30s default; the timeout likewise.
+    let idle_session_check_interval = entry
+        .int("idle-session-check-interval")?
+        .filter(|value| *value > 0)
+        .map(|value| value as u64)
+        .unwrap_or(30)
+        .max(30);
+    let idle_session_timeout = entry
+        .int("idle-session-timeout")?
+        .filter(|value| *value > 0)
+        .map(|value| value as u64)
+        .unwrap_or(30)
+        .max(30);
+    let min_idle_session = match entry.int("min-idle-session")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'min-idle-session' must not be negative"))
+        }
+        Some(value) => value as usize,
+        None => 0,
+    };
+    let disable_reuse = entry.bool("disable-reuse")?.unwrap_or(false);
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let client_metadata = entry.string("client-metadata")?.filter(|s| !s.is_empty());
+    // The pinned type applies ShadowTLS/Restls/JLS by wrapping the TLS layer;
+    // rustls cannot reproduce their ClientHello/session-id hooks, so a
+    // non-empty block is a named rejection (never accepted and ignored).
+    for key in ["shadow-tls-opts", "restls-opts", "jls-opts"] {
         if entry
-            .get(key)
+            .mapping
+            .get(serde_yaml::Value::String(key.to_string()))
             .is_some_and(|value| !is_noop_value(value))
         {
-            return Err(entry.unsupported(format!("option '{key}' is not implemented")));
+            return Err(entry.unsupported(format!(
+                "option '{key}' is not implemented: the pinned anytls outbound wraps TLS in its security mode, which rustls cannot reproduce (no ClientHello/session-id hook); reconfigure the peer without it"
+            )));
         }
     }
-    if entry.bool("disable-reuse")?.unwrap_or(false) {
-        return Err(entry.unsupported("option 'disable-reuse' is not implemented"));
-    }
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported("option 'udp' is not implemented for anytls"));
-    }
+    let session_pool = crate::outbound::anytls::AnytlsPool::new(
+        idle_session_check_interval,
+        idle_session_timeout,
+        min_idle_session,
+        disable_reuse,
+    );
     let allowed = [
         "dialer-proxy",
         "name",
@@ -3097,6 +3183,13 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
         port,
         password,
         tls_settings,
+        udp,
+        client_metadata,
+        idle_session_check_interval,
+        idle_session_timeout,
+        min_idle_session,
+        disable_reuse,
+        session_pool,
         dialer_proxy,
     })
 }
@@ -3131,6 +3224,7 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
     })?;
     let tls = entry.bool("tls")?.unwrap_or(false);
     let mut tls_settings = entry.tls_settings(true, true, tls)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     // `servername` is the pinned type's alias for the TLS name.
     if tls_settings.sni.is_none() {
         tls_settings.sni = entry.string("servername")?.filter(|value| !value.is_empty());
@@ -3155,27 +3249,30 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
             "option 'network: ws' requires 'tls: true' (the VMess WebSocket listener is TLS-only here)",
         ));
     }
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for vmess (no VMess UDP command)",
-        ));
+    let udp = entry.bool("udp")?.unwrap_or(false);
+    let packet_addr_flag = entry.bool("packet-addr")?.unwrap_or(false);
+    let xudp_flag = entry.bool("xudp")?.unwrap_or(false);
+    let packet_encoding = entry.string("packet-encoding")?.filter(|value| !value.is_empty());
+    // Pinned `NewVmess`: `packetaddr`/`packet` select packet-addr, `xudp`
+    // selects XUDP, and XUDP wins over packet-addr. Unlike vless there is no
+    // XUDP default, so plain `command 2` remains possible.
+    let mut packet_addr = packet_addr_flag;
+    let mut xudp = xudp_flag;
+    match packet_encoding.as_deref() {
+        Some("packetaddr") | Some("packet") => {
+            packet_addr = true;
+            xudp = false;
+        }
+        Some("xudp") => xudp = true,
+        _ => {}
     }
-    for key in [
-        "packet-addr",
-        "xudp",
-        "global-padding",
-        "authenticated-length",
-    ] {
+    if xudp {
+        packet_addr = false;
+    }
+    for key in ["global-padding", "authenticated-length"] {
         if entry.bool(key)?.unwrap_or(false) {
             return Err(entry.unsupported(format!("option '{key}' is not implemented")));
         }
-    }
-    if entry
-        .string("packet-encoding")?
-        .filter(|value| !value.is_empty())
-        .is_some()
-    {
-        return Err(entry.unsupported("option 'packet-encoding' is not implemented"));
     }
     let allowed = [
         "dialer-proxy",
@@ -3227,6 +3324,10 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
         tls,
         tls_settings,
         network,
+        udp,
+        packet_addr,
+        xudp,
+        packet_encoding,
         dialer_proxy,
     })
 }
@@ -3923,7 +4024,8 @@ fn parse_hysteria2(entry: &mut Entry<'_>) -> Result<Hysteria2Outbound, ConfigErr
     let server = entry.server()?;
     let port = entry.port()?;
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
-    let tls_settings = entry.tls_settings(true, true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, true)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let alpn = entry.string_list("alpn")?;
     let up = entry.string("up")?;
     if up.as_deref().is_some_and(|value| !value.is_empty()) {

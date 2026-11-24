@@ -654,10 +654,7 @@ fn unimplemented_protocol_and_option_name_the_field() {
         "ok"
     );
     let e = proxy_err("proxies:\n  - {name: s, type: ss, server: x, port: 1, cipher: aes-256-gcm, password: p, udp-over-tcp: true}\nrules: ['MATCH,DIRECT']\n");
-    assert!(
-        e.contains("option 'udp-over-tcp' is not implemented"),
-        "{e}"
-    );
+    assert_eq!(e, "ok", "ss UoT is implemented and loads");
 }
 
 
@@ -668,20 +665,9 @@ fn unimplemented_protocol_and_option_name_the_field() {
 fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
     let cases: &[(&str, &str, &str)] = &[
         (
-            "ss",
-            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
-            "udp-over-tcp: true",
-        ),
-        (
-            "ss",
-            "server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p",
-            "udp-over-tcp-version: 2",
-        ),
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "ech-opts: {enable: true}"),
-        (
             "trojan",
             "server: 127.0.0.1, port: 1, password: p",
-            "shadow-tls-opts: {password: p}",
+            "ech-opts: {enable: true}",
         ),
         (
             "trojan",
@@ -717,12 +703,7 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
         (
             "vless",
             "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
-            "client-fingerprint: chrome",
-        ),
-        (
-            "vless",
-            "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68",
-            "udp: true",
+            "network: grpc",
         ),
         (
             "anytls",
@@ -743,11 +724,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "anytls",
             "server: 127.0.0.1, port: 1, password: p",
             "jls-opts: {password: p}",
-        ),
-        (
-            "anytls",
-            "server: 127.0.0.1, port: 1, password: p",
-            "client-fingerprint: chrome",
         ),
             ];
     for (kind, base, option) in cases {
@@ -913,7 +889,6 @@ fn noop_option_forms_mihomo_accepts_are_loaded() {
         // `ech-opts`/`udp-over-tcp` are not socks5 options: Mihomo ignores them
         // there (covered by the no-op list), so they cannot be "enabled".
         ("vless", "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true", "reality-opts: {public-key: k}"),
-        ("anytls", "server: 127.0.0.1, port: 1, password: p", "idle-session-timeout: 30"),
         // anytls declares these security modes and applies them, so a content
         // block is a registered gap (not an ignored key).
         ("anytls", "server: 127.0.0.1, port: 1, password: p", "shadow-tls-opts: {password: p}"),
@@ -1026,17 +1001,92 @@ fn anytls_options_are_strict() {
     let ok = "proxies:\n  - {name: at, type: anytls, server: 127.0.0.1, port: 443, password: p, sni: at.example, skip-cert-verify: true, alpn: [h2]}\nrules: ['MATCH,at']\n";
     let loaded = load_config(ok, "t").expect("anytls accepted");
     assert_eq!(loaded.config.proxies[0].type_name(), "anytls");
+    // Session reuse, UoT and the uTLS name are implemented: their enabled
+    // forms load (behaviour is covered by the protocol and peer tests).
+    load_config(
+        "proxies:\n  - {name: at, type: anytls, server: 127.0.0.1, port: 443, password: p, udp: true, client-metadata: m, idle-session-check-interval: 30, idle-session-timeout: 30, min-idle-session: 1, disable-reuse: true, client-fingerprint: chrome}\nrules: ['MATCH,at']\n",
+        "t",
+    )
+    .expect("anytls session/UoT/fingerprint options load");
     for (field, value) in [
-        ("client-metadata", "m"),
-        ("idle-session-timeout", "30"),
-        ("min-idle-session", "1"),
-        ("disable-reuse", "true"),
-        ("udp", "true"),
+        ("ech-opts", "{enable: true, config: x}"),
+        ("shadow-tls-opts", "{password: p}"),
+        ("restls-opts", "{password: p}"),
+        ("jls-opts", "{password: p, username: u}"),
     ] {
         let yaml = format!("proxies:\n  - {{name: at, type: anytls, server: x, port: 1, password: p, {field}: {value}}}\nrules: ['MATCH,at']\n");
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }
+}
+
+#[test]
+fn t30_datagram_and_fingerprint_options_are_accepted() {
+    use billow_kernel::proxies::Protocol;
+
+    let loaded = load_config(
+        "proxies:\n  - {name: v, type: vless, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true, udp: true, client-fingerprint: chrome}\nrules: ['MATCH,v']\n",
+        "t",
+    )
+    .expect("vless udp loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vless(p) => {
+            assert!(p.udp);
+            // The pinned default without packet-addr/packet-encoding is XUDP.
+            assert!(p.xudp);
+            assert!(!p.packet_addr);
+            assert_eq!(
+                p.tls_settings.client_fingerprint.as_deref(),
+                Some("chrome")
+            );
+        }
+        other => panic!("expected vless, got {other:?}"),
+    }
+    let loaded = load_config(
+        "proxies:\n  - {name: v, type: vless, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true, udp: true, packet-encoding: packetaddr}\nrules: ['MATCH,v']\n",
+        "t",
+    )
+    .expect("vless packet-addr loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vless(p) => {
+            assert!(p.packet_addr);
+            assert!(!p.xudp);
+        }
+        other => panic!("expected vless, got {other:?}"),
+    }
+
+    let loaded = load_config(
+        "proxies:\n  - {name: m, type: vmess, server: 127.0.0.1, port: 443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, alterId: 0, cipher: auto, udp: true, xudp: true}\nrules: ['MATCH,m']\n",
+        "t",
+    )
+    .expect("vmess xudp loads");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Vmess(p) => {
+            assert!(p.udp);
+            assert!(p.xudp);
+            assert!(!p.packet_addr);
+        }
+        other => panic!("expected vmess, got {other:?}"),
+    }
+
+    for option in ["udp-over-tcp: true", "udp-over-tcp: true, udp-over-tcp-version: 1"] {
+        let yaml = format!(
+            "proxies:\n  - {{name: s, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, {option}}}\nrules: ['MATCH,s']\n"
+        );
+        let loaded = load_config(&yaml, "t").expect("ss UoT loads");
+        match &loaded.config.proxies[0].protocol {
+            Protocol::Shadowsocks(p) => {
+                assert!(p.udp_over_tcp);
+                assert!(p.udp);
+            }
+            other => panic!("expected ss, got {other:?}"),
+        }
+    }
+    // An unsupported UoT version is a named rejection, not a silent default.
+    let e = proxy_err(
+        "proxies:\n  - {name: s, type: ss, server: 127.0.0.1, port: 1, cipher: aes-256-gcm, password: p, udp-over-tcp: true, udp-over-tcp-version: 3}\nrules: ['MATCH,s']\n",
+    );
+    assert!(e.contains("udp-over-tcp-version"), "{e}");
 }
 
 #[test]
@@ -1047,13 +1097,9 @@ fn vmess_options_are_strict() {
     for (field, value) in [
         ("alterId", "1"),
         ("cipher", "rc4-md5"),
-        ("udp", "true"),
         ("network", "grpc"),
-        ("packet-addr", "true"),
-        ("xudp", "true"),
         ("global-padding", "true"),
         ("authenticated-length", "true"),
-        ("packet-encoding", "xudp"),
         ("reality-opts", "{public-key: key}"),
     ] {
         let base = if field == "alterId" {

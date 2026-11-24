@@ -17,14 +17,27 @@ use super::tls::ClientTls;
 
 const VERSION: u8 = 0;
 const CMD_TCP: u8 = 1;
+/// VLESS command 2: one UDP destination per stream, length-framed payloads.
+pub const CMD_UDP: u8 = 2;
+/// VLESS command 3: the XUDP frames carry their own destination.
+pub const CMD_MUX: u8 = 3;
 
 /// Bytes the VLESS client sends before the payload.
 pub fn request_header(uuid: &[u8; 16], target: &Target) -> Vec<u8> {
-    let mut out = Vec::with_capacity(23 + target.host.len());
+    request_header_command(uuid, Some(target), CMD_TCP)
+}
+
+/// Request header for a command. `target` is `None` for the mux command,
+/// whose frames carry the destination instead.
+pub fn request_header_command(uuid: &[u8; 16], target: Option<&Target>, command: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(23 + target.map(|t| t.host.len()).unwrap_or(0));
     out.push(VERSION);
     out.extend_from_slice(uuid);
     out.push(0); // addon length
-    out.push(CMD_TCP);
+    out.push(command);
+    let Some(target) = target else {
+        return out;
+    };
     out.extend_from_slice(&target.port.to_be_bytes());
     if let Ok(ip) = target.host.parse::<std::net::IpAddr>() {
         match ip {
