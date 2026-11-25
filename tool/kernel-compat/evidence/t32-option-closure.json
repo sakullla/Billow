@@ -14,6 +14,19 @@
     "option_probe": "unchanged; the Hysteria2 `dialer-proxy` row was already an accepted load (impl row), so no Rust reject row was involved",
     "pinned_check": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 -t accepts both the non-socks5-hop and multi-hop files (evidence/t32-a3-pinned-check.log)"
   },
+  "repair_a4": {
+    "attempt": "T32-A4",
+    "blocker": "P1: same root cause as A3. `udp_enabled()` reports true for TUIC, but `validate_udp_chains` only exempted Hysteria2/Hysteria. A legal `type: tuic` + `dialer-proxy` file (non-socks5 hop or multi-hop) was rejected as a whole at load time, including TCP and unrelated proxies, while the pinned `-t` accepted it and the pre-T32 baseline loaded it.",
+    "fix": "Added `Protocol::Tuic` to the Hysteria2/Hysteria exemption in `native-kernel/crates/billow-kernel/src/proxies.rs::validate_udp_chains`. The file now loads like the pinned client; `outbound::tuic::TuicUdp::connect` and `outbound::udp::TuicUot::connect` refuse the chain with a named `DialError::Chain` before any QUIC dial. TCP is unchanged: `outbound::dial_chain` still refuses the exit at dial time.",
+    "tests": [
+      "tests/config.rs::t32_tuic_udp_chain_loads_like_hysteria_and_tcp_is_unchanged",
+      "src/outbound/udp.rs::tests::tuic_udp_through_a_hop_loads_and_is_refused_by_name",
+      "src/outbound/udp.rs::tests::tuic_tcp_through_a_hop_still_refuses_the_exit_at_dial_time",
+      "src/outbound/udp.rs::tests::tuic_uot_through_a_hop_is_a_named_chain_error"
+    ],
+    "option_probe": "re-run after the fix; matrix unchanged (291/110/99, 0 problems, no tuic dialer-proxy Rust reject row)",
+    "pinned_check": "tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 -t accepts both the non-socks5-hop and multi-hop tuic files (evidence/t32-a4-pinned-check.log)"
+  },
   "matrix": {
     "noop": 291,
     "implemented": 110,
@@ -147,6 +160,9 @@
       "src/outbound/tuic.rs::tests::bbr_profile_maps_to_the_initial_window",
       "src/outbound/tuic.rs::tests::uot_address_round_trips",
       "src/outbound/udp.rs::tests::tuic_uot_through_a_hop_is_a_named_chain_error",
+      "src/outbound/udp.rs::tests::tuic_udp_through_a_hop_loads_and_is_refused_by_name",
+      "src/outbound/udp.rs::tests::tuic_tcp_through_a_hop_still_refuses_the_exit_at_dial_time",
+      "tests/config.rs::t32_tuic_udp_chain_loads_like_hysteria_and_tcp_is_unchanged",
       "src/outbound/udp.rs::tests::hysteria_udp_fragments_reassemble_by_message_id",
       "tests/config.rs::t32_hysteria_udp_chain_loads_like_hysteria2_and_tcp_is_unchanged",
       "src/outbound/udp.rs::tests::hysteria_udp_through_a_hop_is_a_named_chain_error",
@@ -173,7 +189,7 @@
   "validation": {
     "default_native_kernel": {
       "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel",
-      "result": "pass, 449 tests (T32-A3 independent target: 204 lib + 54 config + 191 integration; 0 failed; ignored suites are the pinned-peer/device cases). One first run hit a `dns.rs` AddrInUse port race in the parallel test harness; the test passed alone and a clean full re-run passed."
+      "result": "pass, 449 tests in T32-A3; T32-A4 independent target: pass, 452 tests (206 lib + 55 config + 191 integration; 0 failed; ignored suites are the pinned-peer/device cases), including the 3 new TUIC chain tests."
     },
     "workspace_native_kernel": {
       "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked",
@@ -184,17 +200,17 @@
       "result": "T32-A2: pass, 104 tests. T32-A3 spot check: 5/5 pass (hysteria2_udp_reaches/fragments/wrong_password, tuic_udp_native, hysteria2_outbound)"
     },
     "independent_target": {
-      "command": "CARGO_TARGET_DIR=$TMPDIR/billow-t32-a3-target",
-      "result": "used for every T32-A3 run; no sibling target was touched"
+      "command": "CARGO_TARGET_DIR=$TMPDIR/billow-t32-a4-target",
+      "result": "used for every T32-A4 run; no sibling target was touched"
     },
     "option_matrix": {
-      "result": "291 no-op / 110 implemented / 99 enabled / 0 problems (T32-A3 re-run unchanged; only the rust binary path line differs)"
+      "result": "291 no-op / 110 implemented / 99 enabled / 0 problems (T32-A4 re-run unchanged; only the rust binary path line differs)"
     },
     "t22_dns": {
       "result": "22/23 pass, 1 skipped (mmdb fixture), 0 differ, 0 unexpected"
     },
     "t23_differential": {
-      "result": "28 pass, 0 differ, 0 unexpected"
+      "result": "28 pass, 0 differ, 0 unexpected (T32-A4 spot check)"
     },
     "t24_differential": {
       "result": "36 pass, 2 skipped (mmdb), 0 differ, 0 unexpected after a clean re-run (the first run under concurrent load had one mihomo startup failure and one provider-update flake)"

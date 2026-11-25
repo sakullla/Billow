@@ -1644,9 +1644,12 @@ pub fn parse_proxies(value: &serde_yaml::Value) -> Result<Vec<Proxy>, ConfigErro
 /// the limitation visible in `--check` instead of letting a UDP association
 /// dial the server directly while TCP goes through the chain.
 ///
-/// Hysteria2 and Hysteria v1 are exempt: their UDP association is a QUIC
-/// socket that cannot ride any hop, and [`crate::outbound::udp::Hysteria2Udp::connect`]
-/// / [`crate::outbound::udp::HysteriaUdp::connect`] refuse a chain by name at
+/// Hysteria2, Hysteria v1 and TUIC are exempt: their UDP association is a
+/// QUIC socket that cannot ride any hop, and
+/// [`crate::outbound::udp::Hysteria2Udp::connect`]
+/// / [`crate::outbound::udp::HysteriaUdp::connect`]
+/// / [`crate::outbound::tuic::TuicUdp::connect`]
+/// / [`crate::outbound::udp::TuicUot::connect`] refuse a chain by name at
 /// association time. The pinned client accepts the configuration, and
 /// rejecting it here would reject the whole file (every unrelated proxy, and
 /// TCP) even when the chained proxy is never used, so the limitation stays a
@@ -1655,7 +1658,10 @@ fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
     let index = |name: &str| proxies.iter().position(|proxy| proxy.name == name);
     for (i, proxy) in proxies.iter().enumerate() {
         if !proxy.udp_enabled()
-            || matches!(proxy.protocol, Protocol::Hysteria2(_) | Protocol::Hysteria(_))
+            || matches!(
+                proxy.protocol,
+                Protocol::Hysteria2(_) | Protocol::Hysteria(_) | Protocol::Tuic(_)
+            )
         {
             continue;
         }

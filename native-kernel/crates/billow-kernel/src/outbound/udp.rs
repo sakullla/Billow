@@ -17,10 +17,10 @@
 //!   reassembly (see [`Hysteria2Udp`]).
 //!
 //! Families whose pinned outbound has no UDP association this kernel can
-//! express (http, tuic, hysteria v1, mieru, sudoku, snell, ssh, trusttunnel,
-//! vless without `packet-addr`, anytls without UoT) drop the datagram and log
-//! it; that is a recorded capability gap, never a silent success. Fragmented
-//! SOCKS5 datagrams (`FRAG != 0`) are dropped as well.
+//! express (http, mieru, sudoku, snell, ssh, trusttunnel, vless without
+//! `packet-addr`, anytls without UoT) drop the datagram and log it; that is a
+//! recorded capability gap, never a silent success. Fragmented SOCKS5
+//! datagrams (`FRAG != 0`) are dropped as well.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -2648,6 +2648,115 @@ mod tests {
         };
         let text = error.to_string();
         assert!(text.contains("tuic udp-over-stream through hop"), "{text}");
+    }
+
+    #[test]
+    fn tuic_udp_through_a_hop_loads_and_is_refused_by_name() {
+        // T32-A4: `validate_udp_chains` exempts TUIC exactly like Hysteria, so
+        // a legal pinned file loads; the association refuses the hop by name
+        // before any QUIC dial and never reaches the server directly. Both the
+        // reviewer's shapes are covered, for the datagram association and the
+        // `udp-over-stream` stream.
+        for (label, hops) in [
+            (
+                "non-socks5 hop",
+                "  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\n",
+            ),
+            (
+                "multi-hop",
+                "  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081, dialer-proxy: hop2}\n  - {name: hop2, type: socks5, server: 127.0.0.1, port: 1082}\n",
+            ),
+        ] {
+            for stream in [false, true] {
+                let uot = if stream { ", udp-over-stream: true" } else { "" };
+                let yaml: serde_yaml::Value = serde_yaml::from_str(&format!(
+                    "proxies:\n  - {{name: q, type: tuic, server: 127.0.0.1, port: 8443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p{uot}, dialer-proxy: hop}}\n{hops}"
+                ))
+                .expect("yaml");
+                let proxies =
+                    crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+                        .unwrap_or_else(|e| panic!("a tuic chain ({label}) still loads: {e}"));
+                let option = match &proxies[0].protocol {
+                    crate::proxies::Protocol::Tuic(option) => option,
+                    other => panic!("expected tuic, got {other:?}"),
+                };
+                let via: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+                let target = Target {
+                    host: "127.0.0.1".into(),
+                    port: 9,
+                };
+                let error = if stream {
+                    match futures_block_on(TuicUot::connect(
+                        option,
+                        &target,
+                        &via,
+                        std::time::Duration::from_secs(1),
+                        &crate::outbound::tls::ClientTls::new(&[]),
+                    )) {
+                        Ok(_) => panic!("a chain must be refused ({label}, uot)"),
+                        Err(error) => error,
+                    }
+                } else {
+                    match futures_block_on(crate::outbound::tuic::TuicUdp::connect(
+                        option,
+                        &via,
+                        &crate::outbound::tls::ClientTls::new(&[]),
+                        std::time::Duration::from_secs(1),
+                    )) {
+                        Ok(_) => panic!("a chain must be refused ({label})"),
+                        Err(error) => error,
+                    }
+                };
+                assert!(
+                    matches!(error, crate::outbound::DialError::Chain(_)),
+                    "{label}: {error:?}"
+                );
+                let text = error.to_string();
+                let expected = if stream {
+                    "tuic udp-over-stream through hop"
+                } else {
+                    "tuic udp through hop"
+                };
+                assert!(text.contains(expected), "{label}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn tuic_tcp_through_a_hop_still_refuses_the_exit_at_dial_time() {
+        // Before T32 enabled TUIC UDP the chained file loaded and TCP was
+        // refused by `dial_chain` when the rule selected the proxy; the
+        // load-time exemption must not change that, and must not let TCP dial
+        // the server directly around the hop.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - {name: q, type: tuic, server: 127.0.0.1, port: 8443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, dialer-proxy: hop}\n  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\n",
+        )
+        .expect("yaml");
+        let proxies = crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+            .expect("a tuic chain still loads");
+        let chain: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+        let target = Target {
+            host: "example.org".into(),
+            port: 443,
+        };
+        let error = match futures_block_on(crate::outbound::dial_chain(
+            &chain,
+            &target,
+            std::time::Duration::from_secs(1),
+            &crate::outbound::tls::ClientTls::new(&[]),
+        )) {
+            Ok(_) => panic!("the TCP exit must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, crate::outbound::DialError::Chain(_)),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("dialer-proxy exit q(tuic) is not supported"),
+            "{text}"
+        );
     }
 
     #[test]

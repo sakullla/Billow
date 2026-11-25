@@ -704,7 +704,7 @@ datagrams (TCP and UDP then take the same path, matching Mihomo's
 `proxydialer.ListenPacket`). Anything else - a hop without a UDP association,
 or a longer chain that would need nested associations - fails at load time with
 the hop named, instead of a UDP association dialling the server directly.
-Hysteria v1 and Hysteria2 are the one exception: their association is a QUIC
+Hysteria v1, Hysteria2 and TUIC are the exception: their association is a QUIC
 socket that cannot ride a hop, so the pinned client's configuration loads
 unchanged and only the association refuses the chain by name at dial time
 (`DialError::Chain`); the file is never rejected and TCP is not affected.
@@ -725,6 +725,7 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 | `anytls` with `udp: true` | UoT v2 over a dedicated AnyTLS stream per destination; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
 | `vmess` with `udp: true` | plain `command 2` (one association per destination), packet-addr or XUDP, one record per datagram; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
 | `hysteria` / `hysteria2` | QUIC datagram session (pinned `udp=1` session id / HTTP/3 session and fragment headers), always enabled like the pinned outbound (a config's `udp` flag is a tolerated no-op); a `dialer-proxy` chain loads but the association refuses it by name |
+| `tuic` | QUIC datagram session (`native` Packet / `quic` uni-stream relay) or `udp-over-stream`, always enabled like the pinned outbound; a `dialer-proxy` chain loads but the association (or UoT stream) refuses it by name |
 | `ss` with `udp-over-tcp: true` | sing UoT v2 (or legacy v1) inside the Shadowsocks AEAD stream, one stream per destination |
 | `http` | **no association**: `udp: true` is not an http option |
 
@@ -996,9 +997,9 @@ with `udp-mtu` bounding both the initial path MTU and per-message
 fragmentation, and a 10 s age on incomplete fragment reassembly like the
 pinned defragger), and `bbr-profile` (mapped to the BBR initial window, a recorded
 approximation that takes precedence over `cwnd`); `ech-opts` stays named, and a
-a Hysteria v1/Hysteria2 `dialer-proxy` chain loads but is refused by name when
-its UDP association is dialled (the configuration, including its TCP use, is
-never rejected). BBR with `cwnd` and the receive windows are applied. `mieru` rejects `transport: UDP`,
+a Hysteria v1/Hysteria2/TUIC `dialer-proxy` chain loads but is refused by name
+when its UDP association is dialled (the configuration, including its TCP use,
+is never rejected). BBR with `cwnd` and the receive windows are applied. `mieru` rejects `transport: UDP`,
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping). `sudoku` rejects
 `udp: true` (the UDP-over-TCP/UoT association) and the HTTP tunnel modes

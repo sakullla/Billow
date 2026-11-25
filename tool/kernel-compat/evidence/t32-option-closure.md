@@ -36,6 +36,7 @@ acceptance.
 | `congestion-controller` | cubic/new_reno/bbr; `bbr_meta_v1` (the pinned legacy meta BBR sender) and `bbr_meta_v2` both select quinn's BBR sender as the closest available approximation. | option matrix `impl` rows, `tests/config.rs::t27_quic_transport_tuning_is_parsed`, `tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_parses` |
 | `client-fingerprint` | Parsed and applied as the closest rustls profile (T30 residual category). | option matrix `impl` row, `tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_parses` |
 | `reduce-rtt` | Parsed, matching the pinned adapter's actual capability: it passes `DialEarly` to quic-go but never sets `tls.Config.ClientSessionCache` (contrast `adapter/outbound/shadowquic.go:114`, which sets `tls.NewLRUClientSessionCache(1)` only for `zero-rtt`), so the pinned TUIC client has no ticket to resume from and always falls back to a full handshake. quinn 0.11 does support 0-RTT (`Connecting::into_0rtt`), but adding a ticket cache here would diverge from the pinned behaviour. | `tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_parses`, option matrix `impl` row; pinned evidence `adapter/outbound/tuic.go` (no session cache) vs `adapter/outbound/shadowquic.go:114` |
+| `dialer-proxy` (UDP) | The pinned client uses the dialer-proxy-aware `t.dialer` for TCP and accepts any chain. Here the file always loads (T32-A4 exemption in `validate_udp_chains`); `TuicUdp::connect`/`TuicUot::connect` refuse the hop with a named `DialError::Chain` because a QUIC socket cannot ride a SOCKS5 UDP hop, and TCP still refuses the chained exit at dial time (unchanged). | `tests/config.rs::t32_tuic_udp_chain_loads_like_hysteria_and_tcp_is_unchanged`, `src/outbound/udp.rs::tests::tuic_udp_through_a_hop_loads_and_is_refused_by_name`, `...::tuic_tcp_through_a_hop_still_refuses_the_exit_at_dial_time` |
 
 ## ShadowQUIC — implemented and verified
 
@@ -92,6 +93,28 @@ selects the chained proxy), `src/outbound/udp.rs::tests::hysteria_udp_through_a_
 accepts both shapes (`evidence/t32-a3-pinned-check.log`). The option-probe's
 Hysteria2 `dialer-proxy` row was already an accepted load (not a Rust reject),
 so the matrix is unchanged (291/110/99, 0 problems).
+
+## T32-A4 repair: TUIC UDP chain exemption
+
+The same root cause as T32-A3 reached TUIC: `udp_enabled()` reports true for
+`type: tuic`, but `validate_udp_chains` only exempted Hysteria2/Hysteria. A
+legal pinned file with `type: tuic` + `dialer-proxy` (a non-socks5 hop, or a
+multi-hop chain) was rejected as a whole at load time (`only a socks5 hop can
+carry a UDP association` / `multi-hop`), taking every unrelated proxy and TCP
+down with it, while the pinned client's `-t` accepted it and the pre-T32
+baseline loaded it. The fix adds `Protocol::Tuic` to the same exemption:
+the file always loads, and `outbound::tuic::TuicUdp::connect` /
+`outbound::udp::TuicUot::connect` refuse the chain with a named
+`DialError::Chain` before any QUIC dial (never a silent direct association).
+TCP is unchanged: `outbound::dial_chain` still refuses the exit at dial time.
+
+Evidence: `tests/config.rs::t32_tuic_udp_chain_loads_like_hysteria_and_tcp_is_unchanged`
+(non-socks5 hop and multi-hop load, for both the datagram association and
+`udp-over-stream: true`, under `MATCH,DIRECT` and a rule selecting the chained
+proxy), `src/outbound/udp.rs::tests::tuic_udp_through_a_hop_loads_and_is_refused_by_name`
+(both shapes, datagram + UoT, return the named chain error) and
+`src/outbound/udp.rs::tests::tuic_tcp_through_a_hop_still_refuses_the_exit_at_dial_time`
+(TCP dial-time chain refusal).
 
 ## Non-regression
 

@@ -1,0 +1,11 @@
+# pinned Mihomo -t acceptance for the T32-A4 TUIC dialer-proxy shapes
+non-socks5: exit=0 time="2026-11-25T22:55:54.117289000+08:00" level=info msg="Start initial configuration in progress"
+time="2026-11-25T22:55:54.118539000+08:00" level=info msg="Geodata Loader mode: memconservative"
+time="2026-11-25T22:55:54.118545000+08:00" level=info msg="Geosite Matcher implementation: succinct"
+time="2026-11-25T22:55:54.118657000+08:00" level=info msg="Initial configuration complete, total time: 1ms"
+configuration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/tmp.j0yyjHe2ok/non-socks5.yaml test is successful
+multi-hop: exit=0 time="2026-11-25T22:55:54.130244000+08:00" level=info msg="Start initial configuration in progress"
+time="2026-11-25T22:55:54.131506000+08:00" level=info msg="Geodata Loader mode: memconservative"
+time="2026-11-25T22:55:54.131517000+08:00" level=info msg="Geosite Matcher implementation: succinct"
+time="2026-11-25T22:55:54.131637000+08:00" level=info msg="Initial configuration complete, total time: 1ms"
+configuration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/tmp.j0yyjHe2ok/multi-hop.yaml test is successful
