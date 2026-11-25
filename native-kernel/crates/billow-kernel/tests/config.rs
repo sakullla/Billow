@@ -676,12 +676,6 @@ fn every_unimplemented_proxy_option_is_rejected_with_its_field() {
             "server: 127.0.0.1, port: 1, password: p",
             "restls-opts: {password: p}",
         ),
-        ("trojan", "server: 127.0.0.1, port: 1, password: p", "jls-opts: {password: p}"),
-        (
-            "trojan",
-            "server: 127.0.0.1, port: 1, password: p",
-            "client-fingerprint: chrome",
-        ),
         (
             "vless",
             "server: 127.0.0.1, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true",
@@ -1014,7 +1008,7 @@ fn anytls_options_are_strict() {
     }
     // ShadowTLS v1/v2 and JLS are implemented security modes: their enabled
     // forms load with the parsed mode (behaviour is covered by the peer tests).
-    use billow_kernel::proxies::{AnytlsSecurity, Protocol};
+    use billow_kernel::proxies::{TlsSecurity, Protocol};
     for (block, want_version) in [
         ("shadow-tls-opts: {password: p}", 2u8),
         ("shadow-tls-opts: {password: p, version: 1}", 1u8),
@@ -1024,7 +1018,7 @@ fn anytls_options_are_strict() {
         let loaded = load_config(&yaml, "t").expect("shadow-tls loads");
         match &loaded.config.proxies[0].protocol {
             Protocol::Anytls(p) => match &p.security {
-                AnytlsSecurity::ShadowTls { password, version } => {
+                TlsSecurity::ShadowTls { password, version } => {
                     assert_eq!(password.expose(), "p");
                     assert_eq!(*version, want_version);
                 }
@@ -1040,7 +1034,7 @@ fn anytls_options_are_strict() {
     .expect("jls loads");
     match &loaded.config.proxies[0].protocol {
         Protocol::Anytls(p) => match &p.security {
-            AnytlsSecurity::Jls { username, password } => {
+            TlsSecurity::Jls { username, password } => {
                 assert_eq!(username.expose(), "u");
                 assert_eq!(password.expose(), "jp");
             }
@@ -1048,6 +1042,69 @@ fn anytls_options_are_strict() {
         },
         other => panic!("expected anytls, got {other:?}"),
     }
+}
+
+#[test]
+fn trojan_shadow_tls_jls_and_client_fingerprint_load() {
+    use billow_kernel::proxies::{Protocol, TlsSecurity};
+    // T33: the shared ShadowTLS/JLS layer (`parse_tls_security`) and the
+    // `client-fingerprint` approximation apply to trojan exactly as anytls.
+    for (block, want_version) in [
+        ("shadow-tls-opts: {password: p}", 2u8),
+        ("shadow-tls-opts: {password: p, version: 1}", 1u8),
+        ("shadow-tls-opts: {password: p, version: 2}", 2u8),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: tj, type: trojan, server: 127.0.0.1, port: 1, password: p, {block}}}\nrules: ['MATCH,tj']\n");
+        let loaded = load_config(&yaml, "t").expect("trojan shadow-tls loads");
+        match &loaded.config.proxies[0].protocol {
+            Protocol::Trojan(p) => match &p.security {
+                TlsSecurity::ShadowTls { password, version } => {
+                    assert_eq!(password.expose(), "p");
+                    assert_eq!(*version, want_version);
+                }
+                other => panic!("expected shadow-tls, got {other:?}"),
+            },
+            other => panic!("expected trojan, got {other:?}"),
+        }
+    }
+    let loaded = load_config(
+        "proxies:\n  - {name: tj, type: trojan, server: 127.0.0.1, port: 1, password: p, jls-opts: {username: u, password: jp}, client-fingerprint: chrome}\nrules: ['MATCH,tj']\n",
+        "t",
+    )
+    .expect("trojan jls and fingerprint load");
+    match &loaded.config.proxies[0].protocol {
+        Protocol::Trojan(p) => {
+            match &p.security {
+                TlsSecurity::Jls { username, password } => {
+                    assert_eq!(username.expose(), "u");
+                    assert_eq!(password.expose(), "jp");
+                }
+                other => panic!("expected jls, got {other:?}"),
+            }
+            assert_eq!(p.tls_settings.client_fingerprint.as_deref(), Some("chrome"));
+        }
+        other => panic!("expected trojan, got {other:?}"),
+    }
+    // The same named errors the pinned type raises are kept.
+    for (block, needle) in [
+        ("shadow-tls-opts: {password: p, version: 3}", "version 3"),
+        ("jls-opts: {}", "required fields"),
+        (
+            "shadow-tls-opts: {password: p}, jls-opts: {username: u, password: p}",
+            "mutually exclusive",
+        ),
+        ("restls-opts: {password: p}", "restls-opts"),
+    ] {
+        let yaml = format!("proxies:\n  - {{name: tj, type: trojan, server: 127.0.0.1, port: 1, password: p, {block}}}\nrules: ['MATCH,tj']\n");
+        let e = proxy_err(&yaml);
+        assert!(e.starts_with("unsupported"), "{block}: {e}");
+        assert!(e.contains(needle), "{block}: {e}");
+    }
+    // An unknown version number is a value error, as in the shared parser.
+    let e = proxy_err(
+        "proxies:\n  - {name: tj, type: trojan, server: 127.0.0.1, port: 1, password: p, shadow-tls-opts: {password: p, version: 4}}\nrules: ['MATCH,tj']\n",
+    );
+    assert!(e.contains("version 4 is unknown"), "{e}");
 }
 
 #[test]
@@ -1320,7 +1377,6 @@ fn trusttunnel_options_are_strict() {
     let loaded = load_config(ok, "t").expect("trusttunnel accepted");
     assert_eq!(loaded.config.proxies[0].type_name(), "trusttunnel");
     for (field, value) in [
-        ("udp", "true"),
         ("quic", "true"),
         ("health-check", "true"),
         ("max-connections", "4"),
@@ -1329,7 +1385,6 @@ fn trusttunnel_options_are_strict() {
         ("congestion-controller", "bbr"),
         ("cwnd", "16"),
         ("bbr-profile", "standard"),
-        ("client-fingerprint", "chrome"),
         ("ech-opts", "{enable: true, config: x}"),
         ("alpn", "[h3]"),
     ] {
@@ -1337,12 +1392,33 @@ fn trusttunnel_options_are_strict() {
         let e = proxy_err(&yaml);
         assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
     }
+    // T33: `udp: true` opens the `_udp2` packet stream, like the pinned
+    // client; the file must load even with a `dialer-proxy` chain (the
+    // association refuses the hop by name at association time, and TCP already
+    // refuses the chained exit at dial time).
+    load_config(
+        "proxies:\n  - {name: tt, type: trusttunnel, server: x, port: 1, username: u, password: p, udp: true}\nrules: ['MATCH,tt']\n",
+        "t",
+    )
+    .expect("trusttunnel udp loads");
+    let chained = load_config(
+        "proxies:\n  - {name: tt, type: trusttunnel, server: x, port: 1, username: u, password: p, udp: true, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 2, udp: true}\nrules: ['MATCH,tt']\n",
+        "t",
+    )
+    .expect("trusttunnel udp with a hop loads");
+    assert!(chained.config.proxies[0].udp_enabled());
     // Certificate identities are verified by the shared TLS client.
     load_config(
         "proxies:\n  - {name: tt, type: trusttunnel, server: x, port: 1, sni: tt.example, name-cert-verify: tt.example, fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', certificate: cert.pem, private-key: key.pem}\nrules: ['MATCH,tt']\n",
         "t",
     )
     .expect("trusttunnel TLS identities load");
+    // T33: the uTLS name is applied as the closest rustls profile.
+    load_config(
+        "proxies:\n  - {name: tt, type: trusttunnel, server: x, port: 1, client-fingerprint: chrome}\nrules: ['MATCH,tt']\n",
+        "t",
+    )
+    .expect("trusttunnel client-fingerprint loads");
 }
 
 #[test]
@@ -1366,8 +1442,7 @@ fn gost_relay_options_are_strict() {
     .expect("udp and mux load");
     for (field, value) in [("client-fingerprint", "chrome")] {
         let yaml = format!("proxies:\n  - {{name: gr, type: gost-relay, server: x, port: 1, tls: true, {field}: {value}}}\nrules: ['MATCH,gr']\n");
-        let e = proxy_err(&yaml);
-        assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
+        assert_eq!(proxy_err(&yaml), "ok", "{field} is applied as a rustls approximation");
     }
     load_config(
         "proxies:\n  - {name: gr, type: gost-relay, server: x, port: 1, tls: true, sni: gr.example, name-cert-verify: gr.example, fingerprint: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}\nrules: ['MATCH,gr']\n",
@@ -1899,10 +1974,6 @@ fn masque_connect_ip_shape_is_strict() {
             "option 'cwnd' must not be negative",
         ),
         (
-            "server: x, port: 1, udp: true, bbr-profile: standard".to_string(),
-            "bbr-profile",
-        ),
-        (
             "server: x, port: 1, udp: true, dialer-proxy: hop".to_string(),
             "option 'dialer-proxy'",
         ),
@@ -1982,6 +2053,8 @@ fn sudoku_options_are_strict() {
         "key: k, http-mask: false, multiplex: auto".to_string(),
         // `multiplex: on` is the implemented Sudoku session mux, not a gap.
         "key: k, multiplex: on".to_string(),
+        // T33: the KIP `StartUoT` session carries the UDP association.
+        "key: k, udp: true".to_string(),
         // TLS/host only shape the HTTP tunnel modes, which the legacy mask
         // does not use (Mihomo ignores them there as well).
         "key: k, http-mask-tls: true, http-mask-host: example.org".to_string(),
@@ -1993,7 +2066,6 @@ fn sudoku_options_are_strict() {
         ("key: k, http-mask-mode: stream", "http-mask-mode' value 'stream'"),
         ("key: k, httpmask: {mode: ws}", "http-mask-mode' value 'ws'"),
         ("key: k, multiplex: always", "multiplex' value 'always'"),
-        ("key: k, udp: true", "option 'udp' is not implemented"),
         ("key: k, table-type: prefer_magic", "table-type' value 'prefer_magic'"),
         ("key: k, custom-table: xxxvvvpp", "custom table pattern"),
         ("key: k, aead-method: rc4", "aead-method' value 'rc4'"),
@@ -2245,23 +2317,31 @@ fn t28_masque_quic_controller_and_trojan_ss_opts_are_parsed() {
         "t",
     )
     .expect("masque QUIC controller loads");
-    let error = proxy_err(
+    // T33: `bbr-profile` is accepted and mapped onto quinn's BBR initial
+    // window, exactly like T32's TUIC/ShadowQUIC rows (the pinned
+    // `SetCongestionController` switch only applies a profile with bbr).
+    load_config(
         "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, bbr-profile: standard}\nrules: ['MATCH,m']\n",
-    );
-    assert!(error.contains("option 'bbr-profile'"), "{error}");
-    // Pinned `SetCongestionController` treats bbr_meta_v2 as an alias of bbr.
+        "t",
+    )
+    .expect("masque bbr-profile loads");
+    // Pinned `SetCongestionController` treats bbr_meta_v2 as an alias of bbr
+    // and has a separate meta v1 sender; both load (v1 selects quinn's BBR as
+    // the closest approximation).
     load_config(
         "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v2}\nrules: ['MATCH,m']\n",
         "t",
     )
     .expect("masque bbr_meta_v2 loads");
+    load_config(
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v1, bbr-profile: aggressive}\nrules: ['MATCH,m']\n",
+        "t",
+    )
+    .expect("masque bbr_meta_v1 loads");
     let error = proxy_err(
-        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,m']\n",
+        "proxies:\n  - {name: m, type: masque, server: 127.0.0.1, port: 1, udp: true, bbr-profile: turbo}\nrules: ['MATCH,m']\n",
     );
-    assert!(
-        error.contains("bbr_meta_v1") && error.contains("option 'congestion-controller'"),
-        "{error}"
-    );
+    assert!(error.contains("bbr-profile"), "{error}");
 
     for method in ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "CHACHA20-IETF-POLY1305", "XCHACHA20-IETF-POLY1305"] {
         load_config(

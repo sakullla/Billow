@@ -11,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{connect_tcp, handshake, tls, ws, BoxStream, DialError, Dialed, SocksAddr, Target};
 use crate::keys::trojan_password_key;
-use crate::proxies::TrojanOutbound;
+use crate::proxies::{TlsSecurity, TrojanOutbound};
 
 use super::tls::ClientTls;
 
@@ -22,11 +22,9 @@ pub async fn dial(
 ) -> Result<Dialed, DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("trojan", e))?;
-    let stream = tls::wrap(tcp, &option.server, &option.tls_settings, tls)
-        .await
-        .map_err(|e| handshake("trojan tls", e))?;
+    let stream = wrap_security(Box::new(tcp), option, tls).await?;
     let mut stream: BoxStream = match &option.network {
-        crate::proxies::TrojanNetwork::Tcp => Box::new(stream),
+        crate::proxies::TrojanNetwork::Tcp => stream,
         crate::proxies::TrojanNetwork::Ws(ws_settings) => {
             let host = option
                 .tls_settings
@@ -54,6 +52,54 @@ pub async fn dial(
         .map_err(|e| handshake("trojan", e))?;
     stream.flush().await.map_err(|e| handshake("trojan", e))?;
     Ok(Dialed { stream, server })
+}
+
+/// The TLS layer of the pinned `Trojan.StreamConnContext`: a plain rustls
+/// handshake, or the `shadow-tls-opts` / `jls-opts` camouflage connection when
+/// the configuration selected one (the trojan header then travels inside that
+/// layer's plaintext records). Shared with the UDP association and the native
+/// tests; the WS transport is applied on top of the result.
+pub async fn wrap_security(
+    stream: BoxStream,
+    option: &TrojanOutbound,
+    tls: &ClientTls,
+) -> Result<BoxStream, DialError> {
+    match &option.security {
+        TlsSecurity::None => Ok(Box::new(
+            tls::wrap_stream(stream, &option.server, &option.tls_settings, tls)
+                .await
+                .map_err(|e| handshake("trojan tls", e))?,
+        )),
+        TlsSecurity::ShadowTls { password, version } => Ok(Box::new(
+            super::shadow_tls::wrap(
+                stream,
+                &option.server,
+                &option.tls_settings,
+                tls,
+                password.expose(),
+                *version,
+            )
+            .await
+            .map_err(|e| handshake("trojan shadow-tls", e))?,
+        )),
+        TlsSecurity::Jls { username, password } => {
+            let credentials = super::jls::JlsCredentials {
+                username: username.expose().to_string(),
+                password: password.expose().to_string(),
+            };
+            Ok(Box::new(
+                super::tls_io::connect_jls(
+                    stream,
+                    &option.server,
+                    &option.tls_settings,
+                    tls,
+                    &credentials,
+                )
+                .await
+                .map_err(|e| handshake("trojan jls", e))?,
+            ))
+        }
+    }
 }
 
 /// Wrap the stream in trojan's optional `ss-opts` Shadowsocks AEAD layer.

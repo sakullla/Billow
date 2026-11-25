@@ -380,10 +380,13 @@ impl ConnectIpSession {
         quic_options.keep_alive = Some(Duration::from_secs(30));
         quic_options.datagrams = true;
         if option.congestion_controller.is_some() || option.cwnd != 0 {
-            // The pinned masque client sets InitialPacketSize: 1242.
-            let (controller, initial) = super::tuic::congestion_tuning(
+            // The pinned masque client sets InitialPacketSize: 1242 and hands
+            // `bbr-profile` to the same `SetCongestionController` switch as
+            // TUIC/ShadowQUIC.
+            let (controller, initial) = super::tuic::congestion_tuning_profile(
                 option.congestion_controller.as_deref(),
                 option.cwnd,
+                option.bbr_profile.as_deref(),
                 1242,
             );
             quic_options.congestion_controller = controller;

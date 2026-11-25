@@ -3,8 +3,8 @@
 //! The device sends UDP datagrams as IP packets; each one is routed through
 //! the engine (rule -> group -> outbound) exactly like a SOCKS5 `UDP
 //! ASSOCIATE` datagram. The transports are the same association types the
-//! mixed listener uses (`socks5`, `ss`, `trojan`, `ssr`, `masque`,
-//! `shadowquic`, `hysteria`, `hysteria2`, `tuic` including
+//! mixed listener uses (`socks5`, `ss`, `trojan`, `sudoku`, `trusttunnel`,
+//! `ssr`, `masque`, `shadowquic`, `hysteria`, `hysteria2`, `tuic` including
 //! `udp-over-stream`), plus `DIRECT`. A family without a UDP association in
 //! this kernel is refused by name instead of being sent the wrong way. The mesh
 //! families (`wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier`) and
@@ -29,8 +29,10 @@ use crate::outbound::{
     masque::MasqueUdpAssociation,
     shadowquic::ShadowQuicUdp,
     tls::ClientTls,
+    trusttunnel::TrustTunnelUdp,
     udp::{
-        spawn_uot_reader, Hysteria2Udp, HysteriaUdp, SsUdp, SsrUdp, TrojanUdp, TuicUot,
+        spawn_uot_reader, Hysteria2Udp, HysteriaUdp, SsUdp, SsrUdp, SudokuUdp, TrojanUdp,
+        TuicUot,
         UotKey, UotReader, UotWriter, MAX_DATAGRAM,
     },
 };
@@ -192,6 +194,8 @@ enum Transport {
     Socks5(crate::outbound::socks5::Socks5Udp),
     Ss(SsUdp),
     Trojan(TrojanUdp),
+    Sudoku(SudokuUdp),
+    TrustTunnel(TrustTunnelUdp),
     Ssr(SsrUdp),
     Masque(MasqueUdpAssociation),
     ShadowQuic(ShadowQuicUdp),
@@ -207,6 +211,8 @@ impl Transport {
             Transport::Socks5(transport) => transport.send(target, payload).await,
             Transport::Ss(transport) => transport.send(target, payload).await,
             Transport::Trojan(transport) => transport.send(target, payload).await,
+            Transport::Sudoku(transport) => transport.send(target, payload).await,
+            Transport::TrustTunnel(transport) => transport.send(target, payload).await,
             Transport::Ssr(transport) => transport.send(target, payload).await,
             Transport::Masque(transport) => transport.send(target, payload).await,
             Transport::ShadowQuic(transport) => transport.send(target, payload).await,
@@ -232,6 +238,8 @@ impl Transport {
             },
             Transport::Ss(transport) => transport.recv(buffer).await,
             Transport::Trojan(transport) => transport.recv(buffer).await,
+            Transport::Sudoku(transport) => transport.recv(buffer).await,
+            Transport::TrustTunnel(transport) => transport.recv(buffer).await,
             Transport::Ssr(transport) => transport.recv(buffer).await,
             Transport::Masque(transport) => transport.recv(buffer).await,
             Transport::ShadowQuic(transport) => transport.recv(buffer).await,
@@ -284,6 +292,8 @@ pub(crate) async fn association_task(
         Protocol::Socks5(option) => option.udp,
         Protocol::Shadowsocks(option) => option.udp,
         Protocol::Trojan(option) => option.udp,
+        Protocol::TrustTunnel(option) => option.udp,
+        Protocol::Sudoku(option) => option.udp,
         Protocol::Ssr(option) => option.udp,
         Protocol::Masque(option) => option.udp,
         Protocol::ShadowQuic(_) => true,
@@ -313,6 +323,16 @@ pub(crate) async fn association_task(
                 TrojanUdp::connect(option, &hops, timeout, &tls)
                     .await
                     .map(Transport::Trojan)
+            }
+            Protocol::TrustTunnel(option) => {
+                TrustTunnelUdp::connect(option, &hops, timeout, &tls)
+                    .await
+                    .map(Transport::TrustTunnel)
+            }
+            Protocol::Sudoku(option) => {
+                SudokuUdp::connect(option, &hops, timeout, &tls)
+                    .await
+                    .map(Transport::Sudoku)
             }
             Protocol::Ssr(option) => {
                 SsrUdp::connect(option, &hops, timeout, &tls)

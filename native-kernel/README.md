@@ -26,12 +26,23 @@ XPlus obfuscator, the `wechat` transport, `fast-open` and the `udp=1` session
 when the association is dialled).
 The residuals are `shadowquic zero-rtt`/QUIC v2 and Hysteria v1 `faketcp` at
 dial time (see `tool/kernel-compat/evidence/t32-option-closure.md`).
+T33 closed the masque/mieru/sudoku/trojan/trusttunnel/gost option rows it
+could implement: trojan now shares the T31 anytls ShadowTLS/JLS layer
+(`shadow-tls-opts` v1/v2, `jls-opts`) and applies `client-fingerprint`; the
+masque `_udp2`-style `bbr-profile` and `bbr_meta_v1` controller load (quinn
+BBR approximation, like T32's QUIC families); trusttunnel implements the
+`_udp2` h2 packet stream and `client-fingerprint`; gost-relay applies
+`client-fingerprint`; sudoku implements the KIP `StartUoT` association.
+The remaining rows are named residuals with pinned-source citations:
+masque `network: h2`/`h3-l4proxy` and `ip-stack.mode: gvisor`, mieru
+`udp`/`multiplexing`/`traffic-pattern`, and sudoku `http-mask-mode`
+(`tool/kernel-compat/evidence/t33-option-closure.md`).
 T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol).
 T17 added `sudoku` as a translation of the pinned GPL-3.0 `transport/sudoku`
 (TCP with the legacy HTTP mask, the pure and packed downlink codecs, the three
-record AEAD methods and the session mux; the HTTP tunnel modes and UoT are
-rejected by name), so the kernel workspace is now GPL-3.0-only (see
+record AEAD methods, the session mux and the KIP `StartUoT` UDP association;
+the HTTP tunnel modes are rejected by name), so the kernel workspace is now GPL-3.0-only (see
 [License](#license) and `THIRD_PARTY_NOTICES.md`). T14 added
 `masque` as an RFC 9298 CONNECT-UDP client over HTTP/3, reusing the T10
 `quinn` profile for the UDP association. T18 added the pinned Cloudflare WARP
@@ -944,13 +955,12 @@ pinned `component/wildcard` semantics (case-insensitive).
 Every option a proxy entry contains must be one this kernel honours: the
 loader reads only implemented keys and rejects the rest with the key named.
 With the pinned option tables that means the trojan/vless `smux` block,
-`ech-opts`,
-`shadow-tls-opts`, `restls-opts`, `jls-opts`, `reality-opts`, `grpc-opts`,
+`ech-opts`, `restls-opts`, `reality-opts`, `grpc-opts`,
 `http-opts`, `h2-opts`, `xhttp-opts`, a non-AEAD `ss-opts.method`, `plugin`/`plugin-opts`, ws
 early data and `v2ray-http-upgrade-fast-open`, `client-fingerprint` (accepted as a documented rustls approximation, counted as
 a residual rather than parity), vless `flow`/`reality-opts`/`shadow-tls-opts`/
 `restls-opts`/`jls-opts`, anytls `shadow-tls-opts: version 3`/`restls-opts`
-(JLS and ShadowTLS versions 1 and 2 are implemented: the JLS
+(trojan shares the same JLS/ShadowTLS layer; JLS and ShadowTLS versions 1 and 2 are implemented: the JLS
 ClientHello/ServerHello random is sealed and verified over a TCP rustls
 session, ShadowTLS v1 runs the TLS 1.2 camouflage handshake and hands the raw
 stream back, and ShadowTLS v2 frames the HMAC-SHA1 read digest as the first
@@ -960,11 +970,11 @@ the pinned server's last write), vmess
 mkcp`/`kcp` and `network: mekya` are implemented over KCP, and `tlsmirror-opts`
 implements the carrier/hidden TLS record layer), snell
 `version: 4-6`/`reuse`/`mode`/obfs `tls`, trusttunnel
-`udp`/`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
-`congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
-`client-fingerprint`, ssh private-key file paths, and `udp: true` on
-`snell`/`trusttunnel` (no UDP association for those two families; vless, anytls,
-vmess and socks5 UDP are implemented). T10's families implemented their remaining options in T31/T32 and now reject
+`quic`/`health-check`/`max-connections`/`min-streams`/`max-streams`/
+`congestion-controller`/`cwnd`/`bbr-profile`, ssh private-key file paths, and
+`udp: true` on `snell` (no UDP association; vless, anytls, vmess, socks5,
+trojan, ssr, sudoku, trusttunnel, masque and the QUIC families implement
+theirs). T10's families implemented their remaining options in T31/T32 and now reject
 only the named residuals: `tuic` implements the v4 `token` (BLAKE3 TKN and the
 v4 connect response), `udp-relay-mode` (`native` QUIC datagrams with v5
 fragmentation, `quic` one packet per uni stream), `udp-over-stream` (the pinned

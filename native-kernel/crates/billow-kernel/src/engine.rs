@@ -1826,6 +1826,8 @@ async fn serve_udp_associate_inner(
     let mut ssr: Option<outbound::udp::SsrUdp> = None;
     let mut gost: Option<outbound::gost_relay::GostRelayUdp> = None;
     let mut gost_target: Option<outbound::Target> = None;
+    let mut trusttunnel: Option<outbound::trusttunnel::TrustTunnelUdp> = None;
+    let mut sudoku: Option<outbound::udp::SudokuUdp> = None;
     let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
     let mut hysteria: Option<outbound::udp::HysteriaUdp> = None;
@@ -1851,6 +1853,8 @@ async fn serve_udp_associate_inner(
     let mut trojan_buf: Option<Vec<u8>> = None;
     let mut ssr_buf: Option<Vec<u8>> = None;
     let mut gost_buf: Option<Vec<u8>> = None;
+    let mut trusttunnel_buf: Option<Vec<u8>> = None;
+    let mut sudoku_buf: Option<Vec<u8>> = None;
     let mut masque_buf: Option<Vec<u8>> = None;
     let mut shadowquic_buf: Option<Vec<u8>> = None;
     let mut hysteria_buf: Option<Vec<u8>> = None;
@@ -1870,6 +1874,8 @@ async fn serve_udp_associate_inner(
     let mut trojan_eof = false;
     let mut ssr_eof = false;
     let mut gost_eof = false;
+    let mut trusttunnel_eof = false;
+    let mut sudoku_eof = false;
     let mut masque_eof = false;
     let mut shadowquic_eof = false;
     let mut hysteria_eof = false;
@@ -1917,6 +1923,16 @@ async fn serve_udp_associate_inner(
             gost_buf = None;
             gost_target = None;
             gost_eof = false;
+        }
+        if trusttunnel_eof {
+            trusttunnel = None;
+            trusttunnel_buf = None;
+            trusttunnel_eof = false;
+        }
+        if sudoku_eof {
+            sudoku = None;
+            sudoku_buf = None;
+            sudoku_eof = false;
         }
         if masque_eof {
             masque = None;
@@ -2463,6 +2479,68 @@ async fn serve_udp_associate_inner(
                                 .send(&datagram.target, payload)
                                 .await
                         }
+                        crate::proxies::Protocol::Sudoku(option) if option.udp => {
+                            if sudoku.is_none() {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::udp::SudokuUdp::connect(
+                                        option,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        sudoku = Some(association);
+                                        sudoku_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "sudoku UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            sudoku
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::TrustTunnel(option) if option.udp => {
+                            if trusttunnel.is_none() {
+                                let hops = chain_for(config, &proxy);
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::trusttunnel::TrustTunnelUdp::connect(
+                                        option,
+                                        &hops,
+                                        limits.dial_timeout,
+                                        &context.runtime.tls,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(association) => {
+                                        trusttunnel = Some(association);
+                                        trusttunnel_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "trusttunnel UDP association failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            trusttunnel
+                                .as_mut()
+                                .expect("connected above")
+                                .send(&outgoing, payload)
+                                .await
+                        }
                         crate::proxies::Protocol::ShadowQuic(option) => {
                             if shadowquic.is_none() {
                                 match outbound::shadowquic::ShadowQuicUdp::connect(
@@ -2852,6 +2930,48 @@ async fn serve_udp_associate_inner(
                     failed = true;
                 }
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, masque_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (sudoku.as_mut(), sudoku_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if sudoku.is_some() && !sudoku_eof => {
+                if received.is_err() {
+                    sudoku_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, sudoku_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (trusttunnel.as_mut(), trusttunnel_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if trusttunnel.is_some() && !trusttunnel_eof => {
+                if received.is_err() {
+                    trusttunnel_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, trusttunnel_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {
                         let mut reply = outbound::udp::reply_header(&from);
                         reply.extend_from_slice(&buffer[..read]);

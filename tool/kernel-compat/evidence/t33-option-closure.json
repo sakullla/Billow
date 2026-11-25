@@ -1,0 +1,246 @@
+{
+  "format": "option_closure",
+  "version": 1,
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T33",
+  "attempt": "T33-A1",
+  "matrix": {
+    "before": {
+      "noop": 291,
+      "implemented": 110,
+      "enabled": 99,
+      "problems": 0
+    },
+    "after": {
+      "noop": 291,
+      "implemented": 119,
+      "enabled": 90,
+      "problems": 0
+    },
+    "command": "node tool/kernel-compat/option-probe.mjs --rust /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t33-a1-target/debug/billow-kernel --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --out tool/kernel-compat/evidence/option-matrix.txt",
+    "build": "debug build of billow-kernel-cli in an independent CARGO_TARGET_DIR (the matrix header records the exact path; unlike the T32 note this is not a release build, which does not change load/reject classification)"
+  },
+  "per_family": {
+    "masque": {
+      "rust_reject_before": 5,
+      "rust_reject_after": 4,
+      "implemented": [
+        "bbr-profile",
+        "congestion-controller: bbr_meta_v1"
+      ],
+      "residual": [
+        "network: h2",
+        "network: h3-l4proxy",
+        "ip-stack.mode: gvisor"
+      ]
+    },
+    "mieru": {
+      "rust_reject_before": 5,
+      "rust_reject_after": 5,
+      "implemented": [],
+      "residual": [
+        "udp",
+        "multiplexing",
+        "traffic-pattern"
+      ]
+    },
+    "sudoku": {
+      "rust_reject_before": 3,
+      "rust_reject_after": 1,
+      "implemented": [
+        "udp"
+      ],
+      "residual": [
+        "http-mask-mode"
+      ]
+    },
+    "trojan": {
+      "rust_reject_before": 6,
+      "rust_reject_after": 3,
+      "implemented": [
+        "shadow-tls-opts",
+        "jls-opts",
+        "client-fingerprint"
+      ],
+      "residual": []
+    },
+    "trusttunnel": {
+      "rust_reject_before": 11,
+      "rust_reject_after": 9,
+      "implemented": [
+        "udp",
+        "client-fingerprint"
+      ],
+      "residual": []
+    },
+    "gost-relay": {
+      "rust_reject_before": 1,
+      "rust_reject_after": 0,
+      "implemented": [
+        "client-fingerprint"
+      ],
+      "residual": []
+    },
+    "note": "counts are matrix rows (the probe lists a few keys twice, e.g. mieru udp/traffic-pattern, because a family-level and a value-level registered gap both exist)"
+  },
+  "implemented": [
+    {
+      "family": "trojan",
+      "option": "shadow-tls-opts (version 1/2)",
+      "implementation": "The T31 anytls security layer is shared: AnytlsSecurity/parse_anytls_security became TlsSecurity/parse_tls_security, TrojanOutbound carries the mode and trojan::wrap_security replaces the plain rustls handshake with shadow_tls::wrap. The trojan header then travels inside the ShadowTLS plaintext records. Version 0/2 and 1 load; version 3 stays rejected with the session-id reason.",
+      "evidence": [
+        "tests/mihomo_peers.rs::trojan_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo",
+        "tests/config.rs::trojan_shadow_tls_jls_and_client_fingerprint_load"
+      ]
+    },
+    {
+      "family": "trojan",
+      "option": "jls-opts",
+      "implementation": "Same shared parser; trojan::wrap_security uses tls_io::connect_jls with the parsed credentials. Required username/password and the ShadowTLS/JLS mutual exclusion match the pinned type.",
+      "evidence": [
+        "tests/mihomo_peers.rs::trojan_over_jls_reaches_the_receiving_side_through_mihomo",
+        "tests/config.rs::trojan_shadow_tls_jls_and_client_fingerprint_load"
+      ]
+    },
+    {
+      "family": "trojan",
+      "option": "client-fingerprint",
+      "implementation": "Parsed into TlsSettings.client_fingerprint and applied as the T30/T32 rustls profile approximation (no uTLS ClientHello); empty/none keeps the standard handshake, like the pinned GetFingerprint fallback.",
+      "evidence": [
+        "tests/config.rs::trojan_shadow_tls_jls_and_client_fingerprint_load",
+        "option matrix impl row"
+      ]
+    },
+    {
+      "family": "trusttunnel",
+      "option": "udp: true",
+      "implementation": "TrustTunnelUdp opens the pinned `_udp2` h2 CONNECT stream and carries `u32 length | source 16+2 | destination 16+2 | u8 app-name length | app name | payload`; replies are `u32 length | source 16+2 | local 16+2 | payload`. IPv4 uses the last four bytes of the 16-byte field, `::1` is not decoded as IPv4, a non-IP destination is resolved first (the pinned ResolveUDP), and one association serves every destination. `Proxy::udp_enabled()` reports it; the mixed inbound and the TUN data plane both build the association; a dialer-proxy chain loads (like T32's QUIC families) and the association refuses it by name.",
+      "evidence": [
+        "tests/mihomo_peers.rs::trusttunnel_udp_reaches_the_echo_through_mihomo",
+        "src/outbound/trusttunnel.rs::tests::udp_packet_framing_matches_the_pinned_layout",
+        "tests/config.rs::trusttunnel_options_are_strict"
+      ]
+    },
+    {
+      "family": "trusttunnel",
+      "option": "client-fingerprint",
+      "implementation": "Parsed into the shared TLS settings and applied as the rustls profile approximation.",
+      "evidence": [
+        "tests/config.rs::trusttunnel_options_are_strict",
+        "option matrix impl row"
+      ]
+    },
+    {
+      "family": "gost-relay",
+      "option": "client-fingerprint",
+      "implementation": "Parsed and applied to the optional TLS layer as the rustls profile approximation; without `tls: true` the pinned client ignores it and the kernel accepts it the same way.",
+      "evidence": [
+        "tests/config.rs::gost_relay_options_are_strict",
+        "option matrix impl row"
+      ]
+    },
+    {
+      "family": "masque",
+      "option": "bbr-profile",
+      "implementation": "Validated (conservative/standard/aggressive) and mapped to quinn's BBR initial window through tuic::congestion_tuning_profile, the same documented approximation as T32's TUIC/ShadowQUIC rows. Exactly like the pinned SetCongestionController switch, the profile only changes behaviour together with a bbr controller; alone it loads and does nothing.",
+      "evidence": [
+        "src/outbound/tuic.rs::tests::bbr_profile_selects_the_initial_window",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
+        "option matrix impl row"
+      ]
+    },
+    {
+      "family": "masque",
+      "option": "congestion-controller: bbr_meta_v1",
+      "implementation": "Accepted and mapped to quinn's BBR sender (closest available; the legacy meta v1 sender is absent). tuic::congestion_tuning now selects BBR for bbr_meta_v1 too, so TUIC/ShadowQUIC/masque agree; bbr-profile stays effective for bbr/bbr_meta_v2 only, matching the pinned switch.",
+      "evidence": [
+        "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr",
+        "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
+        "option matrix impl row"
+      ]
+    },
+    {
+      "family": "sudoku",
+      "option": "udp: true",
+      "implementation": "KIP StartUot: the shared connect_stream learns Handshake::StartUot (features OPEN_TCP|UOT, TYPE_START_UOT after rekey), and SudokuUdp carries `u16 address length | u16 payload length | SOCKS5 address | payload` frames over that stream, reading the same layout back (address padding past the encoded form is tolerated). One association serves every destination. Proxy::udp_enabled() reports it; mixed inbound and TUN both build it; one SOCKS5 dialer-proxy hop is supported like the TCP path.",
+      "evidence": [
+        "tests/mihomo_peers.rs::sudoku_udp_reaches_the_echo_through_mihomo",
+        "src/outbound/udp.rs::tests::sudoku_uot_frame_round_trips_over_a_stream",
+        "tests/config.rs::sudoku_options_are_strict"
+      ]
+    }
+  ],
+  "residuals": [
+    {
+      "family": "masque",
+      "option": "network: h2",
+      "reason": "The pinned h2 variant builds an HTTP/2 CONNECT-IP client (h2c-mode transport, capsulated CONNECT-IP over h2 DATA frames). The kernel implements CONNECT-IP over HTTP/3 only; an h2 CONNECT-IP carrier is a second capsule transport rather than an option mapping.",
+      "pinned_source": "adapter/outbound/masque.go:180 (Network == \"h2\"), transport/masque/client_h2.go",
+      "evidence": "option matrix enabled row (rust=reject mihomo=accept); rust-mapping.json masque.notImplemented"
+    },
+    {
+      "family": "masque",
+      "option": "network: h3-l4proxy",
+      "reason": "The pinned L4 client is a separate encapsulation from RFC 9484 CONNECT-IP; implementing it means porting transport/masque/l4proxy.go (its own client and SNI).",
+      "pinned_source": "adapter/outbound/masque.go:158,257-263; transport/masque/l4proxy.go",
+      "evidence": "option matrix enabled row; rust-mapping.json masque.notImplemented"
+    },
+    {
+      "family": "masque",
+      "option": "ip-stack.mode: gvisor",
+      "reason": "gVisor is the pinned binary's build-tagged userspace stack (`with_gvisor`); the kernel's in-tree stack terminates UDP only and is not a gVisor replacement. Auto/mips/empty still load (as before).",
+      "pinned_source": "adapter/outbound/wireguard.go:164 (requires with_gvisor), 196-203 (newIPStack), constant/features/with_gvisor.go",
+      "evidence": "option matrix enabled row; rust-mapping.json masque.notImplemented"
+    },
+    {
+      "family": "mieru",
+      "option": "udp: true",
+      "reason": "The pinned ListenPacketContext dials the enfein/mieru client's stream and wraps it in NewUDPAssociateWrapper(NewPacketOverStreamTunnel(c)); that packet-over-stream framing lives in the external locked mieru module, not in a kernel implementation. The kernel's mieru is a clean-room TCP stream client with no packet/associate layer.",
+      "pinned_source": "adapter/outbound/mieru.go:88-99",
+      "evidence": "option matrix enabled row (rust=reject mihomo=accept); rust-mapping.json mieru.notImplemented"
+    },
+    {
+      "family": "mieru",
+      "option": "multiplexing: MULTIPLEXING_LOW/MIDDLE/HIGH",
+      "reason": "The levels select the external mieru client's session multiplexer profile; the kernel opens one encoded session per underlay connection and has no mieru mux layer.",
+      "pinned_source": "adapter/outbound/mieru.go:279-284",
+      "evidence": "option matrix enabled row; rust-mapping.json mieru.notImplemented"
+    },
+    {
+      "family": "mieru",
+      "option": "traffic-pattern",
+      "reason": "Decoded/validated by the external enfein/mieru trafficpattern package and applied inside that client (padding, nonce rewriting, low-entropy payloads and TCP fragmentation). The value has no kernel-side implementation.",
+      "pinned_source": "adapter/outbound/mieru.go:287-289,345-352",
+      "evidence": "option matrix enabled row (Mihomo also rejects the probe value AbCd, so the row is not a disagreement); rust-mapping.json mieru.notImplemented"
+    },
+    {
+      "family": "sudoku",
+      "option": "http-mask-mode: stream/poll/auto/ws",
+      "reason": "A mihomo extension over Sudoku (transport/sudoku/obfs/httpmask: split-stream/poll/WebSocket tunnel clients, preconnect/retry/ready handshakes); not ported. The legacy header mask and the session mux are implemented.",
+      "pinned_source": "transport/sudoku/obfs/httpmask/{tunnel_dial,tunnel_conn_split,tunnel_ws,tunnel_preconnect,tunnel_retry,tunnel_ready}.go",
+      "evidence": "option matrix enabled row (rust=reject mihomo=accept); rust-mapping.json sudoku.notImplemented"
+    }
+  ],
+  "verification": {
+    "default_tests": "cargo test --locked --manifest-path native-kernel/Cargo.toml -- --test-threads=1 (independent CARGO_TARGET_DIR): all suites pass, 208 lib + 56 config + protocols/quic/dns/etc.",
+    "pinned_peer": [
+      "tests/mihomo_peers.rs::trojan_over_jls_reaches_the_receiving_side_through_mihomo",
+      "tests/mihomo_peers.rs::trojan_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo",
+      "tests/mihomo_peers.rs::trusttunnel_udp_reaches_the_echo_through_mihomo",
+      "tests/mihomo_peers.rs::sudoku_udp_reaches_the_echo_through_mihomo"
+    ],
+    "differentials": {
+      "t22": "23 cases, 22 pass, 1 skipped, 0 differ/unexpected",
+      "t23": "27 cases + persistence, 28 pass, 0 differ/unexpected",
+      "t24": "38 cases, 36 pass, 2 skipped, 0 differ/unexpected",
+      "t25": "49 cases, 47 pass, 2 recorded divergences",
+      "t5": "12 scenarios, 12 pass, 0 differ"
+    },
+    "runner": "node --test tool/kernel-compat/runner.test.mjs: 10/10 pass",
+    "matrix": "291 no-op / 119 implemented / 90 enabled, 0 problems"
+  },
+  "approximations_counted_as_residual": [
+    "trojan/trusttunnel/gost-relay client-fingerprint: closest rustls profile, no uTLS ClientHello (same category as t30-option-closure.json)",
+    "masque bbr-profile and congestion-controller bbr_meta_v1: quinn BBR initial-window mapping, no pinned BBR profile selector/meta BBR v1 sender (same category as T32's QUIC families)"
+  ]
+}

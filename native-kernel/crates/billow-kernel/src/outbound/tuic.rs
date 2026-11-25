@@ -146,11 +146,13 @@ pub(crate) fn congestion_tuning(
         Some("cubic") => CongestionController::Cubic,
         Some("new_reno") => CongestionController::NewReno,
         // Pinned `congestion.SetCongestionController`: `bbr_meta_v2` is a
-        // fallthrough alias of `bbr` (both use the v2 BBR sender).
-        Some("bbr") | Some("bbr_meta_v2") => CongestionController::Bbr,
+        // fallthrough alias of `bbr` (both use the v2 BBR sender), and
+        // `bbr_meta_v1` (the legacy meta sender) selects the same quinn BBR
+        // controller as the closest available approximation.
+        Some("bbr") | Some("bbr_meta_v1") | Some("bbr_meta_v2") => CongestionController::Bbr,
         _ => CongestionController::Default,
     };
-    let initial = if matches!(name, Some("bbr") | Some("bbr_meta_v2")) {
+    let initial = if matches!(name, Some("bbr") | Some("bbr_meta_v1") | Some("bbr_meta_v2")) {
         let packets = if cwnd == 0 { 32 } else { cwnd };
         Some(u64::from(packets) * packet_size)
     } else {
@@ -1026,6 +1028,13 @@ mod tests {
         assert_eq!(
             congestion_tuning(Some("bbr_meta_v2"), 0, 1242),
             (CongestionController::Bbr, Some(32 * 1242))
+        );
+        // The legacy meta v1 sender has no quinn equivalent; it selects the
+        // same BBR controller (T33 masque closure; T32's TUIC/ShadowQUIC rows
+        // make the same approximation).
+        assert_eq!(
+            congestion_tuning(Some("bbr_meta_v1"), 64, 1242),
+            (CongestionController::Bbr, Some(64 * 1242))
         );
         assert_eq!(
             congestion_tuning(Some("cubic"), 64, 1280),

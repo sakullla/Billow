@@ -228,9 +228,8 @@ const t13Enabled = [
   ['mieru', 'udp', 'udp: true'],
   ['mieru', 'multiplexing', 'multiplexing: MULTIPLEXING_LOW'],
   ['mieru', 'traffic-pattern', 'traffic-pattern: AbCd'],
-  // sudoku: `multiplex: on` is implemented (session mux), so it is not an
-  // enabled-rejection row; the HTTP tunnel modes and UoT still are.
-  ['sudoku', 'udp', 'udp: true'],
+  // sudoku: `multiplex: on` is implemented (session mux) and T33 added the UoT
+  // association, so only the HTTP tunnel modes remain an enabled-rejection row.
   ['sudoku', 'http-mask-mode', 'http-mask-mode: stream'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 // T15 shadowquic: explicit enabled forms (a list for `quic-versions` and rate
@@ -272,9 +271,11 @@ const t16Enabled = [
 // T18 masque: the pinned WARP shape loads; the modes and QUIC/stack knobs it
 // does not implement must be rejected by name.
 const t18Enabled = [
+  // T33 implemented bbr-profile and bbr_meta_v1 (both load; the `impl` rows
+  // below keep the load contract). The h2 CONNECT-IP transport, h3-l4proxy and
+  // the gVisor stack stay named residuals.
   ['masque', 'network', 'network: h2'],
   ['masque', 'network', 'network: h3-l4proxy'],
-  ['masque', 'bbr-profile', 'bbr-profile: standard'],
   ['masque', 'ip-stack.mode', 'ip-stack: {mode: gvisor}'],
   ['masque', 'dialer-proxy', 'dialer-proxy: hop'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
@@ -688,6 +689,23 @@ implemented.push({
   base: bases.trojan.off,
   option: 'ss-opts: {enabled: true, method: AES-256-GCM, password: p}',
 })
+
+// T33: trojan's shared ShadowTLS/JLS layer and uTLS name, trusttunnel's
+// `_udp2` packet stream and its uTLS name, and gost-relay's uTLS name. Each
+// form must load in the Rust kernel (the peer tests cover the behaviour).
+for (const [type, key, base, option] of [
+  ['trojan', 'shadow-tls-opts', bases.trojan.off, 'shadow-tls-opts: {password: p, version: 1}'],
+  ['trojan', 'jls-opts', bases.trojan.off, 'jls-opts: {username: u, password: p}'],
+  ['trojan', 'client-fingerprint', bases.trojan.off, 'client-fingerprint: chrome'],
+  ['trusttunnel', 'udp', bases.trusttunnel.off, 'udp: true'],
+  ['trusttunnel', 'client-fingerprint', bases.trusttunnel.off, 'client-fingerprint: chrome'],
+  ['gost-relay', 'client-fingerprint', bases['gost-relay'].on, 'client-fingerprint: chrome'],
+  ['masque', 'bbr-profile', bases.masque.off, 'bbr-profile: standard'],
+  ['masque', 'congestion-controller:bbr_meta_v1', bases.masque.off, 'congestion-controller: bbr_meta_v1'],
+  ['sudoku', 'udp', bases.sudoku.off, 'udp: true'],
+]) {
+  implemented.push({ type, key, base, option })
+}
 
 // Enabled forms: every one must be rejected by name.
 

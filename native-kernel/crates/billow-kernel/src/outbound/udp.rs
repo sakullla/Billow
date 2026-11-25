@@ -11,16 +11,19 @@
 //!   (`salt || sealed(addr || payload)`), one socket per association;
 //! - `trojan` with `udp: true`: the server's UDP command framing over the TLS
 //!   stream (`addr | length | CRLF | payload`), one stream per association;
+//! - `sudoku` with `udp: true`: the KIP `StartUoT` session and the
+//!   `u16 addr len | u16 payload len | addr | payload` frames;
+//! - `trusttunnel` with `udp: true`: the `_udp2` h2 packet stream;
 //! - `hysteria2`: the pinned QUIC datagram session (`session id | packet id |
 //!   fragment id/count | varint address | host:port | data`), one association
 //!   serving every destination, with `udp-mtu` fragmentation and packet-id
 //!   reassembly (see [`Hysteria2Udp`]).
 //!
 //! Families whose pinned outbound has no UDP association this kernel can
-//! express (http, mieru, sudoku, snell, ssh, trusttunnel, vless without
-//! `packet-addr`, anytls without UoT) drop the datagram and log it; that is a
-//! recorded capability gap, never a silent success. Fragmented SOCKS5
-//! datagrams (`FRAG != 0`) are dropped as well.
+//! express (http, mieru, snell, ssh, vless without `packet-addr`, anytls
+//! without UoT) drop the datagram and log it; that is a recorded capability
+//! gap, never a silent success. Fragmented SOCKS5 datagrams (`FRAG != 0`) are
+//! dropped as well.
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -346,6 +349,133 @@ impl SsUdp {
     }
 }
 
+/// Sudoku UDP-over-TCP: the pinned `ListenPacketContext` opens a normal Sudoku
+/// stream, sends the KIP `StartUoT` control message and then carries
+/// `u16 address length | u16 payload length | SOCKS5 address | payload`
+/// frames. One association serves every destination (each frame names its
+/// own), exactly like `transport/sudoku/uot.go`.
+pub struct SudokuUdp {
+    stream: BoxStream,
+    read_buf: Vec<u8>,
+}
+
+impl SudokuUdp {
+    pub async fn connect(
+        option: &crate::proxies::SudokuOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<SudokuUdp, DialError> {
+        debug_assert!(option.udp);
+        let (stream, _server) = match via.len() {
+            1 => {
+                super::sudoku::connect(
+                    option,
+                    super::sudoku::Handshake::StartUot,
+                    None,
+                )
+                .await?
+            }
+            2 => {
+                let exit_server = Target {
+                    host: option.server.clone(),
+                    port: option.port,
+                };
+                let stream =
+                    super::connect_via_hops(&via[1..], &exit_server, timeout, tls).await?;
+                super::sudoku::connect_stream(
+                    option,
+                    super::sudoku::Handshake::StartUot,
+                    None,
+                    stream,
+                    super::peer_of(via[0]),
+                )
+                .await?
+            }
+            _ => {
+                return Err(DialError::Chain(format!(
+                    "udp with a multi-hop dialer-proxy chain ({} hops) is not implemented (at most one socks5 hop)",
+                    via.len() - 1
+                )))
+            }
+        };
+        Ok(SudokuUdp {
+            stream,
+            read_buf: Vec::new(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sudoku UDP payload exceeds the u16 frame length",
+            ));
+        }
+        let address = address_header(target);
+        let mut frame = Vec::with_capacity(4 + address.len() + payload.len());
+        frame.extend_from_slice(&(address.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&address);
+        frame.extend_from_slice(payload);
+        self.stream.write_all(&frame).await?;
+        self.stream.flush().await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        loop {
+            if self.read_buf.len() >= 4 {
+                let address_len =
+                    u16::from_be_bytes([self.read_buf[0], self.read_buf[1]]) as usize;
+                let payload_len =
+                    u16::from_be_bytes([self.read_buf[2], self.read_buf[3]]) as usize;
+                if address_len == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "sudoku UoT frame has a zero address length",
+                    ));
+                }
+                if self.read_buf.len() >= 4 + address_len + payload_len {
+                    let address = &self.read_buf[4..4 + address_len];
+                    let Some((target, used)) = parse_address(address, 0) else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sudoku UoT frame has an undecodable address",
+                        ));
+                    };
+                    // The pinned reader tolerates address padding past the
+                    // encoded form (it only decodes the first MaxAddrLen).
+                    let start = 4 + address_len;
+                    let payload = &self.read_buf[start..start + payload_len];
+                    if payload.len() > buffer.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sudoku UDP payload exceeds the receive buffer",
+                        ));
+                    }
+                    let _ = used;
+                    buffer[..payload.len()].copy_from_slice(payload);
+                    let read = payload.len();
+                    self.read_buf.drain(..start + payload_len);
+                    return Ok(Some((target, read)));
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            let read = self.stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+            self.read_buf.extend_from_slice(&chunk[..read]);
+            if self.read_buf.len() > 4 * MAX_DATAGRAM {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "sudoku UoT frame buffer exceeded",
+                ));
+            }
+        }
+    }
+}
+
 /// ShadowsocksR datagrams for one association (`ssr.cipher.PacketConn` then
 /// `ssr.protocol.PacketConn` in the pinned outbound): each datagram is
 /// `IV || cipher(protocol packet)` and the protocol packet carries the SOCKS5
@@ -545,11 +675,9 @@ impl TrojanUdp {
                 )))
             }
         };
-        let stream = super::tls::wrap_stream(server_stream, &option.server, &option.tls_settings, tls)
-            .await
-            .map_err(|e| handshake("trojan-udp tls", e))?;
+        let stream = super::trojan::wrap_security(server_stream, option, tls).await?;
         let stream: BoxStream = match &option.network {
-            crate::proxies::TrojanNetwork::Tcp => Box::new(stream),
+            crate::proxies::TrojanNetwork::Tcp => stream,
             crate::proxies::TrojanNetwork::Ws(ws_settings) => {
                 let host = option
                     .tls_settings
@@ -2379,6 +2507,32 @@ mod tests {
         };
         let addrs = futures_block_on(resolve_all(&target)).expect("literal resolves");
         assert_eq!(addrs, vec![addr("127.0.0.1", 53)]);
+    }
+
+    #[test]
+    fn sudoku_uot_frame_round_trips_over_a_stream() {
+        // Pinned `uot.go`: `u16 address length | u16 payload length | address
+        // | payload`; the client writes and reads the same frame layout.
+        let (a, b) = tokio::io::duplex(4096);
+        let mut client = SudokuUdp {
+            stream: Box::new(a),
+            read_buf: Vec::new(),
+        };
+        let mut server = SudokuUdp {
+            stream: Box::new(b),
+            read_buf: Vec::new(),
+        };
+        let target = Target {
+            host: "example.org".into(),
+            port: 5353,
+        };
+        futures_block_on(async {
+            client.send(&target, b"query").await.expect("send");
+            let mut buffer = [0u8; 64];
+            let (from, read) = server.recv(&mut buffer).await.expect("recv").expect("frame");
+            assert_eq!(from, target);
+            assert_eq!(&buffer[..read], b"query");
+        });
     }
 
     #[test]

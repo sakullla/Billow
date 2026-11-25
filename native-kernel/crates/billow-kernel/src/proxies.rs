@@ -243,6 +243,9 @@ pub struct TrojanOutbound {
     /// `ss-opts: {enabled: true, ...}`: an extra Shadowsocks AEAD layer over
     /// the TLS stream (the pinned `core.Cipher.StreamConn` wrapper).
     pub ss_opts: Option<TrojanSsOpts>,
+    /// `shadow-tls-opts` / `jls-opts`: the camouflage TLS layer the pinned
+    /// `StreamConnContext` selects instead of a plain TLS handshake.
+    pub security: TlsSecurity,
     pub dialer_proxy: Option<String>,
 }
 
@@ -283,13 +286,11 @@ pub enum VlessNetwork {
     Ws(WsSettings),
 }
 
-/// AnyTLS (Mihomo `adapter/outbound/anytls.go`): TLS to the server with a
-/// SHA-256 password prefix, then a session-multiplexed stream per connection.
-///
-/// The TLS-layer security mode of an AnyTLS outbound (`ShadowTLSOpts` /
-/// `JLSOpts` in the pinned type). At most one may be set.
+/// The TLS-layer security mode shared by the outbounds whose pinned type
+/// declares `shadow-tls-opts` / `jls-opts` (`anytls`, `trojan`): a camouflage
+/// TLS handshake instead of the plain rustls one. At most one may be set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AnytlsSecurity {
+pub enum TlsSecurity {
     None,
     /// `shadow-tls-opts`: a camouflage TLS handshake, then ShadowTLS framing.
     ShadowTls {
@@ -308,7 +309,7 @@ pub struct AnytlsOutbound {
     pub password: Secret,
     pub tls_settings: TlsSettings,
     /// `shadow-tls-opts` / `jls-opts`; mutually exclusive in the pinned type.
-    pub security: AnytlsSecurity,
+    pub security: TlsSecurity,
     /// `udp: true`: datagrams travel as UoT over a dedicated AnyTLS stream.
     pub udp: bool,
     /// `client-metadata`: the `client=` value of the session settings frame.
@@ -446,8 +447,8 @@ pub struct VmessOutbound {
 }
 
 /// TrustTunnel (`transport/trusttunnel`): TLS + HTTP/2 `CONNECT` with Basic
-/// proxy authentication. Only the TCP transport is implemented; UDP (`_udp2`),
-/// ICMP (`_icmp`) and the QUIC variant are rejected at load time.
+/// proxy authentication. The TCP transport and the `_udp2` packet stream are
+/// implemented; ICMP (`_icmp`) and the QUIC variant are rejected at load time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustTunnelOutbound {
     pub server: String,
@@ -455,6 +456,9 @@ pub struct TrustTunnelOutbound {
     pub username: Secret,
     pub password: Secret,
     pub tls_settings: TlsSettings,
+    /// `udp: true`: the `_udp2` h2 stream carries framed datagrams for one
+    /// association serving every destination.
+    pub udp: bool,
     pub dialer_proxy: Option<String>,
 }
 
@@ -523,6 +527,8 @@ pub struct SudokuOutbound {
     pub http_mask: bool,
     pub path_root: Option<String>,
     pub multiplex: SudokuMultiplex,
+    /// `udp: true`: the KIP `StartUoT` session carries framed datagrams.
+    pub udp: bool,
     pub dialer_proxy: Option<String>,
 }
 
@@ -810,7 +816,8 @@ pub struct EasytierOutbound {
 ///   this kernel terminates for UDP only: TCP needs a TCP state machine the
 ///   kernel does not have, so a TCP dial through it is refused by name.
 ///
-/// The `h2` CONNECT-IP variant and `h3-l4proxy` are still rejected by name.
+/// The `h2` CONNECT-IP variant, `h3-l4proxy` and the gVisor stack
+/// (`ip-stack.mode: gvisor`) are still rejected by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MasqueOutbound {
     pub server: String,
@@ -824,6 +831,11 @@ pub struct MasqueOutbound {
     /// Initial congestion window in packets (`cwnd`, pinned default 32 when a
     /// controller is selected).
     pub cwnd: u32,
+    /// `bbr-profile`: conservative/standard/aggressive, mapped to the initial
+    /// window of quinn's BBR (the same documented approximation as T32's QUIC
+    /// families). Only effective with `congestion-controller: bbr`, exactly
+    /// like the pinned `SetCongestionController` switch.
+    pub bbr_profile: Option<String>,
     /// `udp`: for CONNECT-IP this enables the UDP-over-IP association; for
     /// CONNECT-UDP it is the only implemented mode, so `false` leaves an
     /// outbound that refuses every dial explicitly.
@@ -1450,6 +1462,7 @@ impl Proxy {
             Protocol::Trojan(p) => p.udp,
             Protocol::Ssr(p) => p.udp,
             Protocol::GostRelay(p) => p.udp,
+            Protocol::TrustTunnel(p) => p.udp,
             Protocol::Masque(p) => p.udp,
             // Hysteria2 enables UDP unconditionally in the pinned outbound
             // (`UDP: true`); the option has no `udp` field, so a config's
@@ -1461,6 +1474,7 @@ impl Proxy {
             Protocol::Hysteria(_) => true,
             Protocol::Tuic(_) => true,
             Protocol::ShadowQuic(_) => true,
+            Protocol::Sudoku(p) => p.udp,
             Protocol::Tailscale(p) => p.udp,
             Protocol::Zerotier(p) => p.udp,
             Protocol::Easytier(p) => p.udp,
@@ -1644,23 +1658,20 @@ pub fn parse_proxies(value: &serde_yaml::Value) -> Result<Vec<Proxy>, ConfigErro
 /// the limitation visible in `--check` instead of letting a UDP association
 /// dial the server directly while TCP goes through the chain.
 ///
-/// Hysteria2, Hysteria v1 and TUIC are exempt: their UDP association is a
-/// QUIC socket that cannot ride any hop, and
-/// [`crate::outbound::udp::Hysteria2Udp::connect`]
-/// / [`crate::outbound::udp::HysteriaUdp::connect`]
-/// / [`crate::outbound::tuic::TuicUdp::connect`]
-/// / [`crate::outbound::udp::TuicUot::connect`] refuse a chain by name at
-/// association time. The pinned client accepts the configuration, and
-/// rejecting it here would reject the whole file (every unrelated proxy, and
-/// TCP) even when the chained proxy is never used, so the limitation stays a
-/// per-association error instead of a load-time one.
+/// Hysteria2, Hysteria v1, TUIC and TrustTunnel are exempt: their UDP
+/// association is a QUIC socket or a TLS/h2 stream that this kernel builds
+/// directly, and the association refuses a chain by name at association time.
+/// The pinned client accepts the configuration, and rejecting it here would
+/// reject the whole file (every unrelated proxy, and TCP) even when the
+/// chained proxy is never used, so the limitation stays a per-association
+/// error instead of a load-time one.
 fn validate_udp_chains(proxies: &[Proxy]) -> Result<(), ConfigError> {
     let index = |name: &str| proxies.iter().position(|proxy| proxy.name == name);
     for (i, proxy) in proxies.iter().enumerate() {
         if !proxy.udp_enabled()
             || matches!(
                 proxy.protocol,
-                Protocol::Hysteria2(_) | Protocol::Hysteria(_) | Protocol::Tuic(_)
+                Protocol::Hysteria2(_) | Protocol::Hysteria(_) | Protocol::Tuic(_) | Protocol::TrustTunnel(_)
             )
         {
             continue;
@@ -3082,7 +3093,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
     if password.expose().len() > 56 {
         return Err(entry.invalid("option 'password' longer than 56 bytes"));
     }
-    let tls_settings = entry.tls_settings(true, true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, true)?;
     let network = entry
         .string("network")?
         .unwrap_or_else(|| "tcp".to_string());
@@ -3099,6 +3110,8 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
     };
     let udp = entry.bool("udp")?.unwrap_or(false);
     let ss_opts = parse_trojan_ss_opts(entry)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
+    let security = parse_tls_security(entry)?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
         "dialer-proxy",
@@ -3136,6 +3149,7 @@ fn parse_trojan(entry: &mut Entry<'_>) -> Result<TrojanOutbound, ConfigError> {
         network,
         udp,
         ss_opts,
+        security,
         dialer_proxy,
     })
 }
@@ -3325,7 +3339,7 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     let disable_reuse = entry.bool("disable-reuse")?.unwrap_or(false);
     let udp = entry.bool("udp")?.unwrap_or(false);
     let client_metadata = entry.string("client-metadata")?.filter(|s| !s.is_empty());
-    let security = parse_anytls_security(entry)?;
+    let security = parse_tls_security(entry)?;
     let session_pool = crate::outbound::anytls::AnytlsPool::new(
         idle_session_check_interval,
         idle_session_timeout,
@@ -3377,7 +3391,11 @@ fn parse_anytls(entry: &mut Entry<'_>) -> Result<AnytlsOutbound, ConfigError> {
     })
 }
 
-fn parse_anytls_security(entry: &mut Entry<'_>) -> Result<AnytlsSecurity, ConfigError> {
+/// `shadow-tls-opts` / `jls-opts`, shared by `anytls` and `trojan` (the pinned
+/// types build the same `ShadowTLS`/`JLS` TLS configs and reject the same
+/// combinations). `restls-opts` stays a named rejection: Restls rewrites the
+/// TLS handshake bytes rustls has already authenticated.
+fn parse_tls_security(entry: &mut Entry<'_>) -> Result<TlsSecurity, ConfigError> {
     // ShadowTLS (pinned `ShadowTLSOptions.Parse`): both fields empty is no-op.
     let mut shadow = None;
     if let Some(block) = entry.block("shadow-tls-opts")? {
@@ -3431,11 +3449,11 @@ fn parse_anytls_security(entry: &mut Entry<'_>) -> Result<AnytlsSecurity, Config
         ));
     }
     match (shadow, jls) {
-        (None, None) => Ok(AnytlsSecurity::None),
+        (None, None) => Ok(TlsSecurity::None),
         (Some((password, version)), None) => {
-            Ok(AnytlsSecurity::ShadowTls { password, version })
+            Ok(TlsSecurity::ShadowTls { password, version })
         }
-        (None, Some((username, password))) => Ok(AnytlsSecurity::Jls { username, password }),
+        (None, Some((username, password))) => Ok(TlsSecurity::Jls { username, password }),
         (Some(_), Some(_)) => Err(entry.unsupported(
             "option 'shadow-tls-opts' and 'jls-opts' are mutually exclusive (Mihomo rejects the combination: security modes are mutually exclusive: ShadowTLS, JLS)",
         )),
@@ -4160,11 +4178,7 @@ fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
     // valid configuration.
     let _ = entry.bool("http-mask-tls")?;
     let _ = entry.string("http-mask-host")?;
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for sudoku: the UDP-over-TCP (UoT) association is not ported",
-        ));
-    }
+    let udp = entry.bool("udp")?.unwrap_or(false);
 
     // The HTTP mask block and its flat aliases; the pinned decoder lets the
     // block win where both are set.
@@ -4271,6 +4285,7 @@ fn parse_sudoku(entry: &mut Entry<'_>) -> Result<SudokuOutbound, ConfigError> {
         http_mask,
         path_root,
         multiplex,
+        udp,
         dialer_proxy,
     })
 }
@@ -4312,7 +4327,8 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
     let port = entry.port()?;
     let username = Secret::new(entry.string("username")?.unwrap_or_default());
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
-    let tls_settings = entry.tls_settings(true, true, true)?;
+    let mut tls_settings = entry.tls_settings(true, true, true)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     if !tls_settings.alpn.is_empty()
         && !tls_settings.alpn.iter().any(|value| value == "h2")
     {
@@ -4321,11 +4337,9 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
         ));
     }
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for trusttunnel (the `_udp2` multiplex is not implemented)",
-        ));
-    }
+    // `udp: true` opens the `_udp2` packet stream; the pinned type also
+    // implements it, so it loads and the association is built on demand.
+    let udp = entry.bool("udp")?.unwrap_or(false);
     for key in ["quic", "health-check"] {
         if entry.bool(key)?.unwrap_or(false) {
             return Err(entry.unsupported(format!("option '{key}' is not implemented")));
@@ -4386,6 +4400,7 @@ fn parse_trusttunnel(entry: &mut Entry<'_>) -> Result<TrustTunnelOutbound, Confi
         username,
         password,
         tls_settings,
+        udp,
         dialer_proxy,
     })
 }
@@ -4547,7 +4562,8 @@ fn parse_gost_relay(entry: &mut Entry<'_>) -> Result<GostRelayOutbound, ConfigEr
     let tls = entry.bool("tls")?.unwrap_or(false);
     let mux = entry.bool("mux")?.unwrap_or(false);
     let udp = entry.bool("udp")?.unwrap_or(false);
-    let tls_settings = entry.tls_settings(true, false, tls)?;
+    let mut tls_settings = entry.tls_settings(true, false, tls)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let username = entry
         .string("username")?
         .filter(|value| !value.is_empty())
@@ -5461,28 +5477,25 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
         None => None,
         Some(value) => match value.as_str() {
             // `bbr_meta_v2` falls through to the same sender as `bbr` in the
-            // pinned `common.SetCongestionController`; only the old meta BBR
-            // v1 controller has no quinn equivalent.
-            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
-            "bbr_meta_v1" => {
-                return Err(entry.unsupported(
-                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
-                ))
-            }
+            // pinned `common.SetCongestionController`. `bbr_meta_v1` has no
+            // quinn equivalent, so it selects the same BBR sender as the
+            // closest approximation (recorded like T32's TUIC/ShadowQUIC
+            // rows); `cubic`/`new_reno` map to quinn's senders.
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v1" | "bbr_meta_v2" => Some(value),
             other => {
                 return Err(entry.unsupported(format!(
-                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v1, bbr_meta_v2)"
                 )))
             }
         },
     };
-    if entry
-        .string("bbr-profile")?
-        .is_some_and(|value| !value.is_empty())
-    {
-        return Err(entry.unsupported(
-            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
-        ));
+    let bbr_profile = entry.string("bbr-profile")?.filter(|value| !value.is_empty());
+    if let Some(profile) = &bbr_profile {
+        if !matches!(profile.as_str(), "conservative" | "standard" | "aggressive") {
+            return Err(entry.invalid(format!(
+                "option 'bbr-profile' value '{profile}' is unknown (conservative, standard, aggressive)"
+            )));
+        }
     }
     let cwnd = match entry.int("cwnd")? {
         Some(value) if value < 0 => {
@@ -5545,6 +5558,7 @@ fn parse_masque(entry: &mut Entry<'_>) -> Result<MasqueOutbound, ConfigError> {
         handshake_timeout,
         congestion_controller,
         cwnd,
+        bbr_profile,
         udp,
         connect_ip,
     })

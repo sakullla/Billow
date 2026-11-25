@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t32-a4-target/debug/billow-kernel
+# rust: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t33-a1-target/debug/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 291, implemented cases: 110, enabled cases: 99, problems: 0
+# no-op cases: 291, implemented cases: 119, enabled cases: 90, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -406,13 +406,19 @@ impl    sudoku  basic-options                rust=accept mihomo=accept
 impl    shadowquic basic-options                rust=accept mihomo=accept
 impl    masque  congestion-controller        rust=accept mihomo=accept
 impl    trojan  ss-opts                      rust=accept mihomo=accept
+impl    trojan  shadow-tls-opts              rust=accept mihomo=accept
+impl    trojan  jls-opts                     rust=accept mihomo=accept
+impl    trojan  client-fingerprint           rust=accept mihomo=accept
+impl    trusttunnel udp                          rust=accept mihomo=accept
+impl    trusttunnel client-fingerprint           rust=accept mihomo=accept
+impl    gost-relay client-fingerprint           rust=accept mihomo=accept
+impl    masque  bbr-profile                  rust=accept mihomo=accept
+impl    masque  congestion-controller:bbr_meta_v1 rust=accept mihomo=accept
+impl    sudoku  udp                          rust=accept mihomo=accept
 enabled ss      plugin                       rust=reject mihomo=reject
 enabled trojan  reality-opts                 rust=reject mihomo=reject
 enabled trojan  ech-opts                     rust=reject mihomo=reject
-enabled trojan  shadow-tls-opts              rust=reject mihomo=accept
 enabled trojan  restls-opts                  rust=reject mihomo=reject
-enabled trojan  jls-opts                     rust=reject mihomo=accept
-enabled trojan  client-fingerprint           rust=reject mihomo=accept
 enabled vless   reality-opts                 rust=reject mihomo=reject
 enabled vless   ech-opts                     rust=reject mihomo=reject
 enabled vless   shadow-tls-opts              rust=reject mihomo=reject
@@ -430,7 +436,6 @@ enabled vmess   jls-opts                     rust=reject mihomo=reject
 enabled snell   udp                          rust=reject mihomo=reject
 enabled snell   reuse                        rust=reject mihomo=reject
 enabled snell   mode                         rust=reject mihomo=reject
-enabled trusttunnel udp                          rust=reject mihomo=accept
 enabled trusttunnel quic                         rust=reject mihomo=reject
 enabled trusttunnel health-check                 rust=reject mihomo=reject
 enabled trusttunnel max-connections              rust=reject mihomo=reject
@@ -439,19 +444,15 @@ enabled trusttunnel max-streams                  rust=reject mihomo=reject
 enabled trusttunnel congestion-controller        rust=reject mihomo=reject
 enabled trusttunnel cwnd                         rust=reject mihomo=reject
 enabled trusttunnel bbr-profile                  rust=reject mihomo=reject
-enabled trusttunnel client-fingerprint           rust=reject mihomo=accept
 enabled trusttunnel ech-opts                     rust=reject mihomo=reject
-enabled gost-relay client-fingerprint           rust=reject mihomo=accept
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   traffic-pattern              rust=reject mihomo=reject
-enabled sudoku  udp                          rust=reject mihomo=accept
 enabled tuic    ech-opts                     rust=reject mihomo=reject
 enabled hysteria ech-opts                     rust=reject mihomo=reject
 enabled hysteria2 ech-opts                     rust=reject mihomo=reject
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   multiplexing                 rust=reject mihomo=accept
 enabled mieru   traffic-pattern              rust=reject mihomo=reject
-enabled sudoku  udp                          rust=reject mihomo=accept
 enabled sudoku  http-mask-mode               rust=reject mihomo=accept
 enabled shadowquic zero-rtt                     rust=reject mihomo=accept
 enabled shadowquic quic-versions                rust=reject mihomo=accept
@@ -481,7 +482,6 @@ enabled openvpn dns                          rust=reject mihomo=accept
 enabled openvpn dialer-proxy                 rust=reject mihomo=reject
 enabled masque  network                      rust=reject mihomo=accept
 enabled masque  network                      rust=reject mihomo=accept
-enabled masque  bbr-profile                  rust=reject mihomo=accept
 enabled masque  ip-stack.mode                rust=reject mihomo=accept
 enabled masque  dialer-proxy                 rust=reject mihomo=reject
 enabled easytier hostname                     rust=reject mihomo=accept

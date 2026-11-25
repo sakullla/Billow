@@ -336,6 +336,27 @@ load and refused by the association at dial time (a QUIC socket cannot ride a
 SOCKS5 UDP hop), so the pinned-accepted configuration is not rejected as a
 whole. Both are named in the mapping and this README.
 
+T33 (`evidence/t33-option-closure.{json,md}`) closes the remaining
+masque/mieru/sudoku/trojan/trusttunnel/gost rows it could implement and moves
+the matrix from 291 no-op / 110 implemented / 99 enabled to **291 / 119 / 90,
+0 problems**, all verified against the pinned Mihomo v1.19.34:
+trojan `shadow-tls-opts` (v1/v2) and `jls-opts` reuse the T31 anytls security
+layer (verified against the pinned trojan listener's `shadow-tls`/`jls-config`),
+trojan/trusttunnel/gost-relay `client-fingerprint` load as the rustls
+approximation, trusttunnel `udp: true` implements the `_udp2` h2 packet stream
+(verified against the pinned trusttunnel listener with `network: [tcp, udp]`),
+masque `bbr-profile`/`bbr_meta_v1` load on quinn's BBR (initial-window/profile
+approximation; `bbr_meta_v1` now maps to the BBR controller for TUIC,
+ShadowQUIC and masque alike), and sudoku `udp: true` implements the KIP
+`StartUoT` association (verified against the pinned sudoku listener). The
+remaining rust-only disagreements are named residuals: masque `network: h2`,
+`h3-l4proxy` and `ip-stack.mode: gvisor` (the latter needs the pinned
+`with_gvisor` build-tagged stack, `adapter/outbound/wireguard.go:164`), mieru
+`udp`/`multiplexing`/`traffic-pattern` (the enfein/mieru client profile:
+`adapter/outbound/mieru.go:211-289`) and sudoku `http-mask-mode`
+(`transport/sudoku/obfs/httpmask/`). Each is registered in
+`rust-mapping.json` with its pinned source path.
+
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every
 `partial` claim must say what is missing, and every family in the peer matrix must have a

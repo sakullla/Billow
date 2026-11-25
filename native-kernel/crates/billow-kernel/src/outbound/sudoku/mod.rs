@@ -31,10 +31,11 @@
 //!
 //! Implemented: TCP sessions with the `legacy` (default) HTTP mask, the pure
 //! and packed downlink codecs, all three record AEAD methods, table rotation
-//! with hints, custom byte layouts, and the session multiplexer
-//! (`multiplex: on`, [`mux`]). Rejected at load time with the reason recorded:
-//! the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`, a mihomo extension over
-//! the protocol) and the UDP-over-TCP (UoT) association.
+//! with hints, custom byte layouts, the session multiplexer (`multiplex: on`,
+//! [`mux`]) and the KIP `StartUoT` packet association (`udp: true`, framed by
+//! [`crate::outbound::udp::SudokuUdp`]). Rejected at load time with the reason
+//! recorded: the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`, a mihomo
+//! extension over the protocol).
 
 pub mod codec;
 pub mod go_rand;
@@ -496,6 +497,7 @@ pub(crate) const SUDOKU_MAX_FRAME: usize = 256 * 1024;
 pub(crate) enum Handshake {
     OpenTcp,
     StartMux,
+    StartUot,
 }
 
 /// Build the table cache key: every wire-shaping option of the proxy.
@@ -597,6 +599,7 @@ pub(crate) async fn connect_stream(
     let features = match kind {
         Handshake::OpenTcp => kip::FEATURE_OPEN_TCP,
         Handshake::StartMux => kip::FEATURE_OPEN_TCP | kip::FEATURE_MUX,
+        Handshake::StartUot => kip::FEATURE_OPEN_TCP | kip::FEATURE_UOT,
     };
     let hello = kip::ClientHello {
         timestamp: now_seconds(),
@@ -656,6 +659,11 @@ pub(crate) async fn connect_stream(
         }
         Handshake::StartMux => {
             io.send(kip::TYPE_START_MUX, &[])
+                .await
+                .map_err(|e| handshake("sudoku", e))?;
+        }
+        Handshake::StartUot => {
+            io.send(kip::TYPE_START_UOT, &[])
                 .await
                 .map_err(|e| handshake("sudoku", e))?;
         }

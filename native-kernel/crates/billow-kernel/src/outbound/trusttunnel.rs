@@ -4,22 +4,23 @@
 //! `h2`) and sends a `CONNECT` request whose `:authority` is the target and
 //! whose `Proxy-Authorization` is `Basic base64(user:password)`. A `200`
 //! response turns the stream into the tunnel: request body bytes travel as
-//! DATA frames, response body bytes come back as DATA frames. The server's
-//! UDP (`_udp2`) and ICMP (`_icmp`) magic authorities are not implemented, and
-//! neither is the QUIC transport, so `udp: true` and `quic: true` are rejected
-//! at load time instead of being ignored.
+//! DATA frames, response body bytes come back as DATA frames. The `_udp2`
+//! magic authority opens the same h2 stream as a framed packet association
+//! ([`TrustTunnelUdp`]); ICMP (`_icmp`) and the QUIC transport are still
+//! rejected at load time instead of being ignored.
 
 use std::future::Future;
 use std::io;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use h2::{RecvStream, SendStream};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use super::tls::ClientTls;
-use super::{base64, connect_tcp, handshake, tls, BoxStream, DialError, Dialed, Target};
+use super::{base64, connect_tcp, handshake, tls, DialError, Dialed, Target};
 use crate::proxies::TrustTunnelOutbound;
 
 type ConnectionFuture = Pin<Box<dyn Future<Output = Result<(), h2::Error>> + Send>>;
@@ -193,6 +194,23 @@ pub async fn dial(
     target: &Target,
     tls: &ClientTls,
 ) -> Result<Dialed, DialError> {
+    let user_agent = format!("{} billow-kernel/{}", std::env::consts::OS, env!("CARGO_PKG_VERSION"));
+    let (stream, server) = open(option, &target.authority(), &user_agent, tls).await?;
+    Ok(Dialed {
+        stream: Box::new(stream),
+        server,
+    })
+}
+
+/// Open one HTTP/2 CONNECT stream whose `:authority` is `authority`. The TCP
+/// transport passes the target, the UDP association the `_udp2` magic name;
+/// both share the pinned TLS/h2/auth setup.
+async fn open(
+    option: &TrustTunnelOutbound,
+    authority: &str,
+    user_agent: &str,
+    tls: &ClientTls,
+) -> Result<(H2Tunnel, std::net::SocketAddr), DialError> {
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("trusttunnel", e))?;
     let mut settings = option.tls_settings.clone();
@@ -215,10 +233,9 @@ pub async fn dial(
             format!("{}:{}", option.username.expose(), option.password.expose()).as_bytes()
         )
     );
-    let user_agent = format!("{} billow-kernel/{}", std::env::consts::OS, env!("CARGO_PKG_VERSION"));
     let request = http::Request::builder()
         .method(http::Method::CONNECT)
-        .uri(target.authority())
+        .uri(authority)
         .header(http::header::PROXY_AUTHORIZATION, auth)
         .header(http::header::USER_AGENT, user_agent)
         .body(())
@@ -259,9 +276,180 @@ pub async fn dial(
         ));
     }
     let recv = response.into_body();
-    let stream: BoxStream = Box::new(H2Tunnel::new(send, recv, connection));
-    Ok(Dialed { stream, server })
+    Ok((H2Tunnel::new(send, recv, connection), server))
 }
+
+/// The `_udp2` packet stream of one TrustTunnel association.
+///
+/// Pinned `writePacketToServer` / `readPacketFromServer`: every datagram is a
+/// length-prefixed record on the h2 stream,
+/// `u32 length | source 16+2 | destination 16+2 | u8 app-name length | app name | payload`
+/// in the client-to-server direction and
+/// `u32 length | source 16+2 | local 16+2 | payload` back. Addresses are
+/// 16-byte forms (IPv4 in the last four bytes) and the length covers
+/// everything after itself. Like the pinned client, a destination must be an
+/// IP: names are resolved first (that is what the pinned `ResolveUDP` does
+/// before it builds the association).
+pub struct TrustTunnelUdp {
+    tunnel: H2Tunnel,
+    read_buf: Vec<u8>,
+}
+
+/// The pinned `AppName` field's value (`C.Name`); the server only skips it.
+const APP_NAME: &str = "mihomo";
+
+impl TrustTunnelUdp {
+    /// `via` is the `dialer-proxy` chain of the matched proxy. The association
+    /// is an h2 stream over the TLS connection to the server, and the TCP
+    /// transport already refuses a `dialer-proxy` exit at dial time, so a
+    /// chain is refused here rather than silently bypassed.
+    pub async fn connect(
+        option: &TrustTunnelOutbound,
+        via: &[&crate::proxies::Proxy],
+        _timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<TrustTunnelUdp, DialError> {
+        debug_assert!(option.udp);
+        if via.len() > 1 {
+            return Err(DialError::Chain(format!(
+                "udp through {}({}): trusttunnel does not support a dialer-proxy chain",
+                via[0].name,
+                via[0].type_name()
+            )));
+        }
+        let user_agent = format!("{} _udp2", std::env::consts::OS);
+        let (tunnel, _) = open(option, "_udp2", &user_agent, tls).await?;
+        Ok(TrustTunnelUdp {
+            tunnel,
+            read_buf: Vec::new(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        let address = match target.host.parse::<IpAddr>() {
+            Ok(ip) => ip,
+            Err(_) => super::udp::resolve(target).await?.ip(),
+        };
+        if payload.len() > super::udp::MAX_DATAGRAM {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trusttunnel UDP payload exceeds the datagram limit",
+            ));
+        }
+        let frame = encode_packet(address, target.port, payload);
+        self.tunnel.write_all(&frame).await?;
+        self.tunnel.flush().await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        loop {
+            if self.read_buf.len() >= 4 {
+                let length = u32::from_be_bytes([
+                    self.read_buf[0],
+                    self.read_buf[1],
+                    self.read_buf[2],
+                    self.read_buf[3],
+                ]) as usize;
+                if length < 16 + 2 + 16 + 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "trusttunnel UDP length is shorter than its header",
+                    ));
+                }
+                if self.read_buf.len() >= 4 + length {
+                    let (target, payload) = decode_packet(&self.read_buf[4..4 + length])?;
+                    if payload.len() > buffer.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "trusttunnel UDP payload exceeds the receive buffer",
+                        ));
+                    }
+                    buffer[..payload.len()].copy_from_slice(payload);
+                    let read = payload.len();
+                    self.read_buf.drain(..4 + length);
+                    return Ok(Some((target, read)));
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            let read = self.tunnel.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+            self.read_buf.extend_from_slice(&chunk[..read]);
+            if self.read_buf.len() > 4 * super::udp::MAX_DATAGRAM {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "trusttunnel UDP frame buffer exceeded",
+                ));
+            }
+        }
+    }
+}
+
+/// The client-to-server record of pinned `writePacketToServer`: the length
+/// covers everything after itself, the source address/port are zero (unknown)
+/// and the destination is the padded 16-byte address.
+fn encode_packet(address: IpAddr, port: u16, payload: &[u8]) -> Vec<u8> {
+    let app = APP_NAME;
+    let length = 16 + 2 + 16 + 2 + 1 + app.len() + payload.len();
+    let mut frame = Vec::with_capacity(4 + length);
+    frame.extend_from_slice(&(length as u32).to_be_bytes());
+    frame.extend_from_slice(&[0u8; 16]);
+    frame.extend_from_slice(&0u16.to_be_bytes());
+    frame.extend_from_slice(&padding_ip(address));
+    frame.extend_from_slice(&port.to_be_bytes());
+    frame.push(app.len() as u8);
+    frame.extend_from_slice(app.as_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// The server-to-client record body of pinned `readPacketFromServer`:
+/// `source 16+2 | local 16+2 | payload`.
+fn decode_packet(body: &[u8]) -> io::Result<(Target, &[u8])> {
+    if body.len() < 36 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trusttunnel UDP record is shorter than its header",
+        ));
+    }
+    let address = parse_padding_ip(&body[..16]);
+    let port = u16::from_be_bytes([body[16], body[17]]);
+    Ok((
+        Target {
+            host: address.to_string(),
+            port,
+        },
+        &body[36..],
+    ))
+}
+
+/// `buildPaddingIP`: IPv4 in the last four bytes of the 16-byte form.
+fn padding_ip(addr: IpAddr) -> [u8; 16] {
+    let mut buffer = [0u8; 16];
+    match addr {
+        IpAddr::V4(ip) => buffer[12..].copy_from_slice(&ip.octets()),
+        IpAddr::V6(ip) => buffer = ip.octets(),
+    }
+    buffer
+}
+
+/// `parse16BytesIP`: a zero prefix (except `::1`) means IPv4 in the last four
+/// bytes, as the pinned helper decodes it.
+fn parse_padding_ip(bytes: &[u8]) -> IpAddr {
+    let zero_prefix = bytes[..12].iter().all(|byte| *byte == 0);
+    let loopback = bytes[12..16] == [0, 0, 0, 1];
+    if zero_prefix && !loopback {
+        IpAddr::V4(std::net::Ipv4Addr::new(
+            bytes[12], bytes[13], bytes[14], bytes[15],
+        ))
+    } else {
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&bytes[..16]);
+        IpAddr::V6(octets.into())
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -275,6 +463,46 @@ mod tests {
                 base64(format!("{}:{}", "alice", "s3cret").as_bytes())
             ),
             "Basic YWxpY2U6czNjcmV0"
+        );
+    }
+
+    #[test]
+    fn udp_packet_framing_matches_the_pinned_layout() {
+        // `packet.go::writePacketToServer`: IPv4 padded into the last four
+        // bytes, zero source address/port, `mihomo` app name, payload.
+        let frame = encode_packet(
+            "10.0.0.7".parse().unwrap(),
+            5353,
+            b"payload",
+        );
+        assert_eq!(&frame[..4], &((16 + 2 + 16 + 2 + 1 + 6 + 7u32) as u32).to_be_bytes());
+        assert!(frame[4..20].iter().all(|byte| *byte == 0), "source address");
+        assert_eq!(&frame[20..22], &[0, 0], "source port");
+        assert_eq!(&frame[22..38], &padding_ip("10.0.0.7".parse().unwrap()));
+        assert_eq!(&frame[38..40], &5353u16.to_be_bytes());
+        assert_eq!(frame[40], 6);
+        assert_eq!(&frame[41..47], b"mihomo");
+        assert_eq!(&frame[47..], b"payload");
+
+        // The reply body the pinned `readPacketFromServer` parses back:
+        // `source 16+2 | local 16+2 | payload`.
+        let mut body = Vec::new();
+        body.extend_from_slice(&padding_ip("192.0.2.9".parse().unwrap()));
+        body.extend_from_slice(&443u16.to_be_bytes());
+        body.extend_from_slice(&[0u8; 16]);
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(b"reply");
+        let (target, payload) = decode_packet(&body).expect("reply decodes");
+        assert_eq!(target.host, "192.0.2.9");
+        assert_eq!(target.port, 443);
+        assert_eq!(payload, b"reply");
+
+        // IPv6 keeps the full 16 bytes; `::1` is not read as an IPv4 address.
+        let ipv6 = padding_ip("2001:db8::1".parse().unwrap());
+        assert_eq!(parse_padding_ip(&ipv6), "2001:db8::1".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            parse_padding_ip(&padding_ip("::1".parse().unwrap())),
+            "::1".parse::<IpAddr>().unwrap()
         );
     }
 }

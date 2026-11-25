@@ -1059,6 +1059,71 @@ fn trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
+fn trojan_over_jls_reaches_the_receiving_side_through_mihomo() {
+    // T33: `jls-opts` reuses the T31 anytls JLS client; the pinned trojan
+    // listener's `jls-config` is the peer that authenticates it.
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "trojan",
+            port,
+            &format!(
+                ", users: [{{password: \"{TROJAN_PASSWORD}\"}}], jls-config: {{enable: true, users: [{{username: {ANYTLS_JLS_USER}, password: \"{ANYTLS_JLS_PASSWORD}\"}}], sni: localhost, dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}"
+            ),
+        )
+    );
+    with_peer("trojan-jls", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trojan, server: 127.0.0.1, port: {port}, password: \"{TROJAN_PASSWORD}\", sni: localhost, skip-cert-verify: true, jls-opts: {{username: {ANYTLS_JLS_USER}, password: \"{ANYTLS_JLS_PASSWORD}\"}}}}\n"
+        ));
+        let marker = "marker-trojan-jls-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("trojan-jls", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trojan_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo() {
+    // T33: `shadow-tls-opts` without `version` selects the pinned default (2).
+    let port = free_port();
+    let camo = free_port();
+    let listeners = format!(
+        "{}{}",
+        anytls_camouflage_listener(camo),
+        listener(
+            "trojan",
+            port,
+            &format!(
+                ", users: [{{password: \"{TROJAN_PASSWORD}\"}}], shadow-tls: {{enable: true, version: 2, password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\", handshake: {{dest: \"127.0.0.1:{camo}\", proxy: DIRECT}}}}"
+            ),
+        )
+    );
+    with_peer("trojan-shadow-tls-v2", &listeners, |sink, _mihomo, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trojan, server: 127.0.0.1, port: {port}, password: \"{TROJAN_PASSWORD}\", sni: localhost, skip-cert-verify: true, shadow-tls-opts: {{password: \"{ANYTLS_SHADOW_TLS_PASSWORD}\"}}}}\n"
+        ));
+        let marker = "marker-trojan-shadow-tls-v2-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("trojan-shadow-tls-v2", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
 fn trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink() {
     // The trojan listener closes on a bad password hash; it needs the client
     // to send the first bytes (it does: the address header and the payload).
@@ -2063,6 +2128,17 @@ fn trusttunnel_listener(port: u16) -> String {
     )
 }
 
+/// T33: the same listener with the `_udp2` packet stream enabled.
+fn trusttunnel_udp_listener(port: u16) -> String {
+    listener(
+        "trusttunnel",
+        port,
+        &format!(
+            ", users: [{{username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\"}}], certificate: CERT, private-key: KEY, network: [tcp, udp]"
+        ),
+    )
+}
+
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
 fn trusttunnel_outbound_reaches_the_receiving_side_through_mihomo() {
@@ -2085,8 +2161,32 @@ fn trusttunnel_outbound_reaches_the_receiving_side_through_mihomo() {
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
 #[test]
-fn trusttunnel_wrong_password_never_reaches_the_sink() {
+fn trusttunnel_udp_reaches_the_echo_through_mihomo() {
+    // The pinned listener's `network: [tcp, udp]` serves `_udp2`; the kernel's
+    // SOCKS5 UDP ASSOCIATE forwards each datagram through the framed packet
+    // stream of the trusttunnel outbound.
     let port = free_port();
+    let listeners = trusttunnel_udp_listener(port);
+    with_udp_peer("trusttunnel-udp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: trusttunnel, server: 127.0.0.1, port: {port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\", skip-cert-verify: true, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-trusttunnel-udp-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the datagram through the trusttunnel listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trusttunnel_wrong_password_never_reaches_the_sink() {    let port = free_port();
     let listeners = trusttunnel_listener(port);
     with_peer("trusttunnel-wrong-password", &listeners, |sink, _mihomo, _| {
         let (running, _) = start_kernel(&format!(
@@ -3445,6 +3545,30 @@ fn sudoku_tcp_session_reaches_the_receiving_side_through_mihomo() {
             || expect_marker("sudoku-tcp", sink, marker),
         );
         assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn sudoku_udp_reaches_the_echo_through_mihomo() {
+    // T33: `udp: true` opens the KIP `StartUoT` session; each datagram is a
+    // `u16 addr len | u16 payload len | addr | payload` frame.
+    let port = free_port();
+    let listeners = sudoku_listener(port, "");
+    with_udp_peer("sudoku-udp", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: sudoku, server: 127.0.0.1, port: {port}, key: \"{SUDOKU_KEY}\", udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target: SocketAddr = format!("127.0.0.1:{}", echo.port).parse().unwrap();
+        let payload = b"marker-sudoku-udp-through-mihomo";
+        send_datagram(relay, target, payload);
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the datagram through the sudoku listener"
+        );
     });
 }
 
