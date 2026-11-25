@@ -25,6 +25,12 @@ summary: "Rust 转发库与 Mihomo 复用有效配置。桌面和 Android 使用
 
 T9 的职责是把已交付的协议子集与显式拒绝集成到同一候选，保证可构建、证据可复现、CLI 与嵌入库入口一致；R2 的“所有有效配置可用”由最终交付验证（T8/Delivery）在完整候选上判定，T9 不因仍有已登记的 partial 缺口而单独阻断。
 
+### Owner 范围决策（2026-11-25）
+
+Owner 书面接受以下 5 项作为首版兼容的显式收窄，依据分别为：TUIC `reduce-rtt` 与 pinned 行为一致（pinned TUIC 未设 ClientSessionCache，实际不发送 0-RTT）；shadowquic `zero-rtt` 需要 JLS session-ticket/early-data（当前 rustls JLS 路径不提供）；shadowquic `quic-versions: v2` 需要替换仅支持 QUIC v1 的 quinn 传输层；hysteria v1 `protocol: faketcp` 需要 Linux raw socket/CAP_NET_RAW 栈；pinned Mihomo v1.19.34 不含 hysteria v1 listener，无法进行该项的 pinned 端到端验证。以上各项均在 `rust-mapping.json` 与 `t32-option-closure.*` 中具名登记，T32 的其余有效形式已实现；Delivery 不应把它们计为未登记缺口，但也不得声称已实现。
+
+Owner 选择继续补齐纯协议选项：`tuic`、`shadowquic` 与 `hysteria` v1 的剩余有效形式（共 22 项）由新任务承接，优先于依赖设备/IP 栈的 easytier/wireguard/openvpn；每项按 pinned 对端验证或最终具名登记。
+
 Owner 进一步要求：`hysteria2` 与 `vmess` 的剩余有效配置也必须在首版补齐（hysteria2 的 ports/obfs/up/realm/udp-mtu/bbr，vmess 的 mKCP/mekya/TLS-mirror），anytls 的 shadow-tls/jls 也继续补齐；由 T31 承接，按 pinned 对端验证，确实不可复现的项需最终登记并经 Owner 确认。
 
 Owner 已明确要求：`anytls` 与 `vless` 的剩余有效配置必须在首版内补齐，包括 UDP/UoT、`packet-encoding`/`packet-addr`、anytls 的会话复用与 TLS-in-TLS（shadow-tls/jls）以及 uTLS `client-fingerprint`；由单独任务承接并用真实/受控对端验证。其余选项缺口仍按族归属或需求方收窄处理。

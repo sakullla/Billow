@@ -3,10 +3,10 @@ workflow_id: 2026-11-20-native-rust-kernel
 requirement_ref: docs/requirements/2026-11-20-native-rust-kernel.md
 requirement_version: sha256:aa0f5410f9097c8b8cb30a481039c5e1b8cde2d2646c354fd27a99cf981b038b
 requirement_ids: [R1, R2, R3, R4]
-requirement_revision: 15
+requirement_revision: 17
 revision_fence:
-  from_revision: 14
-  to_revision: 15
+  from_revision: 16
+  to_revision: 17
   status: reconciled
   preserved_active_task_ids: []
   preserved_result_task_ids: []
@@ -43,10 +43,11 @@ revision_fence:
     - T28
     - T29
     - T30
-  stale_task_ids: []
-  revision_attempt_task_ids: []
-  rebuilt_task_ids: [T31]
-status: blocked
+    - T31
+  stale_task_ids: [T32]
+  revision_attempt_task_ids: [T32]
+  rebuilt_task_ids: []
+status: active
 stages:
   exploration: completed
   solution: completed
@@ -1267,13 +1268,49 @@ tasks:
         review_digest: sha256:0f2faa93dfe3847ae1d926cd024f81cf0c2ed4673a5c4c54ff1db9ada05713cb
     history_head_ref: evidence/history/78.json
     history_count: 6
-blocker:
-  reason: R2 仍有 76 项 pinned Mihomo 接受而 Rust 具名拒绝的有效形式（easytier 20、wireguard 11、tuic 9、shadowquic 7、openvpn 7、hysteria 6、masque 4、mieru 3、sudoku 3、trojan 3、trusttunnel 2、gost 1），且无书面收窄；Windows/Linux/Android 缺工具链、iOS 缺签名真机，R3/R4 无真机测量。五族（anytls/vless/ss/hy2/vmess）已闭环，交付仍保持未通过。
-  owner: deliver
-  resume_action: delivery.prepare
+  - id: T32
+    status: completed
+    task_run_ref: task-runs/T32-run.md
+    recipe_digest: sha256:7b8774cbbe743d139c94a3c22a0964403e6e4617b874fc4fdacfaaceb4c8d895
+    recipe_snapshot:
+      id: T32
+      goal: 补齐 tuic、shadowquic 与 hysteria v1 的剩余选项
+      depends_on: [T31]
+      covers: [R2]
+      outcomes:
+        - tuic：实现 v4 token/BLAKE3、udp-relay-mode、udp-over-stream、datagram 尺寸、reduce-rtt、fast-open、bbr-profile、client-fingerprint；以 pinned Mihomo tuic 服务端验证 TCP/UDP。
+        - shadowquic：实现 zero-rtt、QUIC v2、Brutal congestion/cwnd/up/down、bbr-profile；以 pinned Mihomo shadowquic listener 验证。
+        - hysteria v1：实现 ports/hop-interval、obfs（XPlus）、protocol faketcp/wechat、fast-open、client-fingerprint；以 pinned Mihomo hysteria listener 验证。
+        - 更新选项矩阵使这三族 rust=reject 行清零或逐项具名登记；默认套件、pinned peer、差分与 runner 不回归。
+        - 已由 Owner 书面接受的收窄：reduce-rtt 行为、shadowquic zero-rtt、QUIC v2、hysteria v1 faketcp、无 pinned hysteria v1 listener；均在 rust-mapping/t32-option-closure 具名登记，Delivery 不计为未登记缺口但不得声称已实现。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 17
+    review_base_ref: a825c40ca793ba7996635c58e2ab730eb1ea298a
+    attempts:
+      - attempt_id: T32-A5
+        message_id: T32-A5-M1
+        recipe_digest: sha256:7b8774cbbe743d139c94a3c22a0964403e6e4617b874fc4fdacfaaceb4c8d895
+        owner_mode: worker
+        baseline_ref: a825c40ca793ba7996635c58e2ab730eb1ea298a
+        checkpoint_ref: a825c40ca793ba7996635c58e2ab730eb1ea298a
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 1
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/170.json]
+        scope_ref: evidence/history/88.json#Attempt-History/T32-A5/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/88.json#Attempt-History/T32-A5/execution
+        execution_digest: sha256:47097aae31468eccdfb4ce664288d095a6e0e52f7d0944abebab3bb5012e68d9
+        review_ref: evidence/history/88.json#Attempt-History/T32-A5/review
+        review_digest: sha256:72b48bdb9c0a5e13765eb233820641687786a2df8b61c5116ff9e0d0fdd7b911
+    history_head_ref: evidence/history/88.json
+    history_count: 5
+blocker: null
 delivery:
-  status: active
-plan_input_digest: sha256:efb4ed0f0f8b081a9e735506b592e9f922ffed53d48de6011cdf4f513199c066
+  status: pending
+plan_input_digest: sha256:cdf41d778cc9c355fceecd76ad75c4d22ff7f28eb4f892fbbcfe2c6af4e4cb5f
 scheduling:
   capacities: {}
   capabilities: {}
@@ -1926,5 +1963,50 @@ scheduling:
       status: released
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t29-a5-invocation.json
       admission_evidence_ref: ""
+    - lease_id: task:T32-A1
+      invocation_id: ses_ded84834bffeiUW36gHAkIE9uE
+      task_id: T32
+      attempt_id: T32-A1
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a1-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T32-A2
+      invocation_id: ses_ded36c1bdffe1LZfAPp1o7zwA5
+      task_id: T32
+      attempt_id: T32-A2
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a2-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T32-A3
+      invocation_id: ses_decf2bac4ffedq9pcBG0RAmVEa
+      task_id: T32
+      attempt_id: T32-A3
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a3-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T32-A4
+      invocation_id: ses_decd6298fffe7u9VaQm1G1PZAm
+      task_id: T32
+      attempt_id: T32-A4
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a4-invocation.json
+      admission_evidence_ref: ""
+    - lease_id: task:T32-A5
+      invocation_id: ses_dec9f4795ffeM7CvD8dk77k4fd
+      task_id: T32
+      attempt_id: T32-A5
+      resources: {}
+      purpose: implementation
+      status: released
+      evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a5-invocation.json
+      admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/554.json
+result_inbox_ref: evidence/results/586.json

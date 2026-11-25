@@ -575,6 +575,22 @@ tasks:
     scope:
       - native-kernel
       - tool/kernel-compat
+  - id: T32
+    goal: 补齐 tuic、shadowquic 与 hysteria v1 的剩余选项
+    depends_on:
+      - T31
+    covers:
+      - R2
+    outcomes:
+      - tuic：实现 v4 token/BLAKE3、udp-relay-mode、udp-over-stream、datagram 尺寸、reduce-rtt、fast-open、bbr-profile、client-fingerprint；以 pinned Mihomo tuic 服务端验证 TCP/UDP。
+      - shadowquic：实现 zero-rtt、QUIC v2、Brutal congestion/cwnd/up/down、bbr-profile；以 pinned Mihomo shadowquic listener 验证。
+      - hysteria v1：实现 ports/hop-interval、obfs（XPlus）、protocol faketcp/wechat、fast-open、client-fingerprint；以 pinned Mihomo hysteria listener 验证。
+      - 更新选项矩阵使这三族 rust=reject 行清零或逐项具名登记；默认套件、pinned peer、差分与 runner 不回归。
+      - 已由 Owner 书面接受的收窄：reduce-rtt 行为、shadowquic zero-rtt、QUIC v2、hysteria v1 faketcp、无 pinned hysteria v1 listener；均在 rust-mapping/t32-option-closure 具名登记，Delivery 不计为未登记缺口但不得声称已实现。
+    test: extend
+    scope:
+      - native-kernel
+      - tool/kernel-compat
 delivery_verification:
   frontend_tests:
     command: npm test
