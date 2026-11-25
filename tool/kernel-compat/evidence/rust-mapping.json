@@ -960,7 +960,7 @@
     },
     "masque": {
       "status": "partial",
-      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, the QUIC `bbr-profile` and meta BBR v1 (quinn has one BBR sender, which is the pinned `bbr`/`bbr_meta_v2` alias, and no v1/profile selector), `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named.",
+      "reason": "T18 implements both shapes the pinned adapter serves; T21 adds TCP termination for CONNECT-IP. (1) RFC 9484 CONNECT-IP over HTTP/3 for the Cloudflare WARP configuration: the base64 SEC1 P-256 client key generates the pinned adapter's self-signed client certificate, `public-key` (a DER SubjectPublicKeyInfo) pins the endpoint certificate, and the request is `:method CONNECT`, `:protocol cf-connect-ip`, `:scheme https`, `:authority`/`:path` from `uri` (default https://cloudflareaccess.com) with `capsule-protocol: ?1`. ROUTE_ADVERTISEMENT is sent and ADDRESS_ASSIGN/ROUTE_ADVERTISEMENT are read; whole IPv4/IPv6 packets travel as HTTP Datagrams. UDP is served by the in-tree UDP codec and TCP by the in-tree minimal TCP client (`outbound/tcp.rs`: active open, SYN/SYN-ACK/ACK, data/ACK, FIN/RST, MSS and peer-window limits, retransmission with RFC 6298-style backoff, fast retransmit, in-order delivery with bounded reordering, half-close); one tunnel and one TCP connection per `dial`. the `ip`, `ipv6`, `mtu`, `ip-stack`, `remote-dns-resolve` and `dns` options keep their T18 semantics. (2) The RFC 9298 CONNECT-UDP subset from T14 still serves a plain server with `udp: true`; it carries UDP only (RFC 9298 has no TCP path), so a TCP dial through that shape is refused by name. `network: h2|h3-l4proxy`, `dialer-proxy`, gVisor and passive/simultaneous-open TCP are named. T33: `bbr-profile` and `congestion-controller: bbr_meta_v1` load; both select quinn's BBR sender (the pinned meta BBR v1 sender has no quinn equivalent) and the profile maps to its initial window, the T31/T32 documented approximation, effective only with a bbr controller as in the pinned switch.",
       "options": [
         "server",
         "port",
@@ -988,8 +988,6 @@
         "network: h2",
         "network: h3-l4proxy",
         "ip-stack.mode: gvisor",
-        "bbr-profile",
-        "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)",
         "dialer-proxy",
         "dns: non-udp scheme",
         "uri: template variable"
@@ -1077,12 +1075,12 @@
         "tests/quic_peers.rs::masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin",
         "src/outbound/tuic.rs::tests::cwnd_only_applies_to_bbr",
         "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
-        "src/outbound/tuic.rs::tests::bbr_profile_selects_the_initial_window"
+        "src/outbound/quic.rs::tests::bbr_profile_selects_the_initial_window"
       ]
     },
     "sudoku": {
       "status": "partial",
-      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) and the UoT association are rejected at load with the reason recorded. T28: the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version`.",
+      "reason": "TCP sessions with the legacy HTTP mask, the pure and packed downlink codecs, table rotation, all three record AEAD methods, the session mux (`multiplex: on`) and `dialer-proxy` (the exit's server connection is carried by a socks5 hop chain, repaired in T17-A3) are translated from the pinned GPL-3.0 `transport/sudoku` (T17); the HTTP tunnel modes (`stream`/`poll`/`auto`/`ws`) are rejected at load with the reason recorded, and T33 implements the UoT association (`udp: true`) verified against the pinned sudoku listener. T28: the shared stream dialer applies `tfo`/`mptcp`/`interface-name`/`routing-mark`/`ip-version`.",
       "license": "GPL-3.0-derived translation of Mihomo `transport/sudoku` v1.19.34 (commit 0455d0d28c4526937380505153e65a843d8612e8); the kernel workspace is GPL-3.0-only, any distribution of the combined work must follow GPL-3.0 (source availability etc.), see native-kernel/COPYING.GPL-3.0 and THIRD_PARTY_NOTICES.md",
       "options": [
         "server",
@@ -1108,7 +1106,7 @@
         "ip-version",
         "udp: true (KIP StartUoT; u16 addr len | u16 payload len | addr | payload frames, one association per proxy)"
       ],
-      "udp": "not implemented: `udp: true` (the UoT association, `KIPTypeStartUoT` + `transport/sudoku/uot.go`) is rejected at load; the kernel's UDP association selection for sudoku is a T9 decision",
+      "udp": "implemented: `udp: true` opens the KIP `StartUoT` session (features OPEN_TCP|UOT, `KIPTypeStartUoT` after the rekey) and frames every datagram as `u16 address length | u16 payload length | SOCKS5 address | payload` (`transport/sudoku/uot.go`); one association serves every destination, through one socks5 `dialer-proxy` hop like TCP, and both the mixed inbound and the TUN data plane build it.",
       "notImplemented": [
         "http-mask-mode: stream/poll/auto/ws"
       ],

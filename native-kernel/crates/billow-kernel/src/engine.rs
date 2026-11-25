@@ -26,6 +26,7 @@ use crate::identity::Identity;
 use crate::inbound::{self, HandshakeError, InboundAuth};
 use crate::outbound::tls::ClientTls;
 use crate::outbound;
+use crate::proxies::IpVersion;
 use crate::rules::{MatchInput, MatchStep, RuleMatch, RuleSet, Target};
 
 /// Version of this kernel (crate version).
@@ -1347,6 +1348,83 @@ pub(crate) async fn direct_udp_destination(
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "resolved to no address"))
 }
 
+/// The preferred address from a resolved set according to `ip-version`
+/// (pinned `SortationAddr`: v4 unless prefer-6, a single family for ipv4/ipv6).
+fn preferred_udp_address(addrs: &[IpAddr], ip_version: IpVersion) -> Option<IpAddr> {
+    match ip_version {
+        IpVersion::V4Only => addrs.iter().copied().find(IpAddr::is_ipv4),
+        IpVersion::V6Only => addrs.iter().copied().find(IpAddr::is_ipv6),
+        IpVersion::V6Prefer => addrs
+            .iter()
+            .copied()
+            .find(IpAddr::is_ipv6)
+            .or_else(|| addrs.first().copied()),
+        IpVersion::Dual | IpVersion::V4Prefer => addrs
+            .iter()
+            .copied()
+            .find(IpAddr::is_ipv4)
+            .or_else(|| addrs.first().copied()),
+    }
+}
+
+/// Resolve a proxied UDP destination the way the pinned `Base.ResolveUDP` does
+/// before an outbound whose packet format only carries IP addresses frames it:
+/// an already resolved `ip` wins (the pinned early return when `DstIP` is set),
+/// a literal is checked against the proxy's `ip-version`, and a name goes
+/// through the session `hosts` table and DNS runtime before the system
+/// resolver, with `ip-version` filtering/preference (pinned
+/// `resolveIPWithResolver`). Used for `trusttunnel`, whose `_udp2` record has
+/// no address-type field for a name.
+pub(crate) async fn proxy_udp_destination(
+    context: &SessionContext,
+    ip_version: IpVersion,
+    host: &str,
+    ip: Option<IpAddr>,
+    port: u16,
+) -> io::Result<SocketAddr> {
+    if let Some(ip) = ip {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    if let Ok(literal) = host.parse::<IpAddr>() {
+        if ip_version == IpVersion::V4Only && !literal.is_ipv4()
+            || ip_version == IpVersion::V6Only && !literal.is_ipv6()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("address does not match ip-version {}", ip_version.as_str()),
+            ));
+        }
+        return Ok(SocketAddr::new(literal, port));
+    }
+    // The configured hosts table is consulted before any resolver, with or
+    // without `dns.enable` (pinned `DefaultHosts.Search`).
+    let hosted = context.runtime.hosts.lookup_ips(host);
+    if let Some(ip) = preferred_udp_address(&hosted, ip_version) {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let mut addrs: Vec<IpAddr> = if let Some(dns) = &context.runtime.dns {
+        dns.resolve_direct(host)
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?
+    } else {
+        tokio::net::lookup_host((host, port))
+            .await?
+            .map(|addr| addr.ip())
+            .collect()
+    };
+    if addrs.is_empty() {
+        addrs = hosted;
+    }
+    preferred_udp_address(&addrs, ip_version)
+        .map(|ip| SocketAddr::new(ip, port))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("'{host}' resolves to no address for ip-version {}", ip_version.as_str()),
+            )
+        })
+}
+
 /// The `dialer-proxy` chain of `proxy`, starting with the proxy itself. The
 /// loader has already rejected unknown references and cycles.
 /// Pinned `RuleType().String()` for one matcher (`/rules` `type`).
@@ -2535,10 +2613,36 @@ async fn serve_udp_associate_inner(
                                     }
                                 }
                             }
+                            // The `_udp2` record has no address-type field: the
+                            // pinned `ListenPacketContext` resolves the
+                            // destination (`ResolveUDP`) before framing it, so
+                            // a name must go through the session hosts/DNS and
+                            // the proxy's `ip-version` here, not the system
+                            // resolver inside the transport.
+                            let destination = match proxy_udp_destination(
+                                context,
+                                proxy.dialer.ip_version,
+                                &outgoing.host,
+                                ip,
+                                outgoing.port,
+                            )
+                            .await
+                            {
+                                Ok(destination) => destination,
+                                Err(e) => {
+                                    debug!(session = id, proxy = %proxy.name, target = %outgoing.host, "trusttunnel UDP resolve failed: {e}");
+                                    failed = true;
+                                    continue;
+                                }
+                            };
+                            let resolved = outbound::Target {
+                                host: destination.ip().to_string(),
+                                port: destination.port(),
+                            };
                             trusttunnel
                                 .as_mut()
                                 .expect("connected above")
-                                .send(&outgoing, payload)
+                                .send(&resolved, payload)
                                 .await
                         }
                         crate::proxies::Protocol::ShadowQuic(option) => {

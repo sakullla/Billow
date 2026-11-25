@@ -344,7 +344,10 @@ trojan `shadow-tls-opts` (v1/v2) and `jls-opts` reuse the T31 anytls security
 layer (verified against the pinned trojan listener's `shadow-tls`/`jls-config`),
 trojan/trusttunnel/gost-relay `client-fingerprint` load as the rustls
 approximation, trusttunnel `udp: true` implements the `_udp2` h2 packet stream
-(verified against the pinned trusttunnel listener with `network: [tcp, udp]`),
+(a domain destination is resolved through the session hosts/DNS and the proxy's
+`ip-version` before framing, as the pinned `ResolveUDP` does; verified against
+the pinned listener with `network: [tcp, udp]`, including a mixed-inbound
+SOCKS5 UDP domain destination),
 masque `bbr-profile`/`bbr_meta_v1` load on quinn's BBR (initial-window/profile
 approximation; `bbr_meta_v1` now maps to the BBR controller for TUIC,
 ShadowQUIC and masque alike), and sudoku `udp: true` implements the KIP
@@ -352,10 +355,11 @@ ShadowQUIC and masque alike), and sudoku `udp: true` implements the KIP
 remaining rust-only disagreements are named residuals: masque `network: h2`,
 `h3-l4proxy` and `ip-stack.mode: gvisor` (the latter needs the pinned
 `with_gvisor` build-tagged stack, `adapter/outbound/wireguard.go:164`), mieru
-`udp`/`multiplexing`/`traffic-pattern` (the enfein/mieru client profile:
-`adapter/outbound/mieru.go:211-289`) and sudoku `http-mask-mode`
+`udp`/`multiplexing`/`traffic-pattern` (`adapter/outbound/mieru.go:88-99`,
+`:279-284`, `:287-289`, `:345-352`) and sudoku `http-mask-mode`
 (`transport/sudoku/obfs/httpmask/`). Each is registered in
-`rust-mapping.json` with its pinned source path.
+`rust-mapping.json` (`notImplemented`) and cited with its pinned source path in
+`evidence/t33-option-closure.{json,md}`.
 
 `runner.test.mjs` checks both files: every mapping entry must name an entry that exists in
 the pinned source, every `implemented`/`partial` claim must cite at least one test, every

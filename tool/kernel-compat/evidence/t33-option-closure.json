@@ -114,9 +114,10 @@
     {
       "family": "trusttunnel",
       "option": "udp: true",
-      "implementation": "TrustTunnelUdp opens the pinned `_udp2` h2 CONNECT stream and carries `u32 length | source 16+2 | destination 16+2 | u8 app-name length | app name | payload`; replies are `u32 length | source 16+2 | local 16+2 | payload`. IPv4 uses the last four bytes of the 16-byte field, `::1` is not decoded as IPv4, a non-IP destination is resolved first (the pinned ResolveUDP), and one association serves every destination. `Proxy::udp_enabled()` reports it; the mixed inbound and the TUN data plane both build the association; a dialer-proxy chain loads (like T32's QUIC families) and the association refuses it by name.",
+      "implementation": "TrustTunnelUdp opens the pinned `_udp2` h2 CONNECT stream and carries `u32 length | source 16+2 | destination 16+2 | u8 app-name length | app name | payload`; replies are `u32 length | source 16+2 | local 16+2 | payload`. IPv4 uses the last four bytes of the 16-byte field, `::1` is not decoded as IPv4, and one association serves every destination. The record has no address-type field, so the mixed inbound (and the TUN association, for a fake-ip-mapped name) resolves a destination name before framing it through the session `hosts` table and DNS runtime and the proxy's `ip-version` (`engine::proxy_udp_destination`, the pinned `Base.ResolveUDP` + `resolveIPWithResolver`); `TrustTunnelUdp::send` itself only accepts an IP and never falls back to the system resolver. `Proxy::udp_enabled()` reports it; the mixed inbound and the TUN data plane both build the association; a dialer-proxy chain loads (like T32's QUIC families) and the association refuses it by name.",
       "evidence": [
         "tests/mihomo_peers.rs::trusttunnel_udp_reaches_the_echo_through_mihomo",
+        "tests/mihomo_peers.rs::trusttunnel_udp_domain_destination_uses_the_session_resolver",
         "src/outbound/trusttunnel.rs::tests::udp_packet_framing_matches_the_pinned_layout",
         "tests/config.rs::trusttunnel_options_are_strict"
       ]
@@ -144,7 +145,7 @@
       "option": "bbr-profile",
       "implementation": "Validated (conservative/standard/aggressive) and mapped to quinn's BBR initial window through tuic::congestion_tuning_profile, the same documented approximation as T32's TUIC/ShadowQUIC rows. Exactly like the pinned SetCongestionController switch, the profile only changes behaviour together with a bbr controller; alone it loads and does nothing.",
       "evidence": [
-        "src/outbound/tuic.rs::tests::bbr_profile_selects_the_initial_window",
+        "src/outbound/quic.rs::tests::bbr_profile_selects_the_initial_window",
         "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
         "option matrix impl row"
       ]
@@ -227,6 +228,7 @@
       "tests/mihomo_peers.rs::trojan_over_jls_reaches_the_receiving_side_through_mihomo",
       "tests/mihomo_peers.rs::trojan_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo",
       "tests/mihomo_peers.rs::trusttunnel_udp_reaches_the_echo_through_mihomo",
+      "tests/mihomo_peers.rs::trusttunnel_udp_domain_destination_uses_the_session_resolver",
       "tests/mihomo_peers.rs::sudoku_udp_reaches_the_echo_through_mihomo"
     ],
     "differentials": {
@@ -237,10 +239,21 @@
       "t5": "12 scenarios, 12 pass, 0 differ"
     },
     "runner": "node --test tool/kernel-compat/runner.test.mjs: 10/10 pass",
-    "matrix": "291 no-op / 119 implemented / 90 enabled, 0 problems"
+    "matrix": "291 no-op / 119 implemented / 90 enabled, 0 problems",
+    "domain_resolution": "The new pinned peer case sends a mixed-inbound SOCKS5 UDP datagram to a domain that exists only in `hosts` (`t33-probe.test: ['::1', '127.0.0.1']`) with `ip-version: ipv4`; the IPv4 echo receives it, so a system-resolver fallback or a missing ip-version filter would fail."
   },
   "approximations_counted_as_residual": [
     "trojan/trusttunnel/gost-relay client-fingerprint: closest rustls profile, no uTLS ClientHello (same category as t30-option-closure.json)",
     "masque bbr-profile and congestion-controller bbr_meta_v1: quinn BBR initial-window mapping, no pinned BBR profile selector/meta BBR v1 sender (same category as T32's QUIC families)"
-  ]
+  ],
+  "repair": {
+    "attempt": "T33-A2",
+    "blocker": "P1: trusttunnel UDP resolved a domain destination with the ordinary system resolver inside `TrustTunnelUdp::send` (`outbound/udp.rs::resolve`, fixed IPv4 preference), while the pinned `Base.ResolveUDP` uses the session hosts/DNS runtime and the proxy's `ip-version`. The mixed inbound keeps the domain in `outgoing.host`, so SOCKS5 UDP domain datagrams bypassed the session resolver.",
+    "fix": "Added `engine::proxy_udp_destination` (pinned `Base.ResolveUDP` + `resolveIPWithResolver`): a metadata-resolved `ip` wins; a literal is checked against `ip-version`; a name consults the session `hosts` table, then the DNS runtime (`resolve_direct`) or, only without a DNS runtime, the system resolver, and picks the family per `ip-version`. The mixed-inbound trusttunnel branch resolves before framing; the TUN association resolves a fake-ip-mapped name with the same helper; `TrustTunnelUdp::send` now only accepts an IP (no system-resolver fallback).",
+    "tests": [
+      "tests/mihomo_peers.rs::trusttunnel_udp_domain_destination_uses_the_session_resolver"
+    ],
+    "pinned_check": "The new pinned peer case sends a SOCKS5 UDP datagram to `t33-probe.test`, which exists only in `hosts` as `['::1', '127.0.0.1']`, with `ip-version: ipv4`; the IPv4 echo receives it. A system-resolver fallback or a missing `ip-version` filter would not reach the echo.",
+    "matrix": "unchanged (291/119/90, 0 problems)"
+  }
 }

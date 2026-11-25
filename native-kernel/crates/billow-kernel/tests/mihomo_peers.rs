@@ -2118,6 +2118,26 @@ fn vmess_over_tlsmirror_reaches_the_receiving_side_through_mihomo() {
 
 // --- T9: TrustTunnel -----------------------------------------------------
 
+/// Send one SOCKS5 UDP datagram whose destination is a domain name (ATYP
+/// `0x03`) and return the address the reply header named.
+fn send_domain_datagram(relay: SocketAddr, host: &str, port: u16, payload: &[u8]) -> SocketAddr {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut packet = vec![0u8, 0u8, 0u8, 0x03, u8::try_from(host.len()).expect("short name")];
+    packet.extend_from_slice(host.as_bytes());
+    packet.extend_from_slice(&port.to_be_bytes());
+    packet.extend_from_slice(payload);
+    socket.send_to(&packet, relay).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut buffer = [0u8; 65535];
+    let (read, _) = socket
+        .recv_from(&mut buffer)
+        .expect("no UDP reply through the kernel");
+    let (from, _) = parse_udp_reply(&buffer[..read]);
+    from
+}
+
 fn trusttunnel_listener(port: u16) -> String {
     listener(
         "trusttunnel",
@@ -2180,6 +2200,45 @@ fn trusttunnel_udp_reaches_the_echo_through_mihomo() {
             echo.received(),
             vec![payload.to_vec()],
             "the UDP echo must receive the datagram through the trusttunnel listener"
+        );
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn trusttunnel_udp_domain_destination_uses_the_session_resolver() {
+    // T33-A2: the `_udp2` record can only carry an IP, so the mixed inbound
+    // resolves a SOCKS5 UDP domain destination through the session `hosts`
+    // table and the proxy's `ip-version` before the transport frames it. The
+    // name exists only in `hosts`, and the v6 address is listed first, so a
+    // system-resolver fallback or a missing `ip-version` filter would fail:
+    // only `hosts` + `ip-version: ipv4` reaches the IPv4 echo.
+    let port = free_port();
+    let listeners = trusttunnel_udp_listener(port);
+    with_udp_peer("trusttunnel-udp-domain", &listeners, |_mihomo, _| {
+        let echo = UdpEcho::start();
+        let proxy_port = free_port();
+        let yaml = format!(
+            "mixed-port: {proxy_port}\nlog-level: warn\nhosts:\n  t33-probe.test: ['::1', '127.0.0.1']\nproxies:\n  - {{name: p0, type: trusttunnel, server: 127.0.0.1, port: {port}, username: {SOCKS_USER}, password: \"{SOCKS_PASSWORD}\", skip-cert-verify: true, udp: true, ip-version: ipv4}}\nrules:\n  - 'MATCH,p0'\n"
+        );
+        let (kernel, _) = Kernel::start_from_yaml(&yaml, None, Limits::default())
+            .expect("kernel starts with hosts");
+        let running = Running {
+            proxy: kernel.listen_addr(),
+            kernel: Some(kernel),
+        };
+        let (_control, relay) = udp_associate(running.proxy);
+        let payload = b"marker-trusttunnel-udp-domain-through-mihomo";
+        let from = send_domain_datagram(relay, "t33-probe.test", echo.port, payload);
+        assert_eq!(
+            from,
+            SocketAddr::from(([127, 0, 0, 1], echo.port)),
+            "the reply source must be the hosts-resolved IPv4 address"
+        );
+        assert_eq!(
+            echo.received(),
+            vec![payload.to_vec()],
+            "the UDP echo must receive the datagram for the domain destination"
         );
     });
 }

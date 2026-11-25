@@ -31,7 +31,9 @@ could implement: trojan now shares the T31 anytls ShadowTLS/JLS layer
 (`shadow-tls-opts` v1/v2, `jls-opts`) and applies `client-fingerprint`; the
 masque `_udp2`-style `bbr-profile` and `bbr_meta_v1` controller load (quinn
 BBR approximation, like T32's QUIC families); trusttunnel implements the
-`_udp2` h2 packet stream and `client-fingerprint`; gost-relay applies
+`_udp2` h2 packet stream (a domain destination resolves through the session
+`hosts`/DNS and the proxy's `ip-version`, as the pinned `ResolveUDP` does)
+and `client-fingerprint`; gost-relay applies
 `client-fingerprint`; sudoku implements the KIP `StartUoT` association.
 The remaining rows are named residuals with pinned-source citations:
 masque `network: h2`/`h3-l4proxy` and `ip-stack.mode: gvisor`, mieru

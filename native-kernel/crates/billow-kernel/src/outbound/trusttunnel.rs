@@ -326,10 +326,15 @@ impl TrustTunnelUdp {
     }
 
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
-        let address = match target.host.parse::<IpAddr>() {
-            Ok(ip) => ip,
-            Err(_) => super::udp::resolve(target).await?.ip(),
-        };
+        // The `_udp2` record carries only 16-byte addresses, so the caller
+        // resolves a name first (the pinned `Base.ResolveUDP`); an unresolved
+        // name is a caller error, never a silent system-resolver dial.
+        let address = target.host.parse::<IpAddr>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trusttunnel UDP destination must be resolved to an IP address first",
+            )
+        })?;
         if payload.len() > super::udp::MAX_DATAGRAM {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

@@ -266,6 +266,32 @@ impl Transport {
     }
 }
 
+/// IP-only packet formats (`trusttunnel`'s `_udp2`) need a resolved
+/// destination. The mixed inbound resolves before dispatch; the TUN path can
+/// still carry a fake-ip-mapped name in `target.host`, so resolve it through
+/// the session resolver (pinned `Base.ResolveUDP`).
+async fn resolve_ip_only_target(
+    session: &crate::engine::SessionContext,
+    proxy: &Proxy,
+    target: outbound::Target,
+) -> Result<outbound::Target, io::Error> {
+    if target.host.parse::<IpAddr>().is_ok() {
+        return Ok(target);
+    }
+    let address = crate::engine::proxy_udp_destination(
+        session,
+        proxy.dialer.ip_version,
+        &target.host,
+        None,
+        target.port,
+    )
+    .await?;
+    Ok(outbound::Target {
+        host: address.ip().to_string(),
+        port: address.port(),
+    })
+}
+
 /// The one association task: connect once, then multiplex every destination
 /// of that proxy over it (the pinned association is destination-agnostic).
 pub(crate) async fn association_task(
@@ -405,6 +431,18 @@ pub(crate) async fn association_task(
             command = commands.recv() => match command {
                 Some(AssocCommand::Send { target, payload }) => {
                     idle = tokio::time::Instant::now() + idle_limit;
+                    let target = match &transport {
+                        Transport::TrustTunnel(_) => {
+                            match resolve_ip_only_target(&session, &proxy, target).await {
+                                Ok(target) => target,
+                                Err(error) => {
+                                    inner.note_udp_association_error(&name, &error.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                        _ => target,
+                    };
                     if let Err(error) = transport.send(&target, &payload).await {
                         inner.note_udp_association_error(&name, &error.to_string());
                         break;
