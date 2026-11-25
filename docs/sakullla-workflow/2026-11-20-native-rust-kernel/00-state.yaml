@@ -47,7 +47,7 @@ revision_fence:
   stale_task_ids: [T32]
   revision_attempt_task_ids: [T32]
   rebuilt_task_ids: []
-status: active
+status: blocked
 stages:
   exploration: completed
   solution: completed
@@ -1307,10 +1307,13 @@ tasks:
         review_digest: sha256:72b48bdb9c0a5e13765eb233820641687786a2df8b61c5116ff9e0d0fdd7b911
     history_head_ref: evidence/history/88.json
     history_count: 5
-blocker: null
+blocker:
+  reason: "delivery verification failed: native_kernel"
+  owner: deliver
+  resume_action: delivery.prepare
 delivery:
   status: pending
-plan_input_digest: sha256:cdf41d778cc9c355fceecd76ad75c4d22ff7f28eb4f892fbbcfe2c6af4e4cb5f
+plan_input_digest: sha256:7660e77b9fd9b95f3b2c4fdc3c1f95893b2d3894e20dd28bcf7ac38f09bf5d62
 scheduling:
   capacities: {}
   capabilities: {}
