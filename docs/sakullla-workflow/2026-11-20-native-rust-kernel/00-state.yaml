@@ -46,7 +46,7 @@ revision_fence:
   stale_task_ids: []
   revision_attempt_task_ids: []
   rebuilt_task_ids: [T31]
-status: active
+status: blocked
 stages:
   exploration: completed
   solution: completed
@@ -1267,9 +1267,12 @@ tasks:
         review_digest: sha256:0f2faa93dfe3847ae1d926cd024f81cf0c2ed4673a5c4c54ff1db9ada05713cb
     history_head_ref: evidence/history/78.json
     history_count: 6
-blocker: null
+blocker:
+  reason: R2 仍有 76 项 pinned Mihomo 接受而 Rust 具名拒绝的有效形式（easytier 20、wireguard 11、tuic 9、shadowquic 7、openvpn 7、hysteria 6、masque 4、mieru 3、sudoku 3、trojan 3、trusttunnel 2、gost 1），且无书面收窄；Windows/Linux/Android 缺工具链、iOS 缺签名真机，R3/R4 无真机测量。五族（anytls/vless/ss/hy2/vmess）已闭环，交付仍保持未通过。
+  owner: deliver
+  resume_action: delivery.prepare
 delivery:
-  status: pending
+  status: active
 plan_input_digest: sha256:efb4ed0f0f8b081a9e735506b592e9f922ffed53d48de6011cdf4f513199c066
 scheduling:
   capacities: {}
@@ -1924,4 +1927,4 @@ scheduling:
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t29-a5-invocation.json
       admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/552.json
+result_inbox_ref: evidence/results/554.json

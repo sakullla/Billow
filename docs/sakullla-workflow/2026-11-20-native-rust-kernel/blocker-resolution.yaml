@@ -1,0 +1,130 @@
+format: blocker_resolution
+# reason: R2 仍有 76 项 pinned Mihomo 接受而 Rust 具名拒绝的有效形式（easytier 20、wireguard 11、tuic 9、shadowquic 7、openvpn 7、hysteria 6、masque 4、mieru 3、sudoku 3、trojan 3、trusttunnel 2、gost 1），且无书面收窄；Windows/Linux/Android 缺工具链、iOS 缺签名真机，R3/R4 无真机测量。五族（anytls/vless/ss/hy2/vmess）已闭环，交付仍保持未通过。
+# target: 处理 delivery-report.yaml 的 current blocker；使用 Runtime 预填值。
+# next: apply 后进入 deliver/delivery.prepare
+resolution_ref: "delivery-report.yaml#review_result"
+task_ids: []
+# 保留 round_id；补充当前问题 findings 与必要恢复说明，使用 apply --from blocker-resolution.yaml。
+round_id: 5
+findings:
+  - description: R2 完整兼容未达成：候选仍把 pinned Mihomo v1.19.34 接受的有效配置形式具名拒绝：option matrix 的 304 个 enabled 形式中 250 个为 rust=reject/mihomo=accept（vmess 24、tuic 24、hysteria2 23、easytier 21、trusttunnel 20、hysteria 19、anytls 19、vless 16、mieru 15、sudoku 13 等），另有启用 tun/sniffer 被拒，iOS staging 剥离 sniffer.enable 会改变依赖 SNI/Host 的域名规则语义。需求 R2 明确判为兼容失败，02 技术方案声明不缩小范围且无收窄记录。需补齐实现或取得需求方书面收窄。
+    location: "config.rs:46-60,1315-1338; t8-option-matrix.txt; delivery-verification §2 #8/§3; 02-technical-solution.md:22"
+    blocking: true
+    priority: P1
+  - description: R1 Android 仍无 Rust 流量承载路径（代码级）：用户态 IP 栈与 C ABI 仅以 feature=ios-vpn 编译，Android 构建不含 tunnel/ios_vpn；VpnService 把 TUN fd 交给桥，force_tun 在 tun_enable=true 时把 tun.file-descriptor 注入 YAML，Rust 引擎走同一注入路径，而 config.rs 对 tun enable:true 具名拒绝，switch_engine 返回未接受当前配置并留在 Mihomo。Android 上无法让 Rust 承载 VPN 流量。实现与宿主单测可当前完成，实机确认需 Android 设备。
+    location: lib.rs:81-88; billow-kernel/Cargo.toml:16-20; profile.rs:3688-3694,2986-2994; BillowVpnService.kt:52-87; engine-switch.md 末段
+    blocking: true
+    priority: P1
+  - description: R1 Windows/Linux 未实跑（环境阻断）：交叉构建仅到 cc-rs 失败（Windows 缺 MSVC cl/Windows SDK，Linux 缺 x86_64-linux-gnu-gcc）；无打包后双向切换与标记流量记录。release.yml 已在非 Android 平台执行同一 ignored 用例，负例修复后可据此在对应 runner 复跑，但 macOS 结果不能替代。
+    location: t8-cross-windows.log; t8-cross-linux.log; .github/workflows/release.yml:239-247
+    blocking: true
+    priority: P1
+  - description: R1 iOS 真机双向切换未验证（硬件阻断）：devicectl 显示 iPhone 15 Pro Max 与 iPad unavailable，仅模拟器可用；现有证据只有模拟器 C ABI smoke 20/20 与两个扩展 unsigned device 构建，无两个内核各自建立系统 VPN、跨应用命中规则请求并核对出口的记录。需签名 Team 与真机，入口为 tool/ios/verify-device.md。
+    location: t8-devicectl.log; tool/ios/verify-device.md; docs/testing/2026-11-23-ios-rust-extension-memory.md
+    blocking: true
+    priority: P1
+  - description: R3/R4 未验证（硬件阻断）：没有扩展进程 phys_footprint 峰值、六类场景、jetsam 终止检查，也没有逐轮空闲基线与失效对象回收数据；模拟器 peakRssBytes=28,475,392 是 smoke 进程读数，T8/T7 已正确声明不能作为 R3 依据。采样接口、VM Tracker、场景表与复现命令已文档化，真机就绪后可直接执行。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:6,28-83; t8-ios-simulator-smoke.log; t8-delivery.json
+    blocking: false
+    priority: P2
+  - description: 需求级结论仍未进入机读交付产物，且 T8 结论未同步返修：delivery-report 只有 6 条命令结果（全 passed）与 pending_ids:[]，没有 R1–R4 判定，也未引用 t8-delivery.json；而 t8-delivery.json 仍记 R1 macOS 切换测试 FAILED（早于 f87936c 返修），与本轮 verification/11.json、t8-macos-switch-rework.log 的 1 passed 矛盾。建议更新 T8 产物或在交付限制中引用 t8-macos-switch-rework.log。
+    location: delivery-report.yaml:12-142; t8-delivery.json; t8-macos-switch.log
+    blocking: false
+    priority: P2
+  - description: 计划仍无任务承接剩余阻断：plan-compliance 记录 25/25 completed、rework_count 0、success=true，与 T8 not_passed、R2/Android/Windows-Linux/iOS/R3/R4 未通过并存；本轮对 03 的改动只把 switch_acceptance 加入 delivery_verification，没有新增返修/补证任务或范围决定。R2 缺口、Android 数据面属当前环境可做的代码返修，Windows/Linux/iOS/R3/R4 属补证，均需先落到任务或记录范围决定。
+    location: evidence/plan-compliance.json; 03-execution-plan.md:309-322
+    blocking: false
+    priority: P2
+  - description: switch_acceptance 记录的内核不是候选构建，且证据未记录内核哈希：verification/11.json 使用 src-tauri/resources/runtime/billow-kernel（2026-11-21 构建，rust-kernel.json sha256 2fc7248d…），早于候选 936057a 之后 20+ 个 native-kernel 提交；T8 差分使用临时目录由候选源码构建的内核（sha256 6e708345…）。审查者用后者替换复跑仍 1 passed，结论不受影响，但应重建随包内核或记录内核哈希。
+    location: evidence/verification/11.json; src-tauri/resources/runtime/rust-kernel.json; kernel.rs:759-798
+    blocking: false
+    priority: P3
+  - description: Rust 控制面与 pinned Mihomo 仍有已登记差异：/configs/geo、/upgrade/geo、/group、/cache、/storage、/dns/query、/restart 为显式 404，/rules 缺 extra 命中计数，reload 监听器迁移与 PATCH tun.enable 为已登记分歧，TLS 仅 HTTP/1.1 ALPN。建议作为已知限制随交付记录并单独排期。
+    location: delivery-verification §3 T25; t8-t25-differential.json
+    blocking: false
+    priority: P3
+  - description: R2 未达成：option matrix 仍有 107 项（105 唯一）pinned Mihomo v1.19.34 接受而 Rust 具名拒绝的 enabled 形式——easytier 20、wireguard 11、tuic 9、anytls 9、vmess 8、shadowquic 7、openvpn 7、hysteria2 7、hysteria 6、vless 5、masque 4、trojan 3、sudoku 3、mieru 3、trusttunnel 2、ss 2、gost-relay 1；另有启用 sniffer 在桌面被具名拒绝、在 iOS/Android staging 被静默移除（改变依赖 SNI/Host 的域名规则语义），桌面 tun 块被 strip，以及 T25 的 2 项已登记控制面分歧。需求 R2 明确把具名拒绝与静默忽略判为兼容失败；requirement 自基线未改、02 声明不缩小范围、plan pending_scope_decisions 为空，无书面收窄。需需求方书面范围决定并逐项登记能力差异，或继续按族补齐；入口为 t28-option-parity.md 的 per-family 责任表与 config.rs 具名拒绝。
+    location: t28-option-parity.md; option-matrix.txt; config.rs:46-60,1326-1340; tunnel/stage.rs:45-48; profile.rs:3836; 02-technical-solution.md:28
+    blocking: true
+    priority: P1
+  - description: R1 跨平台执行缺口（外部环境）：仅 macOS 有打包后双向切换与标记流量证据；Windows/Linux cargo check 均 exit 101（ring 缺 MSVC cl/Windows SDK 报 assert.h；Linux 缺 x86_64-linux-gnu-gcc），Android 无 NDK/SDK/adb/JDK21/签名与设备，T29-A3 未产出 APK 或 device 切换记录；iOS 两台物理设备 unavailable、无 Team/签名，只有模拟器 smoke 20/20 与四个 unsigned 构建。Android Rust TUN fd 数据面与宿主 --tun-fd 移交只有代码与宿主单测，不能替代设备实跑。补证责任：Windows/Linux release runner（release.yml 238-247 同一 ignored 用例）、Android 环境 owner（tool/engine-switch.md）、iOS 真机执行者（tool/ios/verify-device.md）。
+    location: t29-platform-matrix.md; t29-a3-windows-check.log; t29-a3-linux-check.log; t29-a3-android-check.log; release.yml:238-247; tool/ios/verify-device.md
+    blocking: true
+    priority: P1
+  - description: R3 未验证（无真机）：没有 iPhone 上整个 VPN 扩展进程的 phys_footprint 峰值，也没有启动/锁屏空闲/并发转发/规则集更新/Wi-Fi 蜂窝切换六类场景与 jetsam 检查记录；模拟器 smoke 的 peakRssBytes 28,524,544 只是 smoke 进程读数，文档已明确不得作为 R3 依据。补证责任：具备 Apple Team、签名权限与物理 iPhone 的执行者；入口 docs/testing/2026-11-23-ios-rust-extension-memory.md §4 与 tool/ios/verify-device.md。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:34-63,102; t29-a3-ios-simulator-smoke.log
+    blocking: true
+    priority: P2
+  - description: R4 未验证（无真机逐轮基线），且入口未闭合：Rust 侧 ios_vpn.rs 已解码扩展 status 的 stats，但 Swift ProviderStatus 无 stats 字段，BillowMobileBridge.statusDictionary 与 ProviderSupport.writeStatus 只写既有键，TS IosVpnStatus 也无 stats，故 ios_vpn_status(rust).stats 恒为 None、status/rust.json 无 counts；文档只能回退到调试器/扩展日志口径。需先补宿主 Swift+TS 透传，再在真机按建连/关闭、规则集重载、断网重连逐轮采样并与首轮空闲基线比较。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:52,102-107; ios_vpn.rs:96-120; BillowVPNError.swift:91; BillowMobileBridge.swift:180; ProviderSupport.swift:51; types.ts:472
+    blocking: true
+    priority: P2
+  - description: 交付验证的 switch_acceptance 使用 src-tauri/resources/runtime 下 2026-11-21 由旧源码构建的内核（rust-kernel.json sha256 2fc7248d…，该目录被 gitignore、非候选构建），不是候选源码构建的二进制；候选构建内核只在 T29-A3 临时 runtime-package（c4467fe9…）上跑过同一用例。结论由 T29 证据支持而未被推翻，但 macOS 证据归属应重建随包内核或记录内核哈希。
+    location: evidence/verification/23.json; src-tauri/resources/runtime/rust-kernel.json; t29-platform-matrix.md
+    blocking: false
+    priority: P2
+  - description: 桌面 TUN 与 Rust 状态不一致：engine-switch.md 已记录 Rust 桌面会话只走 mixed 监听器、快照不得声称桌面 TUN 支持，但 set_tun/connect_desktop 在 strip_tun 成功后仍把 takeover.tun/snapshot.tun 置 true（tun_wanted 时 connected 也为真），且无 Rust+TUN 组合用例；TUN 用户切到 Rust 时界面显示 TUN 已启用而没有 TUN 接口，忽略系统代理的应用不会被承载。建议 Rust 选中时拒绝/标注 TUN 不可用，或补桌面 TUN 数据面。
+    location: profile.rs:3214-3250,3274-3308,3836; tool/engine-switch.md:102
+    blocking: false
+    priority: P3
+  - description: 记录一致性：delivery-report 仍只有 6 条命令结果与 pending_ids:[]，没有 R1–R4 判定或对 t28/t29 证据的引用；t8-delivery.json 仍写当前候选 macOS 切换 FAILED（早于负例返修），与 verification/23 和 t29-a3-macos-switch.log 的 1 passed 矛盾；plan-compliance 记 success=true、pending_scope_decisions=[]，与本轮 R2 仍余 107、R1 仅 macOS 通过并存。建议把需求判定与未决范围写入交付产物并刷新 T8 结论。
+    location: delivery-report.yaml:12-142; t8-delivery.json; plan-compliance.json
+    blocking: false
+    priority: P3
+  - description: R2 完整兼容仍未达成：当前矩阵（候选构建复跑 option-probe 复现 291/87/119、0 problems）仍有 76 行/73 唯一行 pinned Mihomo v1.19.34 accept 而 Rust reject，按族 easytier 20、wireguard 11、tuic 9、shadowquic 7、openvpn 7、hysteria 6、masque 4、mieru 3、sudoku 3、trojan 3、trusttunnel 2、gost-relay 1。目标五族残留 0 仅指矩阵已映射行，未覆盖 hysteria2 udp：候选 --check 对 hysteria2 udp:true 输出 configuration accepted 且无告警，而 Hysteria2Outbound 无 udp 字段、udp_enabled() 为 false，tunnel/udp.rs 对不支持关联仅记 debug 后返回，UDP 报文被静默丢弃——正是 R2 明列的静默忽略/无法承载流量失败。另有顶层 sniffer.enable:true 与 tun.enable:true 仍具名拒绝，iOS/Android staging 静默移除 sniffer.enable，桌面 launcher 对 Rust 剥离 tun，五族 client-fingerprint 仅 rustls 近似。需求自 9d4ba4b 未改、02 不缩小范围、pending_scope_decisions=[]，无书面收窄。需按族继续实现或取得需求方书面范围决定。
+    location: option-matrix.txt:1-5; t31-transports.md:94; rust-mapping.json (hysteria2 partial); proxies.rs:1064-1100,1364-1379; tunnel/udp.rs:154-160; config.rs:1329-1340; tunnel/stage.rs:45-48; profile.rs:3830-3840
+    blocking: true
+    priority: P1
+  - description: R1 跨平台仍未通过：仅 macOS 有候选级证据（候选构建内核 b70e2ebd 复跑 packaged_engines_switch... 1 passed，标记 mihomo-1→rust-1→mihomo-2→mihomo-3）。Windows 无 MSVC/Windows SDK（cargo check exit 101，ring assert.h）、Linux 无 x86_64-linux-gnu-gcc、Android 无 NDK/SDK/adb/JDK21/keystore 与设备，iOS 两台物理设备 unavailable、无 Team/签名，只有模拟器 smoke 与 unsigned 构建。补证入口：Windows/Linux release.yml 238-247；Android tool/engine-switch.md；iOS tool/ios/verify-device.md。
+    location: t29-platform-matrix.md:6-13; t29-a3-windows-check.log; t29-a3-linux-check.log; t29-a3-android-check.log; release.yml:238-247
+    blocking: true
+    priority: P1
+  - description: R3 未验证：无真机整个 VPN 扩展 phys_footprint 峰值、六类场景与 jetsam 记录；模拟器 smoke 的 peakRssBytes 已明确排除。补证责任：具备 Apple Team、签名与物理 iPhone 的执行者；入口 docs/testing/2026-11-23-ios-rust-extension-memory.md §3/§4 与 tool/ios/verify-device.md。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:6,24-63; t29-a3-ios-simulator-smoke.log
+    blocking: true
+    priority: P2
+  - description: R4 未验证：无真机逐轮空闲基线/建连关闭/规则集重载/断网重连回收数据；且入口未闭合：扩展 status 已带 stats、Rust 侧 ios_vpn.rs 已解码，但 Swift ProviderStatus 无 stats，BillowMobileBridge.statusDictionary 与 ProviderSupport.writeStatus 只写既有键，前端 IosVpnStatus 无 stats，故 ios_vpn_status(rust).stats 恒 None、status/rust.json 无 counts；只能按调试器口径人工读取。宿主透传属当前环境可改代码，但 R4 主要阻断仍是真机。补证责任：产品 owner 补 Swift+TS，设备执行者完成采样。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:52,102-107; BillowVPNError.swift:91; BillowMobileBridge.swift:180; ProviderSupport.swift:51; types.ts:472; ios_vpn.rs:100
+    blocking: true
+    priority: P2
+  - description: 桌面 Rust+TUN 状态不一致：set_tun/connect_desktop 在 Rust 下先 strip_tun（desktop 只走 mixed+系统代理），成功后仍把 model.tun/tun_wanted/connected 置真，界面显示 TUN 已启用但没有 TUN 接口；忽略系统代理的应用不会被承载，也无 Rust+TUN 组合用例。建议 Rust 选中且请求 TUN 时明确标注/拒绝，或补桌面 TUN 数据面。
+    location: profile.rs:3214-3252,3266-3305,3830-3840; tool/engine-switch.md
+    blocking: false
+    priority: P3
+  - description: 候选级证据归属不一致（独立复现、结论未推翻）：option-matrix.txt 头部 rust 二进制是 t31-a3-target（早于 A4）而非候选 119ddf1；switch_acceptance 使用 src-tauri/resources/runtime 下 2026-11-21 的内核（sha256 2fc7248d…，早于 T30/T31），不是候选构建。用候选构建复跑 option-probe 与切换用例分别得到同样 291/87/119/0 与 1 passed，故不改变判断；仍应重建随包内核并刷新矩阵头与证据。t28/t30 证据保留旧快照（151/107、289/75/131）易混淆。
+    location: option-matrix.txt:1-5; src-tauri/resources/runtime/rust-kernel.json; verification/29.json; t28-option-parity.md; t30-option-closure.md
+    blocking: false
+    priority: P2
+  - description: 交付记录与未通过状态并存：plan-compliance 记 31/31 completed、rework_count 0、success=true、pending_scope_decisions=[]，而 R2 仍 73 唯一具名拒绝、R1 仅 macOS、R3/R4 无真机数据；03 无承接剩余缺口的任务或范围决定，delivery-report 只有 6 条命令结果与 pending_ids:[]，review_result 为空。建议把需求判定、未决范围与补证责任写入交付产物并刷新计划记录。
+    location: evidence/plan-compliance.json; delivery-report.yaml:12-155; 03-execution-plan.md:309-322
+    blocking: false
+    priority: P3
+  - description: R2 完整兼容仍未达成（代码级）：矩阵仍把 pinned Mihomo v1.19.34 接受的有效形式具名拒绝 76 行/73 唯一行（easytier 20、wireguard 11、tuic 9、shadowquic 7、openvpn 7、hysteria 6、masque 4、mieru 3、sudoku 3、trojan 3、trusttunnel 2、gost 1）；problems 0 仅表示没有静默接受，不代表兼容。另有顶层 sniffer/tun enable 具名拒绝、iOS/Android staging 静默移除 sniffer、设备族 dial 不可用、hy2 dialer-proxy 仅加载接受运行期 Chain、client-fingerprint rustls 近似。需求未改、02 不缩小、无书面收窄。
+    location: option-matrix.txt:1-6,390-443; t8-a2-option-matrix.txt; t8-delivery.json requirements.R2; config.rs:1325-1340; tunnel/stage.rs:39-48; outbound/mod.rs:466-516; outbound/udp.rs:1606-1627; 02-technical-solution.md:30-32
+    blocking: true
+    priority: P1
+  - description: R1 仅 macOS 通过（外部环境阻断）：macOS 在候选源码构建内核 ae77c74b 上 packaged switch 1 passed（mihomo-1→rust-1→mihomo-2→mihomo-3）；Windows 无 MSVC/SDK（ring assert.h）、Linux 无 cross gcc、Android 无 NDK/SDK/adb/JDK21/keystore/设备、iOS 两台物理设备 unavailable 且无 Team，只有模拟器 smoke 与 unsigned 构建。补证入口 release.yml、engine-switch.md、verify-device.md。
+    location: t29-platform-matrix.md:6-13; t8-a2-macos-switch.log:899-912; t29-a3-windows-check.log; t29-a3-linux-check.log; t29-a3-android-check.log; t8-a2-environment.log
+    blocking: true
+    priority: P1
+  - description: R3 未验证：无真机整个 VPN 扩展 phys_footprint 峰值、六类场景与 jetsam 记录；模拟器 peakRssBytes 已排除。补证责任：具备 Apple Team、签名与物理 iPhone 的执行者，入口 docs/testing/2026-11-23-ios-rust-extension-memory.md 与 tool/ios/verify-device.md。
+    location: docs/testing/2026-11-23-ios-rust-extension-memory.md:34-63,102; t29-a3-ios-simulator-smoke.log; t8-delivery.json requirements.R3
+    blocking: true
+    priority: P2
+  - description: R4 未验证：T7-A4 已闭合宿主透传（ProviderStatus.stats/statusDictionary/encode-decode-writeStatus/两扩展 status 回复/TS IosVpnStatus.stats），ios_vpn_status(rust).stats 宿主管线可用；但仍无建连/关闭、规则集重载、断网重连逐轮基线与失效对象回收/jetsam 记录，status/rust.json 只是快照。
+    location: BillowVPNError.swift:91-150; BillowMobileBridge.swift:180-195; ProviderSupport.swift:51-72; RustTunnelProvider.swift:100-112; types.ts:471-516; t8-delivery.json requirements.R4
+    blocking: true
+    priority: P2
+  - description: 候选级证据归属不一致（结论未推翻）：switch_acceptance 仍用 src-tauri/resources/runtime 下 2026-11-21 的内核（rust-kernel.json sha256 2fc7248d…，被 gitignore），不是候选构建；option-matrix 头部是 t31-a6-target 构建；T31 的 97/97 peer 日志只在未跟踪的 native-kernel/target/a6-rev/peer-all.log。T8-A2 已用候选内核 ae77c74b 跑同一切换用例并通过，判断不变；仍应重建随包内核并把 peer 运行纳入可复现证据。
+    location: verification/35.json; src-tauri/resources/runtime/rust-kernel.json; option-matrix.txt:1-6; t8-a2-candidate.log; native-kernel/target/a6-rev/peer-all.log
+    blocking: false
+    priority: P2
+  - description: 交付记录与未通过状态并存：delivery-report 只有 6 条命令结果与 pending_ids:[]，没有 R1–R4 判定，也未引用 t8-delivery.json；plan-compliance 仍 success=true、rework_count=0、pending_scope_decisions=[]，与 R2 余 76 项与无真机数据并存。建议把需求判定、未决范围与补证责任写入交付产物并刷新计划记录。
+    location: delivery-report.yaml:12-155; plan-compliance.json; t8-delivery.json
+    blocking: false
+    priority: P3
+  - description: T26 已披露的 P3 仍成立：android_vpn.rs::peak_rss_bytes 只在 target_os=linux 将 ru_maxrss（KiB）乘 1024，Android 把 KiB 当字节返回，偏小 1024 倍；当前无消费者，应在 Android 数据面接入前修正。
+    location: android_vpn.rs:631-648
+    blocking: false
+    priority: P3
+resolution: ""
