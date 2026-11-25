@@ -1712,5 +1712,67 @@ describe('UI/UX polish', () => {
       await flushPromises()
       expect(wrapper.find('[data-testid="profiles-refresh-banner"]').exists()).toBe(false)
     })
+
+    it('keeps desktop proxy toolbar compact on default 960px window, aligns right-edge group chevron, and avoids duplicate group counts', async () => {
+      const { wrapper } = await mountApp({}, 960)
+      const store = storeOf(wrapper)
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+
+      // Search match count renders inline inside .search on desktop so typing never wraps toolbar controls.
+      await wrapper.find('[data-testid="node-search"]').setValue('新加坡')
+      await flushPromises()
+      expect(wrapper.find('.proxies-toolbar .search [data-testid="match-count"]').text()).toBe('匹配 7 个节点')
+      await wrapper.find('[data-testid="clear-search"]').trigger('click')
+      await flushPromises()
+
+      // Quick actions (locate + toggle-all) live in a unified desktop capsule.
+      const quickPair = wrapper.find('.proxies-toolbar .toolbar-quick-pair')
+      expect(quickPair.exists()).toBe(true)
+      expect(quickPair.find('[data-testid="locate-active-node"]').exists()).toBe(true)
+      expect(quickPair.find('[data-testid="toggle-all"]').exists()).toBe(true)
+
+      // Group header places .group-chevron at the far right after group-test, and clicking it toggles expansion.
+      const mediaHead = wrapper.find('[data-group-card="流媒体"] .group-head')
+      const children = [...mediaHead.element.children]
+      const testIdx = children.findIndex((el) => el.getAttribute('data-testid') === 'test-group-流媒体')
+      const chevronIdx = children.findIndex((el) => el.classList.contains('group-chevron'))
+      expect(testIdx).toBeGreaterThan(0)
+      expect(chevronIdx).toBeGreaterThan(testIdx)
+
+      const wasOpen = wrapper.find('[data-group-card="流媒体"]').classes().includes('open')
+      await mediaHead.find('.group-chevron').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-group-card="流媒体"]').classes().includes('open')).toBe(!wasOpen)
+
+      // When every entry in a pure server group has been tested, the redundant total badge hides in favor of 可用 X/Y.
+      const pureGroupName = '纯节点组'
+      store.snapshot.value = {
+        ...store.snapshot.value,
+        node_catalog: [
+          {
+            name: pureGroupName,
+            kind: 'manual',
+            group_type: 'Selector',
+            sort: 'default',
+            pinnable: false,
+            hidden: false,
+            icon: null,
+            now: '香港 A',
+            fixed: null,
+            nodes: [
+              { name: '香港 A', node_type: 'Shadowsocks', selected: true, delay_ms: 48, failed: false, dialer_proxy: null, tags: ['UDP'] },
+              { name: '香港 B', node_type: 'Shadowsocks', selected: false, delay_ms: null, failed: true, dialer_proxy: null, tags: [] },
+            ],
+          },
+          ...store.snapshot.value.node_catalog,
+        ],
+      }
+      await flushPromises()
+
+      const pureCard = wrapper.find(`[data-group-card="${pureGroupName}"]`)
+      expect(pureCard.find('.group-count').exists()).toBe(false)
+      expect(pureCard.find('.group-health').text()).toBe('可用 1/2')
+    })
   })
 })

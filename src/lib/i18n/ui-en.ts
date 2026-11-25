@@ -1759,6 +1759,7 @@ export const UI_EN: Record<string, string> = {
   '取消置顶': 'Unpin',
   '展开筛选与分组导航': 'Show filters & group jump',
   '收起筛选与分组导航': 'Hide filters & group jump',
+  '搜索节点或协议': 'Search nodes or protocols',
   '清除筛选：{0}': 'Clear filter: {0}',
   '点击清除筛选': 'Click to clear filter',
   '标签': 'Tags',

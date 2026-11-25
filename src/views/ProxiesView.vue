@@ -549,7 +549,7 @@ const failedNodeCount = computed(() => {
   return count
 })
 
-function groupHealthText(group: NodeGroup): string {
+function groupHealthStats(group: NodeGroup): { ok: number; tested: number } | null {
   let tested = 0
   let ok = 0
   for (const node of group.nodes) {
@@ -568,8 +568,18 @@ function groupHealthText(group: NodeGroup): string {
       ok += 1
     }
   }
-  if (!tested) return ''
-  return props.compact ? `${ok}/${tested}` : tr('可用 {0}/{1}', { 0: ok, 1: tested })
+  return tested > 0 ? { ok, tested } : null
+}
+
+function groupHealthText(group: NodeGroup): string {
+  const stats = groupHealthStats(group)
+  if (!stats) return ''
+  return props.compact ? `${stats.ok}/${stats.tested}` : tr('可用 {0}/{1}', { 0: stats.ok, 1: stats.tested })
+}
+
+function showGroupCount(group: NodeGroup): boolean {
+  const stats = groupHealthStats(group)
+  return !stats || stats.tested < group.nodes.length
 }
 
 function highlight(name: string) {
@@ -1060,8 +1070,14 @@ onBeforeUnmount(() => {
 
     <div v-if="listed.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
-        <Icon name="search" :size="16" />
-        <input v-model="query" type="search" :placeholder="tr('搜索节点、协议或 UDP 等标签')" data-testid="node-search" data-page-search />
+        <Icon name="search" :size="15" />
+        <input v-model="query" type="search" :placeholder="tr('搜索节点或协议')" data-testid="node-search" data-page-search />
+        <span
+          v-if="!compact && hasSearchOrTag && matchCount > 0"
+          class="toolbar-count search-match-count small mono"
+          data-testid="match-count"
+          aria-live="polite"
+        >{{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }}</span>
         <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空搜索')" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
@@ -1081,7 +1097,7 @@ onBeforeUnmount(() => {
       >
         <Icon name="sliders" />
       </button>
-      <span v-if="hasSearchOrTag && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
+      <span v-if="compact && hasSearchOrTag && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
       <button
         v-if="!drawerExpanded && activeQuickFilter"
         type="button"
@@ -1116,7 +1132,9 @@ onBeforeUnmount(() => {
         :aria-pressed="hideFailed"
         data-testid="hide-failed-nodes"
         @click="hideFailed = !hideFailed"
-      > {{ tr('隐藏超时') }} {{ failedNodeCount }}
+      >
+        <span>{{ tr('隐藏超时') }}</span>
+        <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
       </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
         <button
@@ -1127,13 +1145,13 @@ onBeforeUnmount(() => {
           :aria-expanded="filtersOpen"
           :aria-pressed="filtersOpen"
           aria-controls="proxy-filter-drawer"
+          :aria-label="filtersOpen ? tr('收起筛选与分组导航') : tr('展开筛选与分组导航')"
           :title="filtersOpen ? tr('收起筛选与分组导航') : tr('展开筛选与分组导航')"
           data-testid="toggle-proxy-filters"
           @click="filtersOpen = !filtersOpen"
         >
           <Icon name="filter" :size="14" />
-          <span>{{ tr('筛选') }}</span>
-          <Icon name="chevron-down" :size="13" class="filter-toggle-chevron" :class="{ open: filtersOpen }" />
+          <span class="filter-toggle-label">{{ tr('筛选') }}</span>
         </button>
         <Segmented v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
         <!-- Desktop: quiet icon buttons with tooltips; phones lay them out as labelled chips (R3, R12). Auto groups need no toggle (R13). -->
@@ -1157,47 +1175,49 @@ onBeforeUnmount(() => {
             :data-testid="`node-view-${item.id}`"
             @click="view = item.id"
           >
-            <Icon :name="item.icon" :size="15" />
+            <Icon :name="item.icon" :size="14" />
           </button>
         </div>
-        <button
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ 'icon-only': !compact }"
-          :disabled="!canLocateActive"
-          :aria-label="tr('定位当前选中节点')"
-          :title="canLocateActive ? tr('定位当前选中节点') : tr('当前没有已选中的节点')"
-          data-testid="locate-active-node"
-          @click="locateActiveNode"
-        >
-          <Icon name="locate" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ tr('定位') }}</span>
-        </button>
-        <button
-          v-if="compact"
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ active: dense }"
-          :aria-pressed="dense"
-          :aria-label="denseLabel"
-          :title="denseLabel"
-          data-testid="toggle-dense"
-          @click="view = dense ? 'card' : 'dense'"
-        >
-          <Icon :name="denseIcon" :size="15" />
-          <span class="tool-btn-label">{{ tr('双列') }}</span>
-        </button>
-        <button
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ 'icon-only': !compact }"
-          :title="allExpanded ? tr('收起全部代理组') : tr('展开全部代理组')"
-          data-testid="toggle-all"
-          @click="toggleAll"
-        >
-          <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? tr('收起全部') : tr('展开全部') }}</span>
-        </button>
+        <div class="toolbar-quick-pair">
+          <button
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ 'icon-only': !compact }"
+            :disabled="!canLocateActive"
+            :aria-label="tr('定位当前选中节点')"
+            :title="canLocateActive ? tr('定位当前选中节点') : tr('当前没有已选中的节点')"
+            data-testid="locate-active-node"
+            @click="locateActiveNode"
+          >
+            <Icon name="locate" :size="15" />
+            <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ tr('定位') }}</span>
+          </button>
+          <button
+            v-if="compact"
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ active: dense }"
+            :aria-pressed="dense"
+            :aria-label="denseLabel"
+            :title="denseLabel"
+            data-testid="toggle-dense"
+            @click="view = dense ? 'card' : 'dense'"
+          >
+            <Icon :name="denseIcon" :size="15" />
+            <span class="tool-btn-label">{{ tr('双列') }}</span>
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ 'icon-only': !compact }"
+            :title="allExpanded ? tr('收起全部代理组') : tr('展开全部代理组')"
+            data-testid="toggle-all"
+            @click="toggleAll"
+          >
+            <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
+            <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? tr('收起全部') : tr('展开全部') }}</span>
+          </button>
+        </div>
       </div>
 
       <div
@@ -1379,8 +1399,8 @@ onBeforeUnmount(() => {
                 :title="tr('已固定使用 {0}，恢复自动后由组策略选择', { 0: group.fixed })"
                 :data-testid="`group-fixed-${group.name}`"
               >{{ tr('已固定') }}</span>
-              <span class="muted small group-count mono">{{ group.nodes.length }}</span>
-              <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
+              <span v-if="showGroupCount(group)" class="muted small group-count mono">{{ group.nodes.length }}</span>
+              <span v-if="groupHealthText(group)" class="group-health muted small mono">{{ groupHealthText(group) }}</span>
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
@@ -1391,7 +1411,6 @@ onBeforeUnmount(() => {
               <span v-else-if="groupTestedAt(group)" class="group-tested">{{ tr('测速') }} {{ formatRelative(groupTestedAt(group)!) }}</span>
             </span>
           </span>
-          <Icon name="chevron-down" class="chevron" />
         </button>
         <button
           v-if="fastestCandidate(group)"
@@ -1426,8 +1445,11 @@ onBeforeUnmount(() => {
           @click="store.testGroup(group.name)"
         >
           <span v-if="store.busy[`test:${group.name}`]" class="spinner sm" />
-          <Icon v-else name="zap" />
+          <Icon v-else name="zap" :size="16" />
         </button>
+        <span class="group-chevron" aria-hidden="true" @click="toggle(group.name)">
+          <Icon name="chevron-down" class="chevron" :size="16" />
+        </span>
         <div v-if="groupTestProgressPct(group.name) != null" class="test-progress-track" aria-hidden="true">
           <span class="test-progress-fill" :style="{ width: `${groupTestProgressPct(group.name)}%` }" />
         </div>
@@ -1599,38 +1621,75 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.filter-drawer-toggle {
+.btn.filter-drawer-toggle {
+  flex: none;
   gap: 5px;
-  height: 36px;
-  padding: 0 11px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   color: var(--text-2);
   font-size: var(--text-sm);
   font-weight: 560;
 }
 
-.filter-drawer-toggle.active {
+.btn.filter-drawer-toggle:hover:not(:disabled) {
+  border-color: var(--border-input);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn.filter-drawer-toggle.active {
   background: var(--accent-soft);
   color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: none;
 }
 
-.filter-toggle-chevron {
-  opacity: 0.7;
-  transition: transform var(--dur-fast) var(--ease);
+.search-match-count {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: 11px;
 }
 
-.filter-toggle-chevron.open {
-  transform: rotate(180deg);
+@media (max-width: 900px) {
+  .btn.filter-drawer-toggle {
+    width: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+  .filter-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 .proxy-active-filter-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 30px;
-  padding: 0 9px 0 11px;
+  height: 34px;
+  padding: 0 9px 0 10px;
+  border-radius: 10px;
   font-size: var(--text-xs);
   flex: none;
+}
+
+:global(.compact) .proxy-active-filter-pill {
+  height: 30px;
+  border-radius: var(--radius-pill);
 }
 
 .proxy-filter-drawer {
@@ -1743,8 +1802,7 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .proxy-quick-chip,
-  .proxy-quick-reset,
-  .filter-toggle-chevron {
+  .proxy-quick-reset {
     transition: none;
   }
 }
