@@ -56,7 +56,7 @@ acceptance.
 | `fast-open` | The session response is replayed on the first read (pinned `NewEarlyConn`). | `tests/quic_peers.rs::hysteria_v1_fast_open_defers_the_response`, `tests/quic_peers.rs::hysteria_v1_transport_options_load` |
 | `client-fingerprint` | rustls approximation (T30 residual category). | load test |
 | `protocol: faketcp` | Loads like the pinned decoder; refused at dial time with a named error. The pinned implementation is Linux-only (`conns/faketcp/tcp_linux.go`, build tag `linux && !no_fake_tcp`): it opens raw `IPConn` handles, installs iptables rules and runs a gopacket TCP state machine, i.e. it needs CAP_NET_RAW and an iptables rule. `tcp_stub.go` returns "faketcp is not supported on this platform" everywhere else. | load test, pinned source `transport/hysteria/conns/faketcp/{tcp_linux,tcp_stub}.go` |
-| UDP session | Implemented: the `udp=1` request on one bidirectional stream, a 7-byte response with the server-assigned session id, then `session id (u32), host length (u16), host, port (u16), msg id (u16), fragment id (u8), fragment count (u8), data length (u16), data` on QUIC datagrams (message-id fragmentation with a 255-fragment cap). `Proxy::udp_enabled()` now reports true, and both the mixed inbound and the TUN data plane build the association; a `dialer-proxy` hop is refused by name. | `tests/quic_peers.rs::hysteria_v1_udp_session_roundtrips_through_the_peer`, `tests/ios_tunnel.rs::hysteria_udp_session_crosses_the_tunnel`, `src/outbound/udp.rs::tests::hysteria_udp_fragments_reassemble_by_message_id` |
+| UDP session | Implemented: the `udp=1` request on one bidirectional stream, a 7-byte response with the server-assigned session id, then `session id (u32), host length (u16), host, port (u16), msg id (u16), fragment id (u8), fragment count (u8), data length (u16), data` on QUIC datagrams (message-id fragmentation with a 255-fragment cap). `Proxy::udp_enabled()` now reports true, and both the mixed inbound and the TUN data plane build the association. Like Hysteria2 (T32-A3), a `dialer-proxy` chain loads (non-socks5 hop and multi-hop included) and only the association refuses it by name before any QUIC dial; TCP still refuses the chained exit at dial time exactly as before `udp_enabled()` returned true. | `tests/quic_peers.rs::hysteria_v1_udp_session_roundtrips_through_the_peer`, `tests/ios_tunnel.rs::hysteria_udp_session_crosses_the_tunnel`, `src/outbound/udp.rs::tests::hysteria_udp_fragments_reassemble_by_message_id`, `tests/config.rs::t32_hysteria_udp_chain_loads_like_hysteria2_and_tcp_is_unchanged`, `src/outbound/udp.rs::tests::hysteria_udp_through_a_hop_is_a_named_chain_error`, `src/outbound/udp.rs::tests::hysteria_tcp_through_a_hop_still_refuses_the_exit_at_dial_time` |
 
 Dependency gap: the pinned Mihomo v1.19.34 source and binary have **no Hysteria
 v1 listener** (only `hysteria2` and `hysteria2-realm`; `grep -R 'type: hysteria'`
@@ -69,13 +69,38 @@ control-request/response byte layouts (`transport/hysteria/core/protocol.go`),
 a local protocol peer for TCP and the `udp=1` datagram session, TUN and mixed
 inbound execution tests, and configuration-plane load tests.
 
+## T32-A3 repair: Hysteria v1 UDP chain exemption
+
+T32's `udp_enabled()` change made `validate_udp_chains` apply to Hysteria v1
+without exempting it. A legal pinned file with `type: hysteria` +
+`dialer-proxy` was therefore rejected as a whole at load time (`only a socks5
+hop can carry a UDP association`, and `multi-hop` for longer chains), taking
+its TCP use down with it, while the same file loaded on the pinned client and
+on the pre-T32 baseline. The fix adds `Protocol::Hysteria` to the existing
+Hysteria2 exemption in `validate_udp_chains`: the file always loads, and
+`outbound::udp::HysteriaUdp::connect` refuses the chain with a named
+`DialError::Chain` before any QUIC dial (never a silent direct association).
+TCP is unchanged: `outbound::dial_chain` still refuses a non-socks5/sudoku exit
+at dial time, as it did before Hysteria v1 reported UDP support.
+
+Evidence: `tests/config.rs::t32_hysteria_udp_chain_loads_like_hysteria2_and_tcp_is_unchanged`
+(non-socks5 hop and multi-hop load, both for an unused rule and a rule that
+selects the chained proxy), `src/outbound/udp.rs::tests::hysteria_udp_through_a_hop_is_a_named_chain_error`
+(both shapes return the named chain error) and
+`src/outbound/udp.rs::tests::hysteria_tcp_through_a_hop_still_refuses_the_exit_at_dial_time`
+(TCP dial-time chain refusal). The pinned Mihomo v1.19.34 binary's own `-t`
+accepts both shapes (`evidence/t32-a3-pinned-check.log`). The option-probe's
+Hysteria2 `dialer-proxy` row was already an accepted load (not a Rust reject),
+so the matrix is unchanged (291/110/99, 0 problems).
+
 ## Non-regression
 
 | suite | command | result |
 | --- | --- | --- |
-| default native-kernel | `cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel` | 446 passed, 0 failed (ignored suites are the pinned-peer/device cases) |
-| device data plane | `cargo test ... --features ios-vpn` | 488 passed, 0 failed (includes the new TUIC UoT and Hysteria v1 UDP TUN cases) |
-| pinned peers | `KC_MIHOMO_BIN=<pinned> cargo test ... --test mihomo_peers -- --ignored --test-threads=1` | 104 passed, 0 failed |
+| default native-kernel | `cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel` | 449 passed, 0 failed (204 lib + 54 config + 191 integration; ignored suites are the pinned-peer/device cases) |
+| native-kernel workspace | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | 471 passed, 0 failed (449 kernel + 22 CLI) |
+| device data plane | `cargo test ... --features ios-vpn` | 488 passed, 0 failed in T32-A2 (T32-A3 does not touch the device path) |
+| pinned peers | `KC_MIHOMO_BIN=<pinned> cargo test ... --test mihomo_peers -- --ignored --test-threads=1` | 104 passed, 0 failed in T32-A2; T32-A3 spot check: 5/5 (`hysteria2_udp_*` 3, `tuic_udp_native` 1, `hysteria2_outbound` 1) |
 | T22 DNS | `node tool/kernel-compat/t22-differential.mjs ...` | 22/23 pass, 1 skipped (mmdb fixture), 0 differ, 0 unexpected |
 | T23 groups | `node tool/kernel-compat/t23-differential.mjs ...` | 28 pass, 0 differ, 0 unexpected |
 | T24 rules/geodata | `node tool/kernel-compat/t24-differential.mjs ...` | 36 pass, 2 skipped (mmdb), 0 differ, 0 unexpected |

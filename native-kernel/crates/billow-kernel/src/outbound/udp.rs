@@ -2535,6 +2535,89 @@ mod tests {
     }
 
     #[test]
+    fn hysteria_udp_through_a_hop_is_a_named_chain_error() {
+        // T32-A3: `validate_udp_chains` exempts Hysteria v1 exactly like
+        // Hysteria2, so a legal pinned file loads; the association refuses the
+        // hop by name before any QUIC dial and never reaches the server
+        // directly. Both the reviewer's shapes are covered: a non-socks5 hop
+        // and a multi-hop chain.
+        for (label, hops) in [
+            (
+                "non-socks5 hop",
+                "  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\n",
+            ),
+            (
+                "multi-hop",
+                "  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081, dialer-proxy: hop2}\n  - {name: hop2, type: socks5, server: 127.0.0.1, port: 1082}\n",
+            ),
+        ] {
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&format!(
+                "proxies:\n  - {{name: q, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, auth-str: p, dialer-proxy: hop}}\n{hops}"
+            ))
+            .expect("yaml");
+            let proxies = crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+                .unwrap_or_else(|e| panic!("a hysteria chain ({label}) still loads: {e}"));
+            let option = match &proxies[0].protocol {
+                crate::proxies::Protocol::Hysteria(option) => option,
+                other => panic!("expected hysteria, got {other:?}"),
+            };
+            let via: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+            let error = match futures_block_on(HysteriaUdp::connect(
+                option,
+                &via,
+                std::time::Duration::from_secs(1),
+                &crate::outbound::tls::ClientTls::new(&[]),
+            )) {
+                Ok(_) => panic!("a chain must be refused ({label})"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, crate::outbound::DialError::Chain(_)),
+                "{label}: {error:?}"
+            );
+            let text = error.to_string();
+            assert!(text.contains("hysteria udp through hop"), "{label}: {text}");
+        }
+    }
+
+    #[test]
+    fn hysteria_tcp_through_a_hop_still_refuses_the_exit_at_dial_time() {
+        // Before T32 enabled Hysteria v1 UDP the chained file loaded and TCP
+        // was refused by `dial_chain` when the rule selected the proxy; the
+        // load-time exemption must not change that, and must not let TCP dial
+        // the server directly around the hop.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - {name: q, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, auth-str: p, dialer-proxy: hop}\n  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\n",
+        )
+        .expect("yaml");
+        let proxies = crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+            .expect("a hysteria chain still loads");
+        let chain: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+        let target = Target {
+            host: "example.org".into(),
+            port: 443,
+        };
+        let error = match futures_block_on(crate::outbound::dial_chain(
+            &chain,
+            &target,
+            std::time::Duration::from_secs(1),
+            &crate::outbound::tls::ClientTls::new(&[]),
+        )) {
+            Ok(_) => panic!("the TCP exit must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, crate::outbound::DialError::Chain(_)),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("dialer-proxy exit q(hysteria) is not supported"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn tuic_uot_through_a_hop_is_a_named_chain_error() {
         // `TuicUdp` refuses a chain; the per-destination UoT stream must not
         // dial the TUIC server directly and bypass the hop.

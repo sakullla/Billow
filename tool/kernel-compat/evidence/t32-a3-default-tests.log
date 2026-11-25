@@ -1,0 +1,694 @@
+warning: value assigned to `pos` is never read
+    --> crates/billow-kernel/src/outbound/udp.rs:1036:13
+     |
+1036 |             pos += 4;
+     |             ^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `pos` is never read
+    --> crates/billow-kernel/src/outbound/udp.rs:1041:13
+     |
+1041 |             pos += 16;
+     |             ^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+
+warning: `billow-kernel` (lib) generated 2 warnings
+warning: `billow-kernel` (lib test) generated 2 warnings (2 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/billow_kernel-f02669651c5cd0be)
+
+running 205 tests
+test geodata::tests::geoip_lan_and_country_matchers ... ok
+test geodata::tests::domain_patterns_follow_mihomo_syntax ... ok
+test geodata::tests::mmdb_parses_a_minimal_country_database ... ok
+test geodata::tests::mrs_domain_sets_dump_like_mihomo ... ok
+test geodata::tests::mrs_trie_pairing_preserves_wildcards_and_unicode ... ok
+test keys::tests::derivation_matches_go_metacubex_shadowaead ... ok
+test keys::tests::evp_bytes_to_key_multi_block_matches_the_reference ... ok
+test keys::tests::md5_matches_the_reference_digest ... ok
+test geodata::tests::mrs_ip_sets_emit_aligned_prefixes ... ok
+test keys::tests::trojan_key_is_sha224_hex ... ok
+test keys::tests::uuids_parse_both_spellings ... ok
+test outbound::blake3::tests::matches_the_published_empty_and_abc_vectors ... ok
+test outbound::easytier::tests::frame_uses_little_endian_peer_ids_and_lengths ... ok
+test outbound::easytier::tests::digest_matches_the_locked_easytier_vectors ... ok
+test keys::tests::shadowsocks_2017_derivation ... ok
+test keys::tests::sudoku_seed_canonicalises_key_material_like_the_pinned_helper ... ok
+test outbound::easytier::tests::handshake_roundtrips_and_ignores_unknown_fields ... ok
+test outbound::gost_relay::tests::forward_omits_the_address_feature ... ok
+test outbound::gost_relay::tests::domain_and_auth_features_follow_the_pinned_order ... ok
+test outbound::gost_relay::tests::ipv4_request_layout_matches_the_pinned_encoder ... ok
+test outbound::gost_relay::tests::ipv6_address_uses_type_four ... ok
+test outbound::gost_relay::tests::overlong_credentials_are_refused_at_dial_encoding ... ok
+test outbound::gost_relay::tests::udp_request_sets_the_flag_and_the_udp_network ... ok
+test outbound::gost_relay::tests::status_names_match_the_pinned_table ... ok
+test outbound::h3::tests::field_section_round_trip_with_literals ... ok
+test outbound::h3::tests::settings_read_extended_connect_and_ignore_unknown_ids ... ok
+test outbound::h3::tests::settings_read_extended_connect_and_the_legacy_datagram_id ... ok
+test outbound::h3::tests::static_table_index_is_the_qpack_order ... ok
+test outbound::h3::tests::varint_round_trip ... ok
+test outbound::hysteria2::tests::tcp_request_frame_has_the_pinned_layout ... ok
+test outbound::hysteria2_realm::tests::control_urls_keep_scheme_port_and_base_path ... ok
+test outbound::hysteria2_realm::tests::http_responses_decode_content_length_and_chunked_bodies ... ok
+test outbound::h3::tests::huffman_decodes_a_known_string ... ok
+test outbound::hysteria2_realm::tests::stun_response_decodes_the_xor_mapped_address ... ok
+test outbound::blake3::tests::chunk_boundaries_follow_the_tree_mode ... ok
+test geodata::tests::mrs_rejects_damaged_files_without_panicking ... ok
+test outbound::hysteria::tests::base64_matches_the_standard_alphabet ... ok
+test outbound::hysteria2_realm::tests::symmetric_nat_candidates_extend_a_close_port_run ... ok
+test outbound::hysteria::tests::speed_validation_matches_the_pinned_regex ... ok
+test outbound::ipstack::tests::ipv4_udp_packet_matches_an_independent_vector ... ok
+test outbound::ipstack::tests::fragments_and_other_protocols_are_named ... ok
+test outbound::ipstack::tests::ipv6_round_trip_is_mandatory_checksum ... ok
+test outbound::hysteria2_realm::tests::punch_packets_round_trip_and_reject_a_wrong_key ... ok
+test outbound::ipstack::tests::ipv4_round_trip_and_checksum_rejection ... ok
+test outbound::ipstack::tests::prefix_parsing_matches_the_pinned_defaults ... ok
+test outbound::jls::tests::canary_suffix_is_detected ... ok
+test outbound::jls::tests::auth_data_zeroes_the_random_and_keeps_the_message_length ... ok
+test outbound::jls::tests::rejects_truncated_and_wrong_messages ... ok
+test outbound::jls::tests::replay_returns_recorded_bytes_and_the_override ... ok
+test outbound::jls::tests::server_hello_auth_data_zeroes_only_the_random ... ok
+test outbound::masque::tests::a_capsule_longer_than_the_cap_is_refused ... ok
+test outbound::easytier::tests::secure_datagrams_decrypt_in_the_peer_direction ... ok
+test outbound::masque::tests::authority_is_the_proxy_not_the_target ... ok
+test outbound::masque::tests::a_full_udp_datagram_fits_the_capsule_cap ... ok
+test outbound::masque::tests::connect_udp_path_follows_rfc9298 ... ok
+test outbound::masque::tests::datagram_is_a_capsule_inside_a_data_frame ... ok
+test outbound::jls::tests::seal_and_verify_round_trip ... ok
+test outbound::masque::tests::closed_flows_are_visible_for_reclamation ... ok
+test outbound::masque::tests::partial_capsules_are_buffered_until_complete ... ok
+test outbound::masque::tests::unknown_capsules_are_skipped_and_bad_context_is_refused ... ok
+test outbound::masque_ip::tests::address_assign_round_trip_and_validation ... ok
+test outbound::masque_ip::tests::capsules_are_framed_with_varint_type_and_length ... ok
+test outbound::masque_ip::tests::connect_uri_defaults_and_templates ... ok
+test outbound::masque_ip::tests::datagram_framing_carries_quarter_stream_and_context ... ok
+test outbound::masque_ip::tests::dns_query_and_answers ... ok
+test outbound::masque_ip::tests::route_advertisement_matches_the_pinned_capsule ... ok
+test outbound::masque_ip::tests::tcp_mss_keeps_the_full_segment_within_the_mtu ... ok
+test outbound::mekya::tests::base64url_matches_the_unpadded_alphabet ... ok
+test outbound::mekya::tests::bundle_layout_is_the_pinned_two_byte_length ... ok
+test outbound::mekya::tests::default_url_keeps_the_configured_port ... ok
+test outbound::mieru::tests::a_socks_reply_is_parsed_for_every_address_type ... ok
+test outbound::mieru::tests::the_nonce_is_a_big_endian_counter ... ok
+test outbound::mieru::tests::the_implicit_nonce_is_written_once_per_direction ... ok
+test outbound::mieru::tests::candidate_ports_cover_small_ranges_and_bound_large_ones ... ok
+test outbound::mkcp::tests::header_sizes_and_wireguard_layout_match_the_pinned_header ... ok
+test outbound::mieru::tests::time_salt_rounds_to_the_nearest_two_minutes ... ok
+test outbound::mkcp::tests::segment_round_trip_carries_all_fields ... ok
+test outbound::openvpn::tests::control_packets_round_trip ... ok
+test outbound::openvpn::tests::push_reply_parses_cipher_peer_id_and_ifconfig ... ok
+test outbound::ipstack::tests::truncation_and_family_mismatch_are_rejected ... ok
+test outbound::openvpn::tests::replay_window_rejects_duplicates_and_old_ids ... ok
+test outbound::jls::tests::verifies_locked_jls_client_and_server_hellos ... ok
+test outbound::quic::tests::bbr_profile_selects_the_initial_window ... ok
+test outbound::quic::tests::varint_never_panics_on_out_of_range_values ... ok
+test outbound::jls::tests::tcp_client_seals_the_serialised_client_hello ... ok
+test outbound::mkcp::tests::simple_authenticator_round_trips_and_pads_without_changing_the_length ... ok
+test outbound::quic::tests::wechat_framing_strips_the_pinned_header ... ok
+test outbound::quic::tests::hop_interval_is_clamped_and_randomised ... ok
+test outbound::quic::tests::xplus_unframes_the_pinned_go_frames ... ok
+test outbound::shadow_tls::tests::pinned_version_numbers_map_to_the_supported_modes ... ok
+test outbound::shadowquic::tests::id_allocation_skips_used_ids ... ok
+test outbound::shadowquic::tests::address_round_trip ... ok
+test outbound::shadow_tls::tests::framing_prefixes_the_hmac_and_uses_application_data_records ... ok
+test outbound::shadowquic::tests::invalid_address_types_are_rejected ... ok
+test outbound::mieru::tests::key_derivation_matches_the_pinned_protocol ... ok
+test outbound::smux::tests::a_frame_header_matches_the_pinned_layout ... ok
+test outbound::snell::tests::nonce_increments_little_endian ... ok
+test outbound::snell::tests::request_header_layouts ... ok
+test outbound::quic::tests::layered_socket_obfuscates_and_rewrites_the_hop_port ... ok
+test outbound::ssr::obfs::tests::http_head_carries_the_url_encoded_first_chunk ... ok
+test outbound::ssr::obfs::tests::http_post_adds_a_boundary_and_uses_the_param_host ... ok
+test outbound::ssr::obfs::tests::random_head_checksum_is_the_go_complement ... ok
+test outbound::shadowsocks::tests::connect_layer_seals_the_first_payload_without_an_address_frame ... ok
+test outbound::ssr::obfs::tests::random_head_length_picks_the_real_boundary ... ok
+test outbound::ssr::dial_wire_tests::origin_plain_writes_the_iv_then_the_address_and_payload ... ok
+test outbound::ssr::obfs::tests::tls_hello_has_the_pinned_record_and_handshake_headers ... ok
+test outbound::ssr::protocol::tests::crc32_and_adler32_match_the_go_reference_values ... ok
+test outbound::ssr::protocol::tests::chain_b_padding_schedule_matches_the_pinned_generator ... ok
+test outbound::ssr::protocol::tests::head_size_reads_the_socks_address_form ... ok
+test outbound::ssr::protocol::tests::xor_shift_sequence_matches_the_pinned_generator ... ok
+test outbound::ssr::protocol::tests::hmac_md5_matches_rfc_2202_case_1 ... ok
+test outbound::ssr::protocol::tests::hmac_sha1_matches_rfc_2202_case_1 ... ok
+test outbound::openvpn::tests::prf_is_deterministic_and_sensitive_to_the_label ... ok
+test outbound::ssr::tests::cfb_roundtrips_across_chunk_boundaries ... ok
+test outbound::shadowsocks::tests::datagram_codec_roundtrips_every_implemented_cipher ... ok
+test outbound::ssr::tests::dummy_leaves_bytes_untouched ... ok
+test outbound::ssr::tests::ctr_and_rc4_roundtrip ... ok
+test outbound::sudoku::codec::tests::an_invalid_path_root_is_ignored ... ok
+test outbound::sudoku::go_rand::tests::shuffle_orders_like_go ... ok
+test outbound::sudoku::kip::tests::a_bad_magic_is_rejected ... ok
+test outbound::snell::tests::snell_key_matches_the_argon2id_reference ... ok
+test outbound::ssr::tests::stream_ciphers_match_the_pinned_go_vectors ... ok
+test outbound::sudoku::kip::tests::messages_round_trip_and_wait_for_completion ... ok
+test outbound::sudoku::kip::tests::the_user_hash_prefers_the_hex_key_bytes ... ok
+test outbound::sudoku::go_rand::tests::the_first_draws_match_go ... ok
+test outbound::sudoku::mux::tests::frames_use_the_pinned_header ... ok
+test outbound::sudoku::mux::tests::the_write_queue_is_bounded_and_whole_frame ... ok
+test outbound::sudoku::mux::tests::trim_ascii_matches_the_pinned_helper ... ok
+test outbound::sudoku::codec::tests::the_legacy_header_is_a_well_formed_request ... ok
+test outbound::shadowsocks::tests::connect_layer_roundtrips_every_implemented_cipher ... ok
+test outbound::sudoku::mux::tests::frames_are_demultiplexed_and_half_closed ... ok
+test outbound::sudoku::record::tests::a_replayed_record_is_rejected ... ok
+test outbound::sudoku::record::tests::a_tampered_record_is_rejected ... ok
+test outbound::sudoku::record::tests::the_epoch_key_depends_on_the_method_and_epoch ... ok
+test outbound::sudoku::mux::tests::a_stream_receive_queue_overflow_is_rejected ... ok
+test outbound::sudoku::kip::tests::both_sides_derive_the_same_session_keys ... ok
+test outbound::tailscale::tests::control_records_use_the_pinned_framing ... ok
+test outbound::tailscale::tests::derp_server_key_body_starts_with_the_magic ... ok
+test outbound::sudoku::table::tests::there_are_288_grids ... ok
+test outbound::tailscale::tests::nacl_box_roundtrips_and_rejects_tampering ... ok
+test outbound::tailscale::tests::initiation_has_the_pinned_header ... ok
+test outbound::tcp::tests::a_reset_fails_the_connection ... ok
+test outbound::tcp::tests::a_syn_without_an_answer_times_out ... ok
+test outbound::tcp::tests::a_lost_segment_is_retransmitted_with_backoff ... ok
+test outbound::tcp::tests::half_close_and_fin_acknowledgement ... ok
+test outbound::tcp::tests::handshake_and_bidirectional_data ... ok
+test outbound::tcp::tests::data_is_clamped_by_the_peer_mss_and_window ... ok
+test outbound::tcp::tests::out_of_order_data_is_reordered_before_delivery ... ok
+test outbound::tcp::tests::segment_codec_round_trips_and_validates_the_checksum ... ok
+test outbound::tcp::tests::retransmitted_old_data_is_acknowledged_again ... ok
+test outbound::tests::base64_matches_rfc4648 ... ok
+test outbound::tests::socks_address_forms ... ok
+test outbound::tlsmirror::tests::client_and_server_randoms_are_parsed_at_the_pinned_offsets ... ok
+test outbound::tlsmirror::tests::primary_key_decodes_standard_base64 ... ok
+test outbound::trusttunnel::tests::basic_authorization_matches_rfc7617 ... ok
+test outbound::tuic::tests::address_encoding_uses_tuic_type_numbers ... ok
+test outbound::tuic::tests::bbr_profile_maps_to_the_initial_window ... ok
+test outbound::tuic::tests::cwnd_only_applies_to_bbr ... ok
+test outbound::tuic::tests::empty_domain_is_rejected ... ok
+test outbound::tuic::tests::fragments_reassemble_and_expire ... ok
+test outbound::tlsmirror::tests::xor_nonce_encryptor_and_decryptor_share_the_counter ... ok
+test outbound::tuic::tests::uot_address_round_trips ... ok
+test outbound::tuic::tests::v4_packet_round_trips_and_uses_u32_assoc_and_u16_length ... ok
+test outbound::tuic::tests::v5_packet_round_trips_with_the_pinned_layout ... ok
+test outbound::udp::tests::a_reply_is_accepted_from_any_resolved_address_only ... ok
+test outbound::udp::tests::hysteria2_authority_round_trips_ipv4_and_ipv6 ... ok
+test outbound::udp::tests::hysteria2_datagram_layout_matches_the_pinned_udpmessage ... ok
+test outbound::udp::tests::hysteria2_fragments_expire_incomplete_messages_like_the_pinned_lru ... ok
+test outbound::udp::tests::hysteria2_fragments_reassemble_by_packet_id ... ok
+test outbound::sudoku::table::pinned_vectors::the_pinned_encoder_output_decodes_with_our_table ... ok
+test outbound::udp::tests::hysteria_udp_fragments_reassemble_by_message_id ... ok
+test outbound::sudoku::table::tests::every_byte_has_a_unique_puzzle ... ok
+test outbound::udp::tests::resolve_all_applies_the_scoped_ip_version_to_a_literal ... ok
+test outbound::udp::tests::resolve_all_keeps_a_literal_address_as_a_single_entry ... ok
+test outbound::sudoku::table::pinned_vectors::the_pinned_ascii_layout_has_the_expected_shape ... ok
+test outbound::vmess::tests::auth_id_and_sealed_header_match_the_go_reference ... ok
+test outbound::vmess::tests::cmd_key_is_md5_of_uuid_and_salt ... ok
+test outbound::vmess::tests::crc32_and_fnv_match_the_reference ... ok
+test outbound::vmess::tests::kdf_matches_the_pinned_go_reference ... ok
+test outbound::vmess::tests::request_body_layout_is_fixed ... ok
+test outbound::warp::tests::a_sec1_private_key_round_trips_through_the_pkcs8_form ... ok
+test outbound::warp::tests::base64_round_trip_and_padding_rules ... ok
+test outbound::warp::tests::non_p256_and_garbage_keys_are_refused_by_name ... ok
+test outbound::warp::tests::the_client_certificate_carries_the_key_and_a_valid_self_signature ... ok
+test outbound::warp::tests::the_public_key_pin_is_the_encoded_spki ... ok
+test outbound::warp::tests::utc_time_formats_calendar_dates ... ok
+test outbound::wireguard::tests::decodes_the_pinned_base64_key_form ... ok
+test outbound::wireguard::tests::initiation_has_the_documented_shape ... ok
+test outbound::wireguard::tests::ip_length_ignores_keepalives_and_invalid_headers ... ok
+test outbound::wireguard::tests::kdf_matches_the_wireguard_test_vectors ... ok
+test outbound::wireguard::tests::replay_window_rejects_duplicates_and_old_counters ... ok
+test outbound::sudoku::table::tests::the_encoder_and_decoder_round_trip ... ok
+test outbound::zerotier::tests::identity_generation_satisfies_pow ... ignored
+test outbound::sudoku::record::tests::every_method_round_trips_both_small_and_large_payloads ... ok
+test outbound::udp::tests::hysteria2_udp_through_a_hop_is_a_named_chain_error ... ok
+test outbound::zerotier::tests::network_ids_and_vl2_frames ... ok
+test outbound::udp::tests::hysteria_tcp_through_a_hop_still_refuses_the_exit_at_dial_time ... ok
+test outbound::udp::tests::tuic_uot_through_a_hop_is_a_named_chain_error ... ok
+test outbound::udp::tests::hysteria_udp_through_a_hop_is_a_named_chain_error ... ok
+test outbound::quic::tests::gecko_fragments_long_headers_and_reassembles_them ... ok
+test outbound::zerotier::tests::packet_armor_roundtrips_and_rejects_tampering ... ok
+test outbound::zerotier::tests::identity_proof_of_work_is_enforced ... ok
+test outbound::zerotier::tests::world_parser_reads_roots_and_rejects_truncation ... ok
+test outbound::zerotier::tests::hello_has_the_pinned_payload_shape ... ok
+test outbound::zerotier::tests::identity_text_roundtrip_and_signature ... ok
+
+test result: ok. 204 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 3.88s
+
+     Running tests/config.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/config-6688ddceec94a3d2)
+
+running 54 tests
+test absent_rules_means_direct ... ok
+test defaults_to_mihomo_port_and_loopback ... ok
+test accepts_the_implemented_subset ... ok
+test deferred_families_name_their_decision ... ok
+test controller_listeners_secret_and_cors_are_parsed ... ok
+test billow_launcher_keys_are_inert_or_named ... ok
+test authentication_is_parsed_for_the_inbound ... ok
+test geodata_options_are_parsed_and_named_gaps_rejected ... ok
+test dialer_proxy_references_are_validated ... ok
+test gost_relay_options_are_strict ... ok
+test anytls_session_intervals_match_the_pinned_normalisation ... ok
+test anytls_options_are_strict ... ok
+test masque_accepts_the_connect_udp_subset ... ok
+test logic_and_sub_rule_shapes_are_parsed ... ok
+test masque_accepts_the_pinned_connect_ip_shape ... ok
+test every_unimplemented_proxy_option_is_rejected_with_its_field ... ok
+test parses_rules_individually ... ok
+test openvpn_accepts_the_pinned_shapes_and_names_its_gaps ... ok
+test parses_each_implemented_protocol_and_rule_targets_by_name ... ok
+test parses_the_pinned_rule_types ... ok
+test mieru_options_are_strict ... ok
+test proxy_list_rejects_bad_shapes_and_names ... ok
+test rejects_every_unimplemented_top_level_key ... ok
+test rejects_unimplemented_modes_and_levels ... ok
+test masque_connect_ip_shape_is_strict ... ok
+test proxy_providers_parse_filters_and_health_checks ... ok
+test rejects_unimplemented_rule_types_and_outbounds ... ok
+test rule_providers_are_parsed_with_all_vehicles_and_formats ... ok
+test shadowquic_transport_options_are_parsed_and_jls_gaps_named ... ok
+test proxy_providers_follow_the_pinned_filter_override_and_bundle_schema ... ok
+test t27_quic_transport_tuning_is_parsed ... ok
+test t27_socks5_udp_is_accepted_and_chain_is_named ... ok
+test snell_options_are_strict ... ok
+test t27_tls_identity_options_are_parsed ... ok
+test t28_tcp_basic_options_reach_the_shared_dialer_families ... ok
+test ssh_options_are_strict ... ok
+test t30_datagram_and_fingerprint_options_are_accepted ... ok
+test t31_hysteria2_udp_is_always_enabled_and_a_chain_loads ... ok
+test ssr_options_are_strict ... ok
+test t28_masque_quic_controller_and_trojan_ss_opts_are_parsed ... ok
+test t32_hysteria_udp_chain_loads_like_hysteria2_and_tcp_is_unchanged ... ok
+test tls_roots_are_loaded_and_unknown_tls_keys_fail ... ok
+test sudoku_options_are_strict ... ok
+test unknown_top_level_keys_are_ignored_like_mihomo ... ok
+test unimplemented_protocol_and_option_name_the_field ... ok
+test udp_with_a_dialer_proxy_requires_one_socks5_hop ... ok
+test vmess_tlsmirror_options_load_and_name_the_unimplemented_extras ... ok
+test trusttunnel_options_are_strict ... ok
+test wireguard_accepts_the_pinned_shapes_and_names_its_gaps ... ok
+test vmess_mkcp_and_mekya_options_load ... ok
+test vmess_options_are_strict ... ok
+test noop_option_forms_mihomo_accepts_are_loaded ... ok
+test mesh_control_planes_load_the_pinned_shapes ... ok
+test implemented_device_families_load_and_dial_names_the_t6_t7_gap ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s
+
+     Running tests/controller.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/controller-ff3878a1fbbb6201)
+
+running 15 tests
+test busy_controller_port_does_not_fail_kernel_start ... ok
+test hostless_controller_address_binds_all_interfaces ... ok
+test cors_allow_origins_is_enforced_when_configured ... ok
+test logs_level_is_validated_before_streaming ... ok
+test compatible_provider_nodes_and_healthchecks_resolve_members ... ok
+test auth_routes_and_config_shapes_match_the_pinned_api ... ok
+test provider_update_failure_keeps_the_old_snapshot ... ok
+test selection_delay_and_patch ... ok
+test tls_alpn_advertises_only_http11_and_serves_version ... ok
+test traffic_and_logs_stream_frames ... ok
+test unix_socket_serves_without_bearer ... ok
+test reload_swaps_generation_and_keeps_the_old_one_on_failure ... ok
+test connections_are_listed_with_metadata_and_can_be_closed ... ok
+test provider_update_stall_does_not_freeze_the_control_plane ... ok
+test config_reload_stall_does_not_freeze_the_control_plane ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.61s
+
+     Running tests/dns.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/dns-a142e6a2bd803a33)
+
+running 19 tests
+test fake_ip_pool_ttl_filter_and_dns_server ... ok
+test hosts_patterns_follow_the_pinned_trie_priority ... ok
+test fake_ip_destination_is_rebuilt_to_its_host ... ok
+test fallback_ip_and_domain_filters ... ok
+test hosts_resolve_ip_rules_without_dns ... ok
+test listener_follows_a_domain_valued_hosts_entry ... ok
+test parses_dns_and_hosts_like_the_pinned_defaults ... ok
+test nameserver_policy_selects_the_configured_server ... ok
+test rejects_unimplemented_dns_shapes_by_name ... ok
+test fallback_geoip_code_negation_matches_the_pinned_filter ... ok
+test engine_resolves_ip_rules_and_honours_no_resolve ... ok
+test dot_and_doh_transports_verify_the_server_certificate ... ok
+test hosts_answers_on_the_listener_in_every_enhanced_mode ... ok
+test negative_answers_cache_through_the_authority_ttl ... ok
+test plain_http_doh_transport ... ok
+test tcp_transport ... ok
+test udp_resolution_and_cache_ttl ... ok
+test failed_domain_hosts_alias_reports_servfail_without_a_cname ... ok
+test timeout_is_reported_and_the_call_returns ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.98s
+
+     Running tests/groups.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/groups-d335aa073634b5da)
+
+running 32 tests
+test empty_fallback_and_profile_are_parsed ... ok
+test every_group_type_parses_with_the_pinned_fields ... ok
+test filters_split_on_backticks_and_types_on_pipe ... ok
+test disabled_provider_registration_probes_its_own_url_too ... ok
+test include_all_expands_sorted_proxy_and_provider_names ... ok
+test include_all_proxies_empty_expansion_uses_the_configured_fallback ... ok
+test exclude_type_compares_the_pinned_adapter_name ... ok
+test fallback_moves_off_a_dead_node ... ok
+test filtered_empty_members_use_the_configured_fallback_name ... ok
+test health_probe_uses_the_dialer_proxy_chain ... ok
+test explicit_group_url_uses_the_provider_health_check_timeout ... ok
+test load_balance_consistent_hashing_pins_one_destination ... ok
+test load_balance_round_robin_cycles_the_alive_members ... ok
+test nested_auto_group_probes_at_startup_and_serves_outer_traffic ... ok
+test nested_group_resolves_to_the_inner_selection ... ok
+test provider_dialer_proxy_must_name_an_inline_proxy ... ok
+test relay_is_rejected_with_the_pinned_removal_message ... ok
+test provider_health_check_probes_at_startup_with_default_lazy ... ok
+test provider_registration_keeps_the_first_expected_status_for_a_shared_url ... ok
+test unknown_rule_outbound_mentions_groups ... ok
+test unknown_types_missing_members_and_duplicates_fail_by_name ... ok
+test provider_snapshot_update_triggers_a_health_check ... ok
+test rule_targeting_a_group_dials_the_selected_member_and_persists ... ok
+test url_test_probes_at_startup_with_default_lazy ... ok
+test url_test_picks_the_lowest_delay_and_falls_back ... ok
+test use_provider_members_are_filtered_by_the_group ... ok
+test force_set_keeps_the_url_test_tolerance_baseline ... ok
+test url_test_fast_cache_holds_the_computed_member_for_the_window ... ok
+test explicit_group_url_equal_to_the_provider_url_registers_no_probe ... ok
+test provider_registration_dedupes_urls_across_groups ... ok
+test probing_a_nested_group_touches_it_so_its_lazy_tick_reprobes ... ok
+test tolerance_keeps_or_switches_the_previous_fast_node ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.32s
+
+     Running tests/independent_peers.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/independent_peers-737e7ee193c9c940)
+
+running 7 tests
+test ssr_go_server_rejects_a_wrong_password ... ignored, needs the Go SSR server: run tool/kernel-compat/family-peers.sh
+test ssr_go_server_relays_the_client_frames ... ignored, needs the Go SSR server: run tool/kernel-compat/family-peers.sh
+test ssr_plugin_matrix_relays_with_every_protocol_and_obfs ... ignored, needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh
+test ssr_plugin_protocol_param_and_large_payloads ... ignored, needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh
+test ssr_plugin_wrong_password_never_relays ... ignored, needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh
+test ssr_udp_reaches_the_echo_for_every_protocol ... ignored, needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh
+test ssr_udp_wrong_password_never_reaches_the_echo ... ignored, needs the Go SSR plugin peer: run tool/kernel-compat/family-peers.sh
+
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mesh_peers.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/mesh_peers-62d5cdadd066e3ac)
+
+running 5 tests
+test easytier_pinned_core_cleartext_handshake ... ignored
+test easytier_pinned_core_secure_datagram ... ignored
+test tailscale_control_noise_and_http2 ... ignored
+test tailscale_derp_greeting_and_ping ... ignored
+test zerotier_hello_success_and_failure ... ignored
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mihomo_peers.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/mihomo_peers-f950364019880abb)
+
+running 104 tests
+test anytls_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_over_jls_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_over_jls_with_a_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_over_shadow_tls_v1_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_over_shadow_tls_v1_with_a_wrong_anytls_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_over_shadow_tls_v2_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_udp_reaches_two_destinations_from_one_association ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_udp_uot_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test anytls_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test chained_anytls_udp_with_a_dead_hop_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test chained_ss_udp_rejected_by_the_hop_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test chained_trojan_udp_rejected_by_the_hop_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test chained_vmess_udp_with_a_dead_hop_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test dialer_proxy_chain_connects_through_both_hops_seen_by_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test dialer_proxy_chain_with_a_closed_first_hop_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test http_outbound_with_basic_auth_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test http_outbound_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_bbr_profile_without_brutal_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_gecko_obfs_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_obfs_and_brutal_reach_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_port_pool_selects_the_listed_port_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_realm_client_certificate_authenticates_to_the_control_server ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_realm_fingerprint_pins_the_control_certificate_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_realm_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_realm_without_the_required_client_certificate_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_realm_wrong_fingerprint_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_udp_fragments_a_large_datagram_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_udp_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_udp_wrong_password_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_unreachable_target_is_refused ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test hysteria2_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test mieru_closed_peer_port_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test mieru_idle_session_survives_the_heartbeat ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test mieru_port_range_session_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test mieru_tcp_session_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test mieru_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowquic_brutal_and_bbr_profile_reach_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowquic_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowquic_udp_over_stream_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowquic_udp_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowquic_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_udp_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_udp_wrong_password_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_uot_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_uot_v1_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_uot_v2_reaches_two_destinations_from_one_association ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test shadowsocks_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test snell_v1_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test snell_v2_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test snell_wrong_psk_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test socks5_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test socks5_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_aes_128_gcm_record_layer_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_ascii_table_with_the_packed_downlink_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_custom_table_pattern_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_dialer_proxy_carries_the_exit_through_the_socks5_hop ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_directional_table_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_mismatched_table_type_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_multiplex_carries_two_streams_over_one_session ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_multiplex_handles_concurrent_streams ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_multiplex_over_a_dialer_proxy_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_multiplex_over_a_dialer_proxy_wrong_key_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_private_key_material_matches_the_public_key_peer ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_rotating_custom_tables_reach_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_tcp_session_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_unencrypted_record_layer_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_without_the_http_mask_reaches_the_receiving_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test sudoku_wrong_key_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trojan_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trojan_udp_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trojan_udp_wrong_password_never_reaches_the_echo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trojan_wrong_password_and_untrusted_certificate_never_reach_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trusttunnel_domain_target_is_resolved_by_the_mihomo_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trusttunnel_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test trusttunnel_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_udp_fragments_a_large_datagram_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_udp_native_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_udp_over_stream_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_udp_quic_mode_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_v4_token_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_v4_wrong_token_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_v5_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test tuic_v5_wrong_password_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_outbound_over_tls_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_over_v2ray_http_upgrade_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_over_websocket_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_over_websocket_with_a_host_override_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_udp_packet_addr_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_udp_xudp_reaches_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vless_wrong_uuid_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_chacha20_poly1305_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_cipher_none_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_domain_target_is_resolved_by_the_mihomo_side ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_outbound_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_over_mekya_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_over_mkcp_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_over_tlsmirror_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_over_websocket_reaches_the_receiving_side_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_plain_udp_reaches_two_destinations_from_one_association ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_udp_modes_reach_the_echo_through_mihomo ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+test vmess_wrong_uuid_never_reaches_the_sink ... ignored, needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored
+
+test result: ok. 0 passed; 0 failed; 104 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/openvpn_peer.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/openvpn_peer-702eecbdd265503c)
+
+running 4 tests
+test a_missing_client_certificate_fails_authentication ... ignored
+test an_untrusted_server_certificate_is_rejected ... ignored
+test control_channel_pushes_and_the_data_keys_decrypt_a_keepalive ... ignored
+test no_common_data_cipher_is_a_named_failure ... ignored
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocols.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/protocols-49b11be96b817a1e)
+
+running 62 tests
+test config_errors_tag_the_exact_proxy_field ... ok
+test embedded_api_loads_and_dials_the_t11_outbounds ... ok
+test basic_dialer_options_are_applied_to_the_proxy_connection ... ok
+test embedded_api_tunnels_through_a_protocol_outbound ... ok
+test gost_relay_mux_and_udp_share_the_smux_session ... ok
+test gost_relay_mux_relays_over_one_smux_stream ... ok
+test gost_relay_outbound_over_tls_relays_and_verifies_the_certificate ... ok
+test gost_relay_outbound_rejects_a_bad_response_version ... ok
+test gost_relay_pinned_dialer_accepts_the_controlled_peer ... ignored, needs the pinned gost dialer harness: run tool/kernel-compat/family-peers.sh
+test gost_relay_outbound_relays_to_the_address_feature_target ... ok
+test fingerprint_pins_the_leaf_certificate ... ok
+test gost_relay_outbound_sends_user_auth_and_forward_omits_the_address ... ok
+test gost_relay_outbound_wrong_credentials_never_reach_the_target ... ok
+test certificate_and_private_key_present_a_client_certificate ... ok
+test gost_relay_udp_relays_datagrams_to_the_bound_target ... ok
+test http_connect_outbound_with_basic_auth ... ok
+test http_connect_outbound_wrong_password_is_refused ... ok
+test protocol_mismatch_reports_a_failed_session ... ok
+test shadowsocks_aes_128_gcm_wrong_password_fails_authentication ... ok
+test shadowsocks_aes_192_gcm_roundtrip ... ok
+test shadowsocks_aes_256_gcm_roundtrip ... ok
+test shadowsocks_chacha20_ietf_poly1305_roundtrip ... ok
+test shadowsocks_udp_datagram_roundtrip_and_tamper_detection ... ok
+test name_cert_verify_checks_the_configured_name ... ok
+test shadowsocks_udp_chained_with_a_domain_server_keeps_the_replies ... ok
+test gost_relay_udp_without_the_option_is_refused_by_the_server ... ok
+test shadowsocks_udp_datagrams_are_forwarded_with_the_peers_aead ... ok
+test shadowsocks_udp_goes_through_the_dialer_proxy_hop ... ok
+test custom_ca_roots_are_installed_for_outbound_tls ... ok
+test shadowsocks_udp_server_name_uses_proxy_server_nameserver ... ok
+test shadowsocks_xchacha20_ietf_poly1305_roundtrip ... ok
+test socks5_outbound_with_username_password_reaches_the_target ... ok
+test socks5_outbound_wrong_password_fails_without_reaching_the_target ... ok
+test socks5_and_http_outbounds_over_tls_verify_the_peer_certificate ... ok
+test socks5_udp_association_reaches_the_peer_relay ... ok
+test ssh_outbound_password_auth_relays_direct_tcpip ... ok
+test ssh_outbound_basic_options_use_the_shared_dialer ... ok
+test ssh_outbound_public_key_auth_relays_direct_tcpip ... ok
+test shadowsocks_udp_chained_drops_a_reply_from_an_unresolved_address ... ok
+test ssh_outbound_pinned_host_key_must_match_the_server ... ok
+test ssh_outbound_wrong_password_never_reaches_the_target ... ok
+test sudoku_codec_matches_the_pinned_implementation ... ignored, needs the Go toolchain and the locked source tree: run tool/kernel-compat/family-peers.sh
+test shadowsocks_udp_hop_dialer_options_own_the_hop_socket ... ok
+test ssr_outbound_origin_plain_relays_with_aes_256_cfb ... ok
+test tcp_dialer_proxy_never_bypasses_an_unsupported_exit ... ok
+test tcp_dialer_proxy_reaches_the_exit_through_the_hop ... ok
+test socks5_udp_associate_forwards_datagrams_and_honours_reject ... ok
+test trojan_outbound_over_tls_sends_hash_command_address_and_payload ... ok
+test ssr_outbound_rc4_md5_and_dummy_ciphers_relay ... ok
+test trojan_over_websocket_tunnels_with_a_host_override ... ok
+test trojan_udp_goes_through_the_dialer_proxy_hop ... ok
+test trojan_wrong_password_is_rejected ... ok
+test trojan_without_skip_cert_verify_fails_on_an_untrusted_certificate ... ok
+test vless_over_tls_and_websocket_tunnels_the_header_frame ... ok
+test trojan_udp_reconnects_after_the_server_closes_the_stream ... ok
+test vless_over_tls_sends_uuid_target_and_payload ... ok
+test vless_over_websocket_honours_the_host_header_override ... ok
+test vless_over_v2ray_http_upgrade_tunnels_raw_bytes ... ok
+test vless_wrong_uuid_is_rejected_by_the_peer ... ok
+test ssr_outbound_wrong_password_never_reaches_the_target ... ok
+test embedded_api_selects_the_rule_proxy ... ok
+test inbound_authentication_guards_socks5_and_http_connect ... ok
+
+test result: ok. 60 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 11.10s
+
+     Running tests/quic_peers.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/quic_peers-3e7b43d606e6889b)
+
+running 37 tests
+test hysteria_v1_requires_valid_rates ... ok
+test hysteria2_transport_options_are_parsed ... ok
+test hysteria_v1_transport_options_load ... ok
+test hysteria2_realm_rejects_port_hopping_and_keeps_its_tls_identity ... ok
+test masque_connect_ip_records_the_assignment_and_bounds_the_mtu ... ok
+test masque_connect_ip_carries_a_tcp_stream ... ok
+test hysteria_v1_fast_open_defers_the_response ... ok
+test hysteria_v1_base64_auth_roundtrip ... ok
+test hysteria_v1_udp_session_roundtrips_through_the_peer ... ok
+test hysteria_v1_tcp_roundtrip_and_target ... ok
+test hysteria_v1_wrong_auth_fails_without_forwarding ... ok
+test masque_connect_ip_refuses_address_request ... ok
+test masque_connect_ip_resolves_through_the_tunnel_dns ... ok
+test masque_connect_ip_tcp_half_close_delivers_eof ... ok
+test masque_connect_ip_tcp_refusal_is_a_502 ... ok
+test masque_connect_ip_tcp_rejects_a_wrong_endpoint_pin ... ok
+test masque_connect_ip_tunnels_udp_over_ipv4_and_ipv6 ... ok
+test masque_connect_ip_without_http_datagrams_is_refused_by_name ... ok
+test masque_connect_udp_forwards_datagrams_per_destination ... ok
+test masque_reopens_a_request_stream_the_peer_ended ... ok
+test masque_connect_ip_refusal_fails_without_a_reply ... ok
+test masque_tcp_dial_is_refused_by_name ... ok
+test tuic_udp_options_load_and_reduce_rtt_parses ... ok
+test tuic_v4_fast_open_replays_a_rejected_connect_response ... ok
+test masque_connect_ip_requires_the_pinned_endpoint_key ... ok
+test tuic_v4_token_loads_and_selects_v4 ... ok
+test tuic_v4_fast_open_returns_early_and_success_reaches_the_peer ... ok
+test tuic_v5_domain_target_roundtrip ... ok
+test tuic_v5_ip_target_roundtrip ... ok
+test masque_connect_ip_tcp_timeout_is_reported ... ok
+test tuic_v5_wrong_password_fails_without_forwarding ... ok
+test tuic_v5_request_timeout_bounds_stream_open ... ok
+test masque_connect_udp_refusal_fails_without_a_reply ... ok
+test masque_connect_udp_verifies_the_server_certificate_by_default ... ok
+test masque_requires_extended_connect_advertisement ... ok
+test masque_requires_the_capsule_protocol_in_the_response ... ok
+test masque_reclaims_peer_closed_flows_for_new_destinations ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.47s
+
+     Running tests/resources.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/resources-0bdcb9900ee5602c)
+
+running 16 tests
+test billow_effective_configuration_registers_cross_task_keys_explicitly ... ok
+test http_provider_update_replaces_and_failure_keeps_the_old_generation ... ok
+test classical_provider_names_unsupported_rule_types_instead_of_dropping_them ... ok
+test concurrent_provider_updates_stamp_unique_generations ... ok
+test billow_effective_configuration_rule_subset_keeps_override_order ... ok
+test inline_provider_update_is_a_noop_like_mihomo ... ok
+test real_mmdb_reads_the_bundled_geodata ... ignored, needs decompressed Country.mmdb and ASN.mmdb; run with BILLOW_MMDB_DIR
+test geosite_and_geoip_dat_rules_match_the_pinned_forms ... ok
+test provider_reference_cycles_are_rejected_before_listening ... ok
+test geosite_requires_a_database_directory_and_missing_keys_fail ... ok
+test proxy_provider_file_applies_filter_exclude_and_dialer ... ok
+test proxy_provider_override_and_filter_lists_follow_pinned_semantics ... ok
+test rule_providers_cover_every_vehicle_and_format ... ok
+test sub_rule_lists_choose_the_outbound ... ok
+test provider_paths_are_confined_to_the_configuration_root ... ok
+test every_rule_type_matches_with_the_pinned_metadata ... ok
+
+test result: ok. 15 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+     Running tests/sessions.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/sessions-ca2013663f44d780)
+
+running 11 tests
+test handshake_failures_are_reported_and_sessions_reclaimed ... ok
+test direct_dial_failure_reports_502_and_recovers ... ok
+test http_connect_half_close_then_response ... ok
+test config_without_rules_goes_direct ... ok
+test reject_rule_blocks_both_protocols_without_dialling ... ok
+test handshake_deadline_drops_silent_clients ... ok
+test session_cap_bounds_concurrency ... ok
+test half_close_delivers_request_then_response ... ok
+test socks5_relays_and_ip_cidr_and_geosite_rules_apply ... ok
+test stalled_peer_after_half_close_is_dropped_after_linger ... ok
+test stop_releases_in_flight_sessions_and_restart_binds_again ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+     Running tests/shadowquic_stream.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/shadowquic_stream-65e16d649ce3dd16)
+
+running 1 test
+test udp_over_stream_reopens_a_stopped_uni_stream_and_control ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+
+     Running tests/wireguard_peer.rs (/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T//billow-t32-a3-target/debug/deps/wireguard_peer-103cd593acaffa87)
+
+running 5 tests
+test an_unregistered_client_key_is_rejected ... ignored
+test handshake_and_icmp_round_trip_through_the_locked_peer ... ignored
+test packets_over_the_mtu_and_short_buffers_are_named_errors ... ignored
+test preshared_key_is_mixed_into_the_handshake ... ignored
+test wrong_peer_public_key_fails_the_handshake ... ignored
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests billow_kernel
+
+running 1 test
+test crates/billow-kernel/src/lib.rs - (line 25) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+

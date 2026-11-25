@@ -1,0 +1,10 @@
+# T32-A3: pinned Mihomo `-t` accepts the two Hysteria v1 + dialer-proxy shapes
+# binary: tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 (v1.19.34)
+# configs: $TMPDIR/t32-a3-pinned/{non-socks5,multi-hop}.yaml (written by T32-A3)
+# command: <mihomo> -t -d <dir> -f <config>
+
+$ <mihomo> -t -d <dir> -f <dir>/non-socks5.yaml
+configuration file <dir>/non-socks5.yaml test is successful
+
+$ <mihomo> -t -d <dir> -f <dir>/multi-hop.yaml
+configuration file <dir>/multi-hop.yaml test is successful

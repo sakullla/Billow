@@ -2122,6 +2122,46 @@ fn t31_hysteria2_udp_is_always_enabled_and_a_chain_loads() {
 }
 
 #[test]
+fn t32_hysteria_udp_chain_loads_like_hysteria2_and_tcp_is_unchanged() {
+    // T32-A3: `Proxy::udp_enabled()` reports true for Hysteria v1, so the UDP
+    // chain rule applies. Like Hysteria2, its association is a QUIC socket
+    // that cannot ride a hop, and the pinned client accepts the file: a
+    // load-time rejection would take down every unrelated proxy (and TCP)
+    // even when the chained proxy is never used. The association refuses a
+    // hop by name instead (`src/outbound/udp.rs` tests).
+    let cases: &[(&str, &str)] = &[
+        (
+            "non-socks5 hop",
+            "  - {name: hop, type: vless, server: 127.0.0.1, port: 2, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, tls: true}\n",
+        ),
+        (
+            "multi-hop",
+            "  - {name: hop, type: socks5, server: 127.0.0.1, port: 2, dialer-proxy: hop2}\n  - {name: hop2, type: socks5, server: 127.0.0.1, port: 3}\n",
+        ),
+    ];
+    for (label, hops) in cases {
+        // Both the unused rule (nothing selects the chained proxy) and a rule
+        // that selects it for TCP must load: the TCP dial decision belongs to
+        // `outbound::dial_chain`, which refuses this exit by name at dial time
+        // exactly as it did before Hysteria reported UDP support.
+        for rule in ["MATCH,DIRECT", "MATCH,h1"] {
+            let yaml = format!(
+                "proxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, auth-str: p, dialer-proxy: hop}}\n{hops}rules: ['{rule}']\n"
+            );
+            let loaded = load_config(&yaml, "t").unwrap_or_else(|e| {
+                panic!("hysteria chain ({label}, rule {rule}) must load: {e}\n{yaml}")
+            });
+            assert!(loaded.config.proxies[0].udp_enabled(), "{label}");
+            assert_eq!(
+                loaded.config.proxies[0].dialer_proxy(),
+                Some("hop"),
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
 fn t28_tcp_basic_options_reach_the_shared_dialer_families() {
     // mieru and sudoku dial their server with the shared stream dialer, so
     // tfo/mptcp/interface-name/routing-mark/ip-version are applied to that

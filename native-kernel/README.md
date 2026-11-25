@@ -21,7 +21,9 @@ remaining TUIC/ShadowQUIC/Hysteria-v1 options: TUIC v4 (`token`/BLAKE3), both
 UDP relay carriers, `udp-over-stream`, datagram sizing, `fast-open` and
 `bbr-profile`; ShadowQUIC's private Brutal negotiation plus its
 `congestion-controller`/`cwnd`/`bbr-profile`; and Hysteria v1 port hopping, the
-XPlus obfuscator, the `wechat` transport, `fast-open` and the `udp=1` session.
+XPlus obfuscator, the `wechat` transport, `fast-open` and the `udp=1` session
+(its `dialer-proxy` chain loads like Hysteria2's and is refused by name only
+when the association is dialled).
 The residuals are `shadowquic zero-rtt`/QUIC v2 and Hysteria v1 `faketcp` at
 dial time (see `tool/kernel-compat/evidence/t32-option-closure.md`).
 T13 added `mieru`
@@ -650,7 +652,7 @@ identities of the servers are logged as the session exit.
 | `ssh` | password and inline-PEM public-key auth, `private-key-passphrase`, `host-key` pinning, `host-key-algorithms`, one `direct-tcpip` channel per dial; the server socket is dialled by the shared dialer (BasicOption applies) | no | controlled `russh` server (password/key/host-key/basic-option cases); no Mihomo listener exists |
 | `ssr` | stream ciphers (`rc4-md5`, `aes-128/192/256-cfb`, `aes-128/192/256-ctr`, `chacha20`, `chacha20-ietf`, `xchacha20`, `none`), every protocol plugin (`origin`, `auth_sha1_v4`, `auth_aes128_md5`, `auth_aes128_sha1`, `auth_chain_a`, `auth_chain_b`), every obfs plugin (`plain`, `http_simple`, `http_post`, `random_head`, `tls1.2_ticket_auth`, `tls1.2_ticket_fastauth`) | `udp: true`: the pinned `cipher.PacketConn` + `protocol.PacketConn` association (no obfs, as in the pinned outbound). Pinned limit: `auth_aes128_*` datagrams are sealed with the derived user key but opened with the cipher key, so `protocol-param` breaks the UDP path; the UDP cases use no `protocol-param` | pinned Go cipher vectors; the Go plugin peer, which the *pinned* client packages also accept for all 36 protocol/obfs combinations; wrong-password and UDP cases; no Mihomo listener exists |
 | `tuic` | QUIC (`quinn` 0.11, TLS 1.3, ALPN `h3`), v5 `uuid`/`password` authentication via the TLS exporter, one TCP stream per dial, `ip`/`sni`/`skip-cert-verify`/`disable-sni`/`heartbeat-interval`/`request-timeout` (bounds the auth/Connect stream operations) | no | `listeners: type: tuic` (users map), wrong password; controlled `quinn` peer for the default suite |
-| `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial | no | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing (no Mihomo listener exists) |
+| `hysteria` | QUIC (ALPN `hysteria`), binary control hello (`auth`/`auth-str`, `up`/`down`), one TCP stream per dial, `ports`/`hop-interval` (destination-port rewrite), `obfs` (XPlus), `protocol: wechat`/`wechat-video`, `fast-open`, `client-fingerprint` (rustls approximation); `protocol: faketcp` loads but is refused by name at dial time | `udp: true`: always enabled (the pinned outbound sets `UDP: true`, so a config's `udp` flag is a tolerated no-op); the pinned `udp=1` session is relayed on the mixed and TUN paths, and a `dialer-proxy` chain loads but the association refuses it by name | controlled `quinn` server implementing the pinned `transport/hysteria/core` framing for TCP and the `udp=1` session, pinned Go XPlus vectors, TUN/mixed execution tests (no Mihomo listener exists) |
 | `hysteria2` | QUIC (ALPN `h3`), HTTP/3 `POST /auth` (status 233), `0x401` TCP request frame, `down` (sent as `Hysteria-CC-RX`), `handshake-timeout`, `ports`/`hop-interval` (wrapped `AsyncUdpSocket` port rewrite), `obfs: salamander`/`gecko` (Gecko's 2..8-chunk long-header fragmentation and reassembly), `realm-opts` (control HTTP `/connect`, STUN discovery, HYRLMv1 punching, then QUIC over the punched socket), `up` (Brutal window), `udp` (QUIC datagram session: session/packet/fragment header, `host:port` destination per message, `udp-mtu` fragmentation with packet-id reassembly, a 10 s age on incomplete reassembly, mixed and TUN relay), `udp-mtu`, `bbr-profile` (BBR initial-window mapping, profile over `cwnd`) | `udp: true`: always enabled (the pinned outbound sets `UDP: true`, so a config's `udp` flag is a tolerated no-op); a `dialer-proxy` chain loads but the association refuses it by name | `listeners: type: hysteria2` (users map, salamander/gecko obfs, single-port hop pool), `type: hysteria2-realm` control server + a `realm-opts` listener, wrong password (TCP and UDP), unreachable target, UDP echo (two destinations, 3000-byte fragmented datagram) |
 | `mieru` | TCP single session: PBKDF2-SHA256 time-salt key, XChaCha20-Poly1305 implicit nonce with the user hint, 32-byte metadata, session/data segments, a five-second `ackClientToServer` heartbeat, `port`/`port-range`, `handshake-mode` | no | `listeners: type: mieru` (transport TCP, users map), wrong password, closed peer port, port range, idle session across the heartbeat |
 | `sudoku` | table-driven obfuscation: key-derived 4x4 Sudoku table, KIP X25519 + HKDF handshake, record layer (chacha20-poly1305 / aes-128-gcm / none with epoch keys and sequence validation), legacy HTTP mask, pure and packed downlink, `table-type` (entropy/ascii/directional), `custom-table(s)` rotation, `padding-min/max`, `path-root`, `multiplex: on` session mux, `dialer-proxy` through a SOCKS5 hop (**GPL-3.0-derived translation**) | no: `udp: true` (UoT) rejected at load | `listeners: type: sudoku` (default, no mask, ascii + packed downlink, directional, custom table, table rotation, aes-128-gcm, none, private/public key material, two-stream and concurrent session mux, a `dialer-proxy` chain through a recording SOCKS5 hop, `multiplex: on` over that chain, wrong key, mismatched table type); pinned Go codec differential in `tool/kernel-compat/peers/sudoku-vectors` |
@@ -702,6 +704,10 @@ datagrams (TCP and UDP then take the same path, matching Mihomo's
 `proxydialer.ListenPacket`). Anything else - a hop without a UDP association,
 or a longer chain that would need nested associations - fails at load time with
 the hop named, instead of a UDP association dialling the server directly.
+Hysteria v1 and Hysteria2 are the one exception: their association is a QUIC
+socket that cannot ride a hop, so the pinned client's configuration loads
+unchanged and only the association refuses the chain by name at dial time
+(`DialError::Chain`); the file is never rejected and TCP is not affected.
 
 ### UDP
 
@@ -718,11 +724,13 @@ is evaluated by the same rule set as TCP before it is forwarded. Per family:
 | `vless` with `udp: true` | XUDP mux frames (default) or packet-addr records over the TLS/WS stream |
 | `anytls` with `udp: true` | UoT v2 over a dedicated AnyTLS stream per destination; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
 | `vmess` with `udp: true` | plain `command 2` (one association per destination), packet-addr or XUDP, one record per datagram; the server connection follows the single-SOCKS5 `dialer-proxy` hop like TCP |
+| `hysteria` / `hysteria2` | QUIC datagram session (pinned `udp=1` session id / HTTP/3 session and fragment headers), always enabled like the pinned outbound (a config's `udp` flag is a tolerated no-op); a `dialer-proxy` chain loads but the association refuses it by name |
 | `ss` with `udp-over-tcp: true` | sing UoT v2 (or legacy v1) inside the Shadowsocks AEAD stream, one stream per destination |
 | `http` | **no association**: `udp: true` is not an http option |
 
-`vless`, `anytls` and `vmess` UDP are implemented as above; the Hysteria2 UDP
-relay remains a registered gap.
+`vless`, `anytls`, `vmess`, `hysteria` and `hysteria2` UDP are implemented as
+above (the Hysteria families' QUIC associations are relayed on both the mixed
+and TUN paths, and refuse a `dialer-proxy` chain by name).
 `gost-relay` and the mesh families are still missing a TUN transport even
 though `udp_enabled()` says yes; that path-specific gap is registered for T28.
 Fragmented datagrams (`FRAG != 0`) are dropped. Destination names follow the
@@ -988,8 +996,9 @@ with `udp-mtu` bounding both the initial path MTU and per-message
 fragmentation, and a 10 s age on incomplete fragment reassembly like the
 pinned defragger), and `bbr-profile` (mapped to the BBR initial window, a recorded
 approximation that takes precedence over `cwnd`); `ech-opts` stays named, and a
-hysteria2 `dialer-proxy` chain loads but is refused by name when its UDP
-association is dialled (the configuration itself is never rejected). BBR with `cwnd` and the receive windows are applied. `mieru` rejects `transport: UDP`,
+a Hysteria v1/Hysteria2 `dialer-proxy` chain loads but is refused by name when
+its UDP association is dialled (the configuration, including its TCP use, is
+never rejected). BBR with `cwnd` and the receive windows are applied. `mieru` rejects `transport: UDP`,
 `udp: true`, the multiplexing levels (one session per underlay) and
 `traffic-pattern` (padding/nonce/low-entropy shaping). `sudoku` rejects
 `udp: true` (the UDP-over-TCP/UoT association) and the HTTP tunnel modes
