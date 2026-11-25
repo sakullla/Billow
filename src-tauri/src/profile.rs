@@ -2850,7 +2850,11 @@ impl ProfileBook {
     }
 
     fn should_auto_connect(&self) -> bool {
-        !self.shutting_down && self.settings.auto_connect && !self.connected && self.active_id.is_some()
+        !self.shutting_down
+            && !crate::shutdown::suppress_background_work()
+            && self.settings.auto_connect
+            && !self.connected
+            && self.active_id.is_some()
     }
 
     /// Runs at most once on app launch when `settings.auto_connect` is enabled.
@@ -2907,7 +2911,9 @@ impl ProfileBook {
         tun: &mut dyn TunGrant,
         vpn: &mut dyn VpnGrant,
     ) -> Option<ProfileSnapshot> {
-        if self.shutting_down { return None; }
+        if self.shutting_down || crate::shutdown::suppress_background_work() {
+            return None;
+        }
         let exit_status = kernel.take_exit_detail()?;
         self.append_logs(kernel.pull_logs());
         if !self.connected && !self.takeover.system_proxy && !self.takeover.tun && !self.takeover.vpn {

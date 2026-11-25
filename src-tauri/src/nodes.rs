@@ -730,14 +730,17 @@ pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<()
 }
 
 /// Best-effort request for the running kernel to close its TUN adapter and routes
-/// cleanly before the process is stopped.
+/// cleanly before the process is stopped. Waits briefly for `tun.enable: false`
+/// to take effect so Wintun ring buffers finish detaching before `TerminateProcess`.
 pub fn patch_tun_disable(endpoint: &ControllerEndpoint) {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return;
     }
     let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
     let body = r#"{"tun":{"enable":false}}"#;
-    let agent = agent(Duration::from_millis(500));
+    // Closing Wintun NDIS + restoring Windows routes/DNS under shutdown I/O load
+    // commonly takes 400–1200 ms; 500 ms could time out mid-WintunCloseAdapter.
+    let agent = agent(Duration::from_millis(1500));
     let request = agent
         .patch(&url)
         .set("Content-Type", "application/json")
@@ -747,7 +750,16 @@ pub fn patch_tun_disable(endpoint: &ControllerEndpoint) {
     } else {
         request.set("Authorization", &format!("Bearer {}", endpoint.secret))
     };
-    let _ = request.send_string(body);
+    if request.send_string(body).is_ok() {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            if listeners_ready(endpoint, None, false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
 }
 
 pub fn fetch_delays(
@@ -1553,6 +1565,27 @@ proxy-groups:
         let seen = handle.join().unwrap();
         assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
         assert!(seen[0].contains(r#"{"mode":"global"}"#));
+    }
+
+    #[test]
+    fn patch_tun_disable_polls_until_controller_reports_tun_disabled() {
+        let (port, handle) = serve(vec![
+            http_response("204 No Content", ""),
+            http_response("200 OK", r#"{"tun":{"enable":true}}"#),
+            http_response("200 OK", r#"{"tun":{"enable":false}}"#),
+        ]);
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: CONTROLLER_SECRET.to_string(),
+        };
+        patch_tun_disable(&endpoint);
+        let seen = handle.join().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
+        assert!(seen[0].contains(r#"{"tun":{"enable":false}}"#));
+        assert!(seen[1].starts_with("GET /configs HTTP/1.1"));
+        assert!(seen[2].starts_with("GET /configs HTTP/1.1"));
     }
 
     #[test]

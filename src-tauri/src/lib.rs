@@ -15,6 +15,7 @@ mod override_engine;
 mod packed;
 mod profile;
 mod shell;
+mod shutdown;
 mod takeover;
 mod tray;
 mod traffic_history;
@@ -372,6 +373,12 @@ fn spawn_traffic_recorder(app: &AppHandle) {
                 }
             }
             std::thread::sleep(next_sleep);
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
             if !lock_traffic(&store.history).enabled() {
                 continue;
             }
@@ -1912,12 +1919,21 @@ fn spawn_auto_update(app: &AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
             let now = diagnostics::now_ms();
             let due = with_profile(&handle, |session| session.book.due_profiles(now));
             if due.is_empty() {
                 continue;
             }
             let snapshot = refresh_ids(&handle, &due);
+            if shutdown::suppress_background_work() {
+                continue;
+            }
             // A background subscription update can change node names and the
             // active profile while no window exists (R44), so the tray is told.
             refresh_tray(&handle, &snapshot);
@@ -1943,12 +1959,20 @@ fn spawn_kernel_guardian(app: &AppHandle) {
             book.auto_connect_on_launch(runtime, proxy, tun, vpn)
         });
         if let Some(snapshot) = auto {
-            refresh_tray(&handle, &snapshot);
-            let _ = handle.emit("profile-changed", snapshot);
+            if !shutdown::suppress_background_work() {
+                refresh_tray(&handle, &snapshot);
+                let _ = handle.emit("profile-changed", snapshot);
+            }
         }
         let mut next_sleep = std::time::Duration::from_secs(3);
         loop {
             std::thread::sleep(next_sleep);
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
             let (exited, connected, guard_pending) = with_profile(&handle, |session| {
                 let ProfileSession { book, runtime, .. } = session;
                 let connected = book.is_connected();
@@ -1965,7 +1989,7 @@ fn spawn_kernel_guardian(app: &AppHandle) {
                 (false, connected, guard_pending)
             });
             next_sleep = kernel_guardian_interval(connected, guard_pending);
-            if !exited {
+            if !exited || shutdown::suppress_background_work() {
                 continue;
             }
             let recovered = with_session_raw(&handle, |session| {
@@ -1979,8 +2003,10 @@ fn spawn_kernel_guardian(app: &AppHandle) {
                 book.recover_crashed_kernel(runtime, proxy, tun, vpn)
             });
             if let Some(snapshot) = recovered {
-                refresh_tray(&handle, &snapshot);
-                let _ = handle.emit("profile-changed", snapshot);
+                if !shutdown::suppress_background_work() {
+                    refresh_tray(&handle, &snapshot);
+                    let _ = handle.emit("profile-changed", snapshot);
+                }
             }
         }
     });
@@ -2439,6 +2465,13 @@ fn release_proxy_on_exit(app: &AppHandle) {
     book.release_lingering_proxy(proxy);
 }
 
+pub(crate) fn cleanup_for_exit(app: &AppHandle) {
+    shutdown::run_exit_cleanup_once(|| {
+        release_proxy_on_exit(app);
+        flush_traffic_history(app);
+    });
+}
+
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     if label != "main" {
         return;
@@ -2781,6 +2814,8 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeScreenIntera
 pub fn run() {
     #[cfg(target_os = "windows")]
     if elevation::run_helper_if_requested() { return; }
+    #[cfg(target_os = "windows")]
+    shutdown::configure_main_process();
     let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     // The single-instance plugin must come before deep links (R44): a second
     // launch hands its arguments over and exits, and the deep-link feature lets
@@ -2917,6 +2952,8 @@ pub fn run() {
             prepare_kernel(app);
             prepare_profiles(app);
             prepare_traffic_history(app);
+            #[cfg(target_os = "windows")]
+            shutdown::spawn_windows_shutdown_listener(app.handle().clone());
             spawn_auto_update(app.handle());
             #[cfg(desktop)]
             {
@@ -2971,8 +3008,9 @@ pub fn run() {
             // Dock "Quit", Cmd+Q and system logout skip the window close path;
             // never leave the OS proxy pointing at a kernel that is gone.
             tauri::RunEvent::Exit => {
-                release_proxy_on_exit(app);
-                flush_traffic_history(app);
+                cleanup_for_exit(app);
+                #[cfg(target_os = "windows")]
+                shutdown::terminate_current_process_if_shutting_down();
             }
             _ => {}
         });

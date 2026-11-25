@@ -987,6 +987,11 @@ fn windows_tun_granted(probe: WindowsTunProbe) -> bool {
 #[cfg(target_os = "windows")]
 fn wintun_create_or_open() -> bool {
     use core::ffi::c_void;
+    use std::sync::OnceLock;
+
+    if crate::shutdown::suppress_background_work() {
+        return false;
+    }
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -999,41 +1004,61 @@ fn wintun_create_or_open() -> bool {
     type Open = unsafe extern "system" fn(*const u16) -> *mut c_void;
     type Close = unsafe extern "system" fn(*mut c_void);
 
+    struct WintunApi {
+        create: Create,
+        open: Open,
+        close: Close,
+    }
+
     fn utf16z(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    unsafe {
+    // Keep wintun.dll pinned once resolved so background driver/ETW callbacks
+    // never race an immediate FreeLibrary unload.
+    static WINTUN: OnceLock<Option<WintunApi>> = OnceLock::new();
+    let Some(api) = WINTUN.get_or_init(|| unsafe {
         // Never search the working directory for a privileged DLL.
-        let Ok(exe) = std::env::current_exe() else { return false; };
-        let Some(directory) = exe.parent() else { return false; };
+        let exe = std::env::current_exe().ok()?;
+        let directory = exe.parent()?;
         use std::os::windows::ffi::OsStrExt;
-        let dll: Vec<u16> = directory.join("wintun.dll").as_os_str().encode_wide().chain(Some(0)).collect();
+        let dll: Vec<u16> = directory
+            .join("wintun.dll")
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let module = LoadLibraryW(dll.as_ptr());
         if module.is_null() {
-            return false;
+            return None;
         }
         let create = GetProcAddress(module, b"WintunCreateAdapter\0".as_ptr());
         let open = GetProcAddress(module, b"WintunOpenAdapter\0".as_ptr());
         let close = GetProcAddress(module, b"WintunCloseAdapter\0".as_ptr());
         if create.is_null() || open.is_null() || close.is_null() {
             FreeLibrary(module);
-            return false;
+            return None;
         }
-        let create = std::mem::transmute::<*mut c_void, Create>(create);
-        let open = std::mem::transmute::<*mut c_void, Open>(open);
-        let close = std::mem::transmute::<*mut c_void, Close>(close);
+        Some(WintunApi {
+            create: std::mem::transmute::<*mut c_void, Create>(create),
+            open: std::mem::transmute::<*mut c_void, Open>(open),
+            close: std::mem::transmute::<*mut c_void, Close>(close),
+        })
+    }) else {
+        return false;
+    };
+
+    unsafe {
         let name = utf16z("Billow");
-        let mut adapter = open(name.as_ptr());
+        let mut adapter = (api.open)(name.as_ptr());
         if adapter.is_null() {
             let tunnel = utf16z("Billow");
-            adapter = create(name.as_ptr(), tunnel.as_ptr(), std::ptr::null());
+            adapter = (api.create)(name.as_ptr(), tunnel.as_ptr(), std::ptr::null());
         }
         let opened = !adapter.is_null();
         if opened {
-            close(adapter);
+            (api.close)(adapter);
         }
-        FreeLibrary(module);
         opened
     }
 }
