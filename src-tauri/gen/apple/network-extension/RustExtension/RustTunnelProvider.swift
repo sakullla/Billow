@@ -102,23 +102,10 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
             }
             switch command {
             case .status:
-                let status = self.engine?.status
-                var body: [String: Any] = [
-                    ProviderMessageKey.ok: true,
-                    ProviderMessageKey.running: status?.running ?? false,
-                    ProviderMessageKey.embedded: status?.embeddedVersion ?? NSNull(),
-                    ProviderMessageKey.version: status?.version ?? NSNull(),
-                    ProviderMessageKey.engineId: BillowEngineIdentity.bundleId,
-                ]
-                body[ProviderMessageKey.error] = status?.lastError ?? NSNull()
-                body[ProviderMessageKey.errorCode] = status?.errorCode ?? NSNull()
-                if let stats = BillowRustEngine.statsJSON(),
-                   let data = stats.data(using: .utf8),
-                   let object = try? JSONSerialization.jsonObject(with: data) {
-                    // Counters + peak RSS of this extension process (R3/R4).
-                    body[ProviderMessageKey.stats] = object
-                }
-                completionHandler?(try? JSONSerialization.data(withJSONObject: body))
+                // The host decodes the reply as `ProviderStatus`, the same
+                // shape as status/rust.json; `stats` carries the live counters
+                // and peak RSS (R3/R4).
+                completionHandler?(ProviderSupport.encodeStatus(currentStatus()))
             case .reload:
                 guard let engine = self.engine else {
                     completionHandler?(self.reply(error: BillowVPNError.make(.engineStopped,
@@ -211,7 +198,25 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
     /// taken before teardown so a failure still names the engine/version.
     private func publishStatus(snapshot: ProviderStatus? = nil, lastError: NSError? = nil,
                                running: Bool? = nil) {
-        var status = snapshot ?? engine?.status ?? ProviderStatus(
+        var status = snapshot ?? currentStatus()
+        if let running {
+            status.running = running
+            status.stats?.running = running
+        }
+        if let lastError {
+            status.lastError = lastError.localizedDescription
+            status.errorCode = lastError.code
+            status.running = false
+            status.stats?.running = false
+        }
+        ProviderSupport.writeStatus(status, groupId: groupId)
+    }
+
+    /// The same `ProviderStatus` for the reply and the status file. Before a
+    /// successful start the engine has no stats; a running engine adds the
+    /// live counters (`ProviderStats`).
+    private func currentStatus() -> ProviderStatus {
+        engine?.status ?? ProviderStatus(
             extensionId: BillowEngineIdentity.bundleId,
             engine: BillowEngineIdentity.engine,
             embeddedVersion: BillowRustEngine.rustEngineVersion(),
@@ -223,14 +228,5 @@ final class RustTunnelProvider: NEPacketTunnelProvider {
             errorCode: nil,
             startedAt: nil
         )
-        if let running {
-            status.running = running
-        }
-        if let lastError {
-            status.lastError = lastError.localizedDescription
-            status.errorCode = lastError.code
-            status.running = false
-        }
-        ProviderSupport.writeStatus(status, groupId: groupId)
     }
 }

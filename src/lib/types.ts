@@ -468,6 +468,38 @@ export interface IosEngineState {
   lastError: string | null
 }
 
+/** Live counters + peak RSS from the Rust extension (`billow_ios_vpn_stats`). */
+export interface IosVpnStats {
+  running: boolean | null
+  version: string | null
+  generation: number | null
+  reloads: number | null
+  peakRssBytes: number | null
+  inPackets: number | null
+  inBytes: number | null
+  outPackets: number | null
+  outBytes: number | null
+  tcpOpened: number | null
+  tcpClosed: number | null
+  tcpRejected: number | null
+  tcpFlows: number | null
+  tcpFlowHigh: number | null
+  udpDatagrams: number | null
+  udpReplies: number | null
+  udpFlows: number | null
+  udpFlowHigh: number | null
+  dnsQueries: number | null
+  dnsFailures: number | null
+  invalidPackets: number | null
+  fragments: number | null
+  unsupportedProtocols: number | null
+  icmpDropped: number | null
+  droppedInbound: number | null
+  droppedEgress: number | null
+  queueHigh: number | null
+  queuedPackets: number | null
+}
+
 /** `ProviderStatus` from a running iOS packet-tunnel extension. */
 export interface IosVpnStatus {
   extensionId: string
@@ -480,6 +512,8 @@ export interface IosVpnStatus {
   lastError: string | null
   errorCode: number | null
   startedAt: string | null
+  /** Present for the Rust extension; null for Mihomo and older builds. */
+  stats: IosVpnStats | null
 }
 
 export interface IosPrepareResult {

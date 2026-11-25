@@ -240,9 +240,7 @@ final class AppGroupStore {
     func readStatus(engine: String) -> ProviderStatus? {
         let url = rootURL.appendingPathComponent("status/\(engine).json")
         guard let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(ProviderStatus.self, from: data)
+        return ProviderSupport.decodeStatus(data)
     }
 
     private func listedFiles(_ stagedDir: URL) throws -> [String: SharedManifest.FileEntry] {

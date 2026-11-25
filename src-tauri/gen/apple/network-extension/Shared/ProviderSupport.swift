@@ -49,12 +49,26 @@ enum ProviderSupport {
     }
 
     static func writeStatus(_ status: ProviderStatus, groupId: String?) {
-        guard let url = statusURL(groupId: groupId) else { return }
+        guard let url = statusURL(groupId: groupId), let data = encodeStatus(status) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// One encoding for the App Group status file, the provider `status` reply
+    /// and the bridge: ISO-8601 dates and the camelCase `ProviderStatus` keys
+    /// (including `stats`) stay identical across all three paths.
+    static func encodeStatus(_ status: ProviderStatus) -> Data? {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(status) {
-            try? data.write(to: url, options: .atomic)
-        }
+        return try? encoder.encode(status)
+    }
+
+    /// Decodes the provider `status` reply or a `status/<engine>.json` file.
+    /// Unknown `stats` counters are ignored, so a newer kernel stays readable.
+    static func decodeStatus(_ data: Data?) -> ProviderStatus? {
+        guard let data else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ProviderStatus.self, from: data)
     }
 
     /// Tunnel addresses must match mihomo's sing-tun Inet4/Inet6Address

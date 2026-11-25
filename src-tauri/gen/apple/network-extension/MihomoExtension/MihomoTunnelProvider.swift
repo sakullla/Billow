@@ -135,13 +135,9 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
         }
         switch command {
         case .status:
-            var body = replyBody()
-            let status = engine?.status()
-            body[ProviderMessageKey.embedded] = status?.embeddedVersion
-            body[ProviderMessageKey.version] = status?.version
-            body[ProviderMessageKey.loopbackPort] = status?.loopbackPort
-            body[ProviderMessageKey.loopbackListen] = status?.loopbackListen
-            return encode(body)
+            // Canonical `ProviderStatus`, same as status/mihomo.json, so the
+            // host decodes identity/version/error from the reply.
+            return ProviderSupport.encodeStatus(currentStatus())
         case .reload:
             guard let engine else {
                 return reply(error: BillowVPNError.make(.engineStopped, "engine not running"))
@@ -248,7 +244,20 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
     /// error and the host could not tell which version/engine failed.
     private func publishStatus(snapshot: ProviderStatus? = nil, lastError: NSError? = nil,
                                running: Bool? = nil) {
-        var status = snapshot ?? engine?.status() ?? ProviderStatus(
+        var status = snapshot ?? currentStatus()
+        if let running {
+            status.running = running
+        }
+        if let lastError {
+            status.lastError = lastError.localizedDescription
+            status.errorCode = lastError.code
+            status.running = false
+        }
+        ProviderSupport.writeStatus(status, groupId: groupId)
+    }
+
+    private func currentStatus() -> ProviderStatus {
+        engine?.status() ?? ProviderStatus(
             extensionId: BillowEngineIdentity.bundleId,
             engine: BillowEngineIdentity.engine,
             embeddedVersion: nil,
@@ -260,14 +269,5 @@ final class MihomoTunnelProvider: NEPacketTunnelProvider {
             errorCode: nil,
             startedAt: nil
         )
-        if let running {
-            status.running = running
-        }
-        if let lastError {
-            status.lastError = lastError.localizedDescription
-            status.errorCode = lastError.code
-            status.running = false
-        }
-        ProviderSupport.writeStatus(status, groupId: groupId)
     }
 }

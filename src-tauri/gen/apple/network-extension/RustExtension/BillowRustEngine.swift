@@ -161,6 +161,15 @@ final class BillowRustEngine {
         return String(cString: buffer)
     }
 
+    /// `statsJSON()` decoded into the shared status model so the provider
+    /// reply and `status/rust.json` expose the same counters (R4). Unlike a
+    /// reply-only value, every `ProviderStatus` snapshot keeps it, including
+    /// the one taken before teardown on stop/failure.
+    static func statsSnapshot() -> ProviderStats? {
+        guard let json = statsJSON(), let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ProviderStats.self, from: data)
+    }
+
     func shutdown() {
         stateLock.lock()
         stopping = true
@@ -183,7 +192,8 @@ final class BillowRustEngine {
             loopbackListen: nil,
             lastError: lastError?.localizedDescription,
             errorCode: lastError?.code,
-            startedAt: startedAt
+            startedAt: startedAt,
+            stats: Self.statsSnapshot()
         )
     }
 }

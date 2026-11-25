@@ -45,26 +45,29 @@ step below remains unexecuted. Simulator results are not R3/R4 evidence.
    (`engineNotAvailable`) from `status/rust.json`. Each connect must produce
    exactly one completion: connected, or the mapped error (4, 10
    `hostNotReady`, or 2 with the Rust message).
-   **Current host surface:** `ios_vpn_status` returns only
-   `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt`.
-   The extension's `status` reply carries `stats`, but `ProviderStatus` has no
-   `stats` field and `BillowMobileBridge.statusDictionary` drops it, so
-   `ios_vpn_status("rust").stats` does not exist yet. Do not claim
-   `stats.peakRssBytes` from the host command until that product gap is fixed.
+   **Current host surface:** `ios_vpn_status` returns
+   `extensionId/engine/embeddedVersion/running/version/loopbackPort/loopbackListen/lastError/errorCode/startedAt/stats`.
+   Both extensions now reply with the same `ProviderStatus` JSON as their
+   `status/<engine>.json`, and `ProviderStatus.stats` carries the Rust
+   extension's `billow_ios_vpn_stats` object. So `ios_vpn_status("rust").stats`
+   exposes `generation/reloads/peakRssBytes/tcpFlows/queuedPackets/...` when the
+   Rust extension is running; Mihomo and old builds return `null`. These are
+   host-read values only: no device measurement exists yet, and R3 peak still
+   comes from Instruments.
 7. Traffic: request the controlled TCP HTTP endpoint and a UDP DNS query to
    the controlled resolver from another app; confirm payloads on the server
    side, the system VPN counters, and the extension logs. Structured
-   `tcpOpened/udpReplies/dnsQueries` live in the extension status reply's
-   `stats`; the host currently drops them, so either add the host passthrough
-   (product change) or read them with a debugger/extension log. Two device
-   sockets to the same remote must not receive each other's UDP replies
-   (per-flow NAT key).
+   `tcpOpened/udpReplies/dnsQueries` are part of
+   `ios_vpn_status("rust").stats` (T7-A4 host passthrough); reading the
+   extension log is still useful as a cross-check. Two device sockets to the
+   same remote must not receive each other's UDP replies (per-flow NAT key).
 8. Stop/restart three times (**断开** / **连接**); each start must report a
    fresh `startedAt` and no stale error; re-check after a Wi-Fi -> cellular
    switch (path monitor re-applies settings). **重载** calls
    `ios_vpn_reload`; verify traffic still flows and the extension reload log is
-   present. `stats.generation == +1` and `tcpFlows == 0` require the same
-   host stats passthrough described in step 6.
+   present. `ios_vpn_status("rust").stats` must show `generation == +1` and
+   `tcpFlows == 0` after the reload; `status/rust.json` keeps the snapshot
+   written at reload/stop.
 9. Failure paths: corrupt a file in `versions/<v>/` -> start must fail with
    code 1 (fileMismatch) and the previous version must stay listed; remove
    the App Group entitlement -> code 1 "App Group unavailable".
@@ -113,27 +116,28 @@ check needs the signed host + provisioning profile on a device.
 Device checks that still need the iPhone:
 
 1. `ios_vpn_status("rust")` reports `extensionId == app.billow.client.rust`
-   and the embedded `billow-rust 0.1.0` once running. It currently does **not**
-   return `stats.peakRssBytes` (host passthrough gap, see step 6 above); R3
-   peak comes from Instruments.
+   and the embedded `billow-rust 0.1.0` once running, plus `stats` from
+   `billow_ios_vpn_stats` (T7-A4 host passthrough). R3 peak still comes from
+   Instruments; `stats.peakRssBytes` is an RSS cross-check only.
 2. Start the Rust extension from the app's real settings screen with the same
    configuration version the Mihomo extension uses (`status/<engine>.json`
    both present, exactly one start completion).
 3. Traffic both ways: a controlled TCP HTTP request and a UDP DNS query from
    another app; confirm the payloads at the endpoint and in the extension
-   logs. The `tcpOpened/udpReplies/dnsQueries` counters are in the extension
-   status reply's `stats`, which the host drops today.
+   logs. `ios_vpn_status("rust").stats` exposes
+   `tcpOpened/udpReplies/dnsQueries`.
 4. `reload` from the host (`ProviderCommand.reload`) returns ok and traffic
-   continues. `stats.generation` +1 / `tcpFlows == 0` need the host stats
-   passthrough; until then confirm the reload in the extension log.
+   continues. `ios_vpn_status("rust").stats` must show `generation` +1 and
+   `tcpFlows == 0`; `status/rust.json` is a snapshot written at start/reload/
+   stop, so use the live reply for per-round R4 values.
 5. Memory and reclaim: follow
    `docs/testing/2026-11-23-ios-rust-extension-memory.md` (R3 ≤ 40,000,000
    bytes `phys_footprint` per scenario, R4 repeatable idle baseline). Use
    `xcrun xctrace record --template 'Allocations' --instrument 'VM Tracker'
    --attach <BillowRust-PID>` (`VM Tracker` is an instrument, not a template);
-   record device model, iOS version, app build, PID and the raw trace. The
-   stats JSON is not host-visible yet (step 6), so R4 counters need the host
-   passthrough or a debugger read.
+   record device model, iOS version, app build, PID and the raw trace. R4
+   counters come from `ios_vpn_status("rust").stats`; no device run exists in
+   this repository yet.
 6. Failure paths: missing `config.yaml` → code 2 with the path; unlinked
    archive → code 4; no `engine.json` → code 10.
 

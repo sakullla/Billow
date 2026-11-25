@@ -35,6 +35,10 @@ xcrun swiftc "${common[@]}" -D BILLOW_ENGINE_RUST \
   "${shared[@]}" "$root"/RustExtension/*.swift
 echo "   ok"
 
+echo "== ProviderStatus codec (reply + stats + status file keys)"
+# Runs the real Shared model on the macOS host; no simulator/device needed.
+cat "$root"/Shared/BillowVPNError.swift tool/ios/status-codec-smoke.swift | xcrun swift -
+
 echo "== host non-Swift entry (Sources/billow/main.mm)"
 xcrun clang++ -fsyntax-only -std=c++17 -target "$target" -isysroot "$sdk" \
   -I src-tauri/gen/apple/Sources/billow src-tauri/gen/apple/Sources/billow/main.mm

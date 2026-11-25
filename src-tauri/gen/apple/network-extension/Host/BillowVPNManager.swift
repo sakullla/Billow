@@ -184,14 +184,6 @@ final class BillowVPNManager {
     }
 }
 
-extension ProviderSupport {
-    static func decodeStatus(_ data: Data?) -> ProviderStatus? {
-        guard let data else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(ProviderStatus.self, from: data)
-    }
-}
-
-// Status reading lives on AppGroupStore (Shared/AppGroupStore.swift); the host
-// compiles the same file, so it must not be redeclared here.
+// Status encoding/decoding lives on ProviderSupport (Shared/ProviderSupport.swift);
+// the host compiles the same file, so it must not be redeclared here. Status
+// reading lives on AppGroupStore (Shared/AppGroupStore.swift).

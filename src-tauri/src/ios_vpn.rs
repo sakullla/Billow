@@ -98,8 +98,9 @@ pub struct IosStatus {
     pub started_at: Option<String>,
     /// Live counters + process peak RSS. Published by the Rust extension's
     /// `billow_ios_vpn_stats`; absent for Mihomo and older builds. The Swift
-    /// host does not forward it yet (`ProviderStatus` has no `stats` field), so
-    /// on a device this stays `None` until that product gap is closed.
+    /// host carries the same object in `ProviderStatus.stats` (reply, bridge
+    /// and `status/<engine>.json`), so `ios_vpn_status("rust").stats` exposes
+    /// these counters whenever the extension replied.
     #[serde(default)]
     pub stats: Option<IosStats>,
 }

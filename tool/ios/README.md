@@ -202,7 +202,9 @@ BillowRustEngine.swift
 6. `tool/ios/verify-host-sources.sh` (`npm run ios:verify-host`) type-checks
    every iOS Swift target with its real source set and condition: the host
    (`BILLOW_ENGINE_HOST`, all `Shared` + `Host` files), `BillowMihomo` and
-   `BillowRust`. Do not exclude `Shared/PacketPump.swift` from the host check;
+   `BillowRust`, then runs `tool/ios/status-codec-smoke.swift` on the macOS host
+   to prove `ProviderStatus` decodes/re-encodes the Rust `stats` object. Do not
+   exclude `Shared/PacketPump.swift` from the host check;
    it is extension-only and the condition is what keeps the host free of
    `GoMihomoReadPacket`.
 7. `tool/ios/verify-rust-kernel.sh` compiles

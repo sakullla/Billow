@@ -189,6 +189,7 @@ enum BillowMobileHost {
             "lastError": status.lastError.map { $0 as Any } ?? NSNull(),
             "errorCode": status.errorCode.map { $0 as Any } ?? NSNull(),
             "startedAt": status.startedAt.map { ISO8601DateFormatter().string(from: $0) as Any } ?? NSNull(),
+            "stats": status.stats.map { $0.dictionary as Any } ?? NSNull(),
         ]
     }
 

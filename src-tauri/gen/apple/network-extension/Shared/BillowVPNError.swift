@@ -99,4 +99,55 @@ struct ProviderStatus: Codable {
     var lastError: String?
     var errorCode: Int?
     var startedAt: Date?
+    /// Live tunnel counters + process peak RSS reported by the Rust extension
+    /// (`billow_ios_vpn_stats`); nil for Mihomo and older extensions. The key
+    /// names below match that JSON object verbatim so the host, the App Group
+    /// status file and `ios_vpn_status` all carry the same numbers (R4).
+    var stats: ProviderStats? = nil
+}
+
+/// The `stats` object of a Rust extension status reply. Every field is
+/// optional: a counter added by a newer kernel still decodes, and a reply
+/// without it (Mihomo) leaves `ProviderStatus.stats` nil. Property names are
+/// the JSON keys from `billow_ios_vpn_stats` (camelCase).
+struct ProviderStats: Codable {
+    var running: Bool?
+    var version: String?
+    var generation: UInt64?
+    var reloads: UInt64?
+    var peakRssBytes: UInt64?
+    var inPackets: UInt64?
+    var inBytes: UInt64?
+    var outPackets: UInt64?
+    var outBytes: UInt64?
+    var tcpOpened: UInt64?
+    var tcpClosed: UInt64?
+    var tcpRejected: UInt64?
+    var tcpFlows: UInt64?
+    var tcpFlowHigh: UInt64?
+    var udpDatagrams: UInt64?
+    var udpReplies: UInt64?
+    var udpFlows: UInt64?
+    var udpFlowHigh: UInt64?
+    var dnsQueries: UInt64?
+    var dnsFailures: UInt64?
+    var invalidPackets: UInt64?
+    var fragments: UInt64?
+    var unsupportedProtocols: UInt64?
+    var icmpDropped: UInt64?
+    var droppedInbound: UInt64?
+    var droppedEgress: UInt64?
+    var queueHigh: UInt64?
+    var queuedPackets: UInt64?
+
+    /// The object `BillowMobileBridge` embeds under `stats`; only counters the
+    /// extension actually sent are present, so a new kernel counter is not
+    /// invented as null by the host.
+    var dictionary: [String: Any] {
+        guard let data = try? JSONEncoder().encode(self),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
+    }
 }
