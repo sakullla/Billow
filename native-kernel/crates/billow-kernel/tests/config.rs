@@ -1528,6 +1528,14 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
         }
         other => panic!("expected shadowquic, got {other:?}"),
     }
+    let legacy = "proxies:\n  - {name: sq, type: shadowquic, server: 127.0.0.1, port: 443, username: alice, password: secret, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,sq']\n";
+    let loaded = load_config(legacy, "t").expect("pinned bbr_meta_v1 alias loads");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::ShadowQuic(option) => {
+            assert_eq!(option.congestion_controller.as_deref(), Some("bbr_meta_v1"));
+        }
+        other => panic!("expected shadowquic, got {other:?}"),
+    }
 
     // T28: the QUIC endpoint applies the UDP-relevant BasicOption knobs;
     // `tfo`/`mptcp` are accepted no-ops because a QUIC server socket is UDP.
@@ -2040,8 +2048,13 @@ fn t27_quic_transport_tuning_is_parsed() {
     assert_eq!(proxy.stream_receive_window, Some(1024));
     assert_eq!(proxy.connection_receive_window, Some(2048));
     assert!(proxy.disable_mtu_discovery);
-    let error = proxy_err("proxies:\n  - {name: q, type: tuic, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,q']\n");
-    assert!(error.contains("congestion-controller"), "{error}");
+    // The pinned legacy meta BBR v1 name aliases onto quinn's BBR sender.
+    let legacy = "proxies:\n  - {name: q, type: tuic, server: x, port: 1, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, congestion-controller: bbr_meta_v1}\nrules: ['MATCH,q']\n";
+    let loaded = load_config(legacy, "t").expect("pinned bbr_meta_v1 loads");
+    let billow_kernel::proxies::Protocol::Tuic(proxy) = &loaded.config.proxies[0].protocol else {
+        panic!("expected tuic");
+    };
+    assert_eq!(proxy.congestion_controller.as_deref(), Some("bbr_meta_v1"));
 
     let h2 = "proxies:\n  - {name: q, type: hysteria2, server: x, port: 1, password: p, cwnd: 64, initial-stream-receive-window: 1024, max-stream-receive-window: 4096, initial-connection-receive-window: 2048, max-connection-receive-window: 8192}\nrules: ['MATCH,q']\n";
     let loaded = load_config(h2, "t").expect("hysteria2 tuning loads");

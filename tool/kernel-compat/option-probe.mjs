@@ -214,10 +214,9 @@ const uniqueEnabled = [...new Map(enabled.map((entry) => [`${entry.type}/${entry
 // generic shapes (`protocol` is a transport name, `ports` is a range, ...).
 const t10Enabled = [
   // T32 implemented token/udp-relay-mode/fast-open/udp-over-stream/bbr-profile/
-  // datagram sizing/client-fingerprint and the hysteria v1 transport options;
-  // their `impl` rows below keep the load contract. `reduce-rtt` (0-RTT) stays
-  // a named residual.
-  ['tuic', 'reduce-rtt', 'reduce-rtt: true'],
+  // datagram sizing/client-fingerprint, `reduce-rtt` (the pinned TUIC adapter
+  // has no TLS session cache either) and the hysteria v1 transport options;
+  // their `impl` rows below keep the load contract.
   ['tuic', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
   ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
@@ -630,8 +629,10 @@ for (const [type, key, option] of [
   ['tuic', 'token', 'token: legacy'],
   ['tuic', 'udp-relay-mode', 'udp-relay-mode: quic'],
   ['tuic', 'fast-open', 'fast-open: true'],
+  ['tuic', 'reduce-rtt', 'reduce-rtt: true'],
   ['tuic', 'udp-over-stream', 'udp-over-stream: true, udp-over-stream-version: 2'],
   ['tuic', 'bbr-profile', 'bbr-profile: standard'],
+  ['tuic', 'congestion-controller:bbr_meta_v1', 'congestion-controller: bbr_meta_v1'],
   ['tuic', 'max-datagram-frame-size', 'max-datagram-frame-size: 1400'],
   ['tuic', 'max-udp-relay-packet-size', 'max-udp-relay-packet-size: 1252'],
   ['tuic', 'client-fingerprint', 'client-fingerprint: chrome'],
@@ -642,6 +643,7 @@ for (const [type, key, option] of [
   ['hysteria', 'fast-open', 'fast-open: true'],
   ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
   ['shadowquic', 'congestion-controller', 'congestion-controller: bbr'],
+  ['shadowquic', 'congestion-controller:bbr_meta_v1', 'congestion-controller: bbr_meta_v1'],
   ['shadowquic', 'bbr-profile', 'bbr-profile: aggressive'],
   ['shadowquic', 'cwnd', 'cwnd: 64'],
   ['shadowquic', 'up', 'up: 50 Mbps'],

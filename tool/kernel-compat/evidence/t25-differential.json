@@ -1,9 +1,9 @@
 {
   "format": "t25-differential",
   "version": 1,
-  "startedAt": "2026-11-25T12:21:48.707Z",
+  "startedAt": "2026-11-25T13:40:17.902Z",
   "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
-  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t32-target/release/billow-kernel",
+  "rust": "/Users/yanggeng/.cache/cargo-target/debug/billow-kernel",
   "summary": {
     "cases": 49,
     "pass": 47,
@@ -85,7 +85,7 @@
       "equal": true,
       "mihomo": {
         "status": 200,
-        "mixed-port": 60955,
+        "mixed-port": 65357,
         "tun.enable": false,
         "mode": "rule",
         "ipv6": true,
@@ -93,7 +93,7 @@
       },
       "rust": {
         "status": 200,
-        "mixed-port": 60962,
+        "mixed-port": 65364,
         "tun.enable": false,
         "mode": "rule",
         "ipv6": true,
@@ -402,8 +402,8 @@
     {
       "id": "reload-failure-keeps-config",
       "equal": true,
-      "mihomo": 60955,
-      "rust": 60962
+      "mihomo": 65357,
+      "rust": 65364
     },
     {
       "id": "connections-list-close",
@@ -413,7 +413,7 @@
           "network": "tcp",
           "type": "HTTPS",
           "destinationIP": "127.0.0.1",
-          "destinationPort": "60970",
+          "destinationPort": "65372",
           "inboundName": "DEFAULT-MIXED",
           "chains": [
             "DIRECT"
@@ -432,7 +432,7 @@
           "network": "tcp",
           "type": "HTTPS",
           "destinationIP": "127.0.0.1",
-          "destinationPort": "60970",
+          "destinationPort": "65372",
           "inboundName": "DEFAULT-MIXED",
           "chains": [
             "DIRECT"
@@ -511,11 +511,11 @@
       "equal": true,
       "mihomo": {
         "status": 200,
-        "port": 60955
+        "port": 65357
       },
       "rust": {
         "status": 200,
-        "port": 60962
+        "port": 65364
       }
     },
     {

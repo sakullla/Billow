@@ -4,9 +4,9 @@
 //! the engine (rule -> group -> outbound) exactly like a SOCKS5 `UDP
 //! ASSOCIATE` datagram. The transports are the same association types the
 //! mixed listener uses (`socks5`, `ss`, `trojan`, `ssr`, `masque`,
-//! `shadowquic`, `hysteria2`), plus `DIRECT`. A family without a UDP
-//! association in this kernel is refused by name instead of being sent the
-//! wrong way. The mesh
+//! `shadowquic`, `hysteria`, `hysteria2`, `tuic` including
+//! `udp-over-stream`), plus `DIRECT`. A family without a UDP association in
+//! this kernel is refused by name instead of being sent the wrong way. The mesh
 //! families (`wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier`) and
 //! `gost-relay` still have no TUN transport; that is registered in the
 //! evidence rather than silently accepted.
@@ -28,11 +28,139 @@ use crate::outbound::{
     self,
     masque::MasqueUdpAssociation,
     shadowquic::ShadowQuicUdp,
-    udp::{Hysteria2Udp, SsUdp, SsrUdp, TrojanUdp, MAX_DATAGRAM},
+    tls::ClientTls,
+    udp::{
+        spawn_uot_reader, Hysteria2Udp, HysteriaUdp, SsUdp, SsrUdp, TrojanUdp, TuicUot,
+        UotKey, UotReader, UotWriter, MAX_DATAGRAM,
+    },
 };
 use crate::proxies::{Protocol, Proxy};
 
 use crate::tunnel::Inner;
+
+/// Per-destination TUIC `udp-over-stream` associations for one device UDP flow.
+///
+/// The pinned UoT carriers bind a stream to a destination, so the device
+/// association (one transport per flow) opens one UoT stream per target and
+/// multiplexes commands and replies over them. This mirrors the mixed inbound's
+/// UoT map while keeping the TUN path's flow tagging.
+struct TuicUotAssociation {
+    proxy: Arc<Proxy>,
+    config: Arc<crate::config::Config>,
+    tls: Arc<ClientTls>,
+    timeout: std::time::Duration,
+    associations:
+        std::collections::HashMap<outbound::Target, (u64, UotWriter, tokio::task::AbortHandle)>,
+    events: mpsc::UnboundedReceiver<crate::outbound::udp::UotEvent>,
+    event_tx: mpsc::UnboundedSender<crate::outbound::udp::UotEvent>,
+    next_id: u64,
+}
+
+impl TuicUotAssociation {
+    fn new(
+        proxy: Arc<Proxy>,
+        config: Arc<crate::config::Config>,
+        tls: Arc<ClientTls>,
+        timeout: std::time::Duration,
+    ) -> TuicUotAssociation {
+        let (event_tx, events) = mpsc::unbounded_channel();
+        TuicUotAssociation {
+            proxy,
+            config,
+            tls,
+            timeout,
+            associations: std::collections::HashMap::new(),
+            events,
+            event_tx,
+            next_id: 0,
+        }
+    }
+
+    async fn send(&mut self, target: &outbound::Target, payload: &[u8]) -> io::Result<()> {
+        if !self.associations.contains_key(target) {
+            let Protocol::Tuic(option) = &self.proxy.protocol else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "tuic UoT association without a TUIC proxy",
+                ));
+            };
+            let hops = crate::engine::chain_for(&self.config, &self.proxy);
+            let association = TuicUot::connect(option, target, &hops, self.timeout, &self.tls)
+                .await
+                .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+            let (reader, writer) = association.into_halves();
+            let key = UotKey {
+                proxy: self.proxy.name.clone(),
+                target: target.clone(),
+            };
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            let abort = spawn_uot_reader(
+                UotReader::Tuic(reader),
+                key,
+                id,
+                self.event_tx.clone(),
+            );
+            self.associations
+                .insert(target.clone(), (id, UotWriter::Tuic(writer), abort));
+        }
+        let result = match self.associations.get_mut(target) {
+            Some((_, writer, _)) => writer.send(payload).await,
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "tuic UoT association missing after install",
+            )),
+        };
+        if result.is_err() {
+            if let Some((_, _, abort)) = self.associations.remove(target) {
+                abort.abort();
+            }
+        }
+        result
+    }
+
+    async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(SocketAddr, usize)>> {
+        loop {
+            match self.events.recv().await {
+                Some(crate::outbound::udp::UotEvent::Datagram { from, payload }) => {
+                    if payload.len() > buffer.len() {
+                        continue;
+                    }
+                    let host = match from.host.parse::<IpAddr>() {
+                        Ok(ip) => ip,
+                        Err(_) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "TUIC UoT reply from '{}' is not an IP address; the tunnel cannot map it to a device flow",
+                                    from.host
+                                ),
+                            ))
+                        }
+                    };
+                    buffer[..payload.len()].copy_from_slice(&payload);
+                    return Ok(Some((SocketAddr::new(host, from.port), payload.len())));
+                }
+                Some(crate::outbound::udp::UotEvent::Closed { key, id }) => {
+                    // The reader ended (stream closed or error); retire the
+                    // writer so the next datagram reconnects instead of
+                    // silently writing to a dead stream. A stale reader must
+                    // not retire a newer association for the same target.
+                    if self
+                        .associations
+                        .get(&key.target)
+                        .is_some_and(|(known, _, _)| *known == id)
+                    {
+                        if let Some((_, _, abort)) = self.associations.remove(&key.target) {
+                            abort.abort();
+                        }
+                    }
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+}
 
 /// One association per device UDP flow (see [`UdpReply::flow`]); a
 /// configuration with more concurrently active UDP flows than this drops the
@@ -67,8 +195,10 @@ enum Transport {
     Ssr(SsrUdp),
     Masque(MasqueUdpAssociation),
     ShadowQuic(ShadowQuicUdp),
+    Hysteria(HysteriaUdp),
     Hysteria2(Hysteria2Udp),
     Tuic(crate::outbound::tuic::TuicUdp),
+    TuicUot(TuicUotAssociation),
 }
 
 impl Transport {
@@ -80,8 +210,10 @@ impl Transport {
             Transport::Ssr(transport) => transport.send(target, payload).await,
             Transport::Masque(transport) => transport.send(target, payload).await,
             Transport::ShadowQuic(transport) => transport.send(target, payload).await,
+            Transport::Hysteria(transport) => transport.send(target, payload).await,
             Transport::Hysteria2(transport) => transport.send(target, payload).await,
             Transport::Tuic(transport) => transport.send(target, payload).await,
+            Transport::TuicUot(transport) => transport.send(target, payload).await,
         }
     }
 
@@ -103,8 +235,12 @@ impl Transport {
             Transport::Ssr(transport) => transport.recv(buffer).await,
             Transport::Masque(transport) => transport.recv(buffer).await,
             Transport::ShadowQuic(transport) => transport.recv(buffer).await,
+            Transport::Hysteria(transport) => transport.recv(buffer).await,
             Transport::Hysteria2(transport) => transport.recv(buffer).await,
             Transport::Tuic(transport) => transport.recv(buffer).await,
+            // Replies already carry an `IpAddr`; returning `None` here would
+            // skip the target mapping below.
+            Transport::TuicUot(transport) => return transport.recv(buffer).await,
         };
         match result? {
             Some((target, read)) => match target.host.parse::<IpAddr>() {
@@ -151,13 +287,10 @@ pub(crate) async fn association_task(
         Protocol::Ssr(option) => option.udp,
         Protocol::Masque(option) => option.udp,
         Protocol::ShadowQuic(_) => true,
-        // Hysteria2 and TUIC always enable UDP in the pinned outbound.
-        Protocol::Hysteria2(_) => true,
-        // TUIC's `udp-over-stream` needs one stream per destination, which the
-        // device association (one transport per flow) cannot express here; it
-        // is reported as unsupported instead of silently sending plain
-        // datagrams.
-        Protocol::Tuic(option) => !option.udp_over_stream,
+        // Hysteria v1, Hysteria2 and TUIC always enable UDP in the pinned
+        // outbound. Hysteria v1 uses the `udp=1` session with QUIC datagrams;
+        // TUIC `udp-over-stream` opens one stream per destination below.
+        Protocol::Hysteria(_) | Protocol::Hysteria2(_) | Protocol::Tuic(_) => true,
         _ => false,
     };
     if !supported {
@@ -194,9 +327,20 @@ pub(crate) async fn association_task(
             Protocol::ShadowQuic(option) => ShadowQuicUdp::connect(option, &tls, timeout)
                 .await
                 .map(Transport::ShadowQuic),
+            Protocol::Hysteria(option) => HysteriaUdp::connect(option, &hops, timeout, &tls)
+                .await
+                .map(Transport::Hysteria),
             Protocol::Hysteria2(option) => Hysteria2Udp::connect(option, &hops, timeout, &tls)
                 .await
                 .map(Transport::Hysteria2),
+            Protocol::Tuic(option) if option.udp_over_stream => Ok(Transport::TuicUot(
+                TuicUotAssociation::new(
+                    proxy.clone(),
+                    session.runtime.config.clone(),
+                    tls.clone(),
+                    timeout,
+                ),
+            )),
             Protocol::Tuic(option) => crate::outbound::tuic::TuicUdp::connect(
                 option, &hops, &tls, timeout,
             )

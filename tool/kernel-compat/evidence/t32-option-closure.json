@@ -1,11 +1,11 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T32",
-  "attempt": "T32-A1",
+  "attempt": "T32-A2",
   "matrix": {
     "noop": 291,
-    "implemented": 107,
-    "enabled": 100,
+    "implemented": 110,
+    "enabled": 99,
     "problems": 0,
     "command": "node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --out tool/kernel-compat/evidence/option-matrix.txt"
   },
@@ -22,7 +22,6 @@
   "after": {
     "target_family_rust_reject_rows": {
       "tuic": [
-        "reduce-rtt",
         "ech-opts (mihomo rejects it too)"
       ],
       "shadowquic": [
@@ -41,14 +40,18 @@
       "max-udp-relay-packet-size (max-frame - packet overhead; v5 clamped to 1168)",
       "fast-open (v4 lazy connect response; v5 matches the pinned no-op on a QUIC socket)",
       "bbr-profile (BBR initial-window approximation, 24/32/40 packets)",
-      "client-fingerprint (rustls approximation, counted as residual parity)"
+      "client-fingerprint (rustls approximation, counted as residual parity)",
+      "reduce-rtt (parsed; the pinned adapter sets no ClientSessionCache, so DialEarly always falls back to 1-RTT)",
+      "congestion-controller (bbr_meta_v1 and bbr_meta_v2 map onto quinn's BBR sender)",
+      "udp-over-stream in the TUN data plane (per-destination UoT streams; dialer-proxy refused by name)"
     ],
     "implemented_shadowquic": [
       "congestion-controller (cubic/new_reno/bbr, bbr_meta_v2 alias)",
       "cwnd (initial window for bbr/brutal)",
       "bbr-profile (BBR initial-window approximation)",
       "up (Brutal TX rate and the private mihomo negotiation request)",
-      "down (Brutal RX hint; the negotiation reply selects the peer's sender)"
+      "down (Brutal RX hint; the negotiation reply selects the peer's sender)",
+      "congestion-controller bbr_meta_v1 alias (mapped onto quinn's BBR sender)"
     ],
     "implemented_hysteria": [
       "ports (comma/range expansion)",
@@ -56,32 +59,34 @@
       "obfs (XPlus: 16-byte salt + SHA-256(key||salt) XOR)",
       "protocol: wechat-video/wechat (13-byte header, XPlus or identity payload)",
       "fast-open (server response replayed on the first read)",
-      "client-fingerprint (rustls approximation, counted as residual parity)"
+      "client-fingerprint (rustls approximation, counted as residual parity)",
+      "UDP session (udp=1 stream + session id + session|host|port|msg/frag|data datagrams, mixed and TUN)"
     ],
     "named_residuals": {
       "tuic": [
-        "reduce-rtt: quinn needs a TLS session-ticket cache and a pooled connection for 0-RTT; this kernel dials a fresh endpoint per session and rejects the option by name"
+        "ech-opts: rejected by the pinned engine too"
       ],
       "shadowquic": [
         "zero-rtt: JLS 0-RTT needs the pinned authenticated session ticket and a resumption cache",
         "quic-versions: v2: quinn 0.11 implements QUIC v1 only"
       ],
       "hysteria": [
-        "protocol: faketcp loads like the pinned decoder but is refused at dial time: it needs a raw-socket TCP stack, and the pinned non-Linux build is unsupported too",
-        "UDP session: the pinned Hysteria v1 datagram session is not implemented, so UDP traffic routed to this family is still dropped and logged"
+        "protocol: faketcp loads like the pinned decoder but is refused at dial time: it needs a raw-socket TCP stack (CAP_NET_RAW + iptables + gopacket), and the pinned non-Linux build is unsupported too"
       ]
     },
     "approximations_counted_as_residual": {
-      "count": 6,
+      "count": 8,
       "rows": [
         "tuic/client-fingerprint",
         "tuic/bbr-profile",
         "hysteria/client-fingerprint",
         "shadowquic/bbr-profile",
         "shadowquic/up (controller installed before the handshake because quinn cannot swap a live transport)",
-        "hysteria/ports (single-socket destination rewrite; the pinned client opens a new local socket per hop)"
+        "hysteria/ports (single-socket destination rewrite; the pinned client opens a new local socket per hop)",
+        "tuic/congestion-controller:bbr_meta_v1 (quinn has one v2-shaped BBR sender)",
+        "shadowquic/congestion-controller:bbr_meta_v1 (quinn has one v2-shaped BBR sender)"
       ],
-      "reason": "rustls cannot emit a uTLS ClientHello, quinn exposes one BBR sender without the pinned profiles/gains, a live quinn transport's congestion factory cannot be replaced after the Brutal negotiation, and the hysteria v1 hop is expressed as destination-port rewriting on one socket. Each is documented and verified for the observable wire path, not claimed as byte-for-byte parity."
+      "reason": "rustls cannot emit a uTLS ClientHello, quinn exposes one BBR sender without the pinned profiles/gains, a live quinn transport's congestion factory cannot be replaced after the Brutal negotiation, and the hysteria v1 hop is expressed as destination-port rewriting on one socket. Each is documented and verified for the observable wire path, not claimed as byte-for-byte parity. Meta BBR v1 maps onto quinn's single BBR sender."
     }
   },
   "verification": {
@@ -114,27 +119,37 @@
     ],
     "load_and_unit": [
       "tests/quic_peers.rs::tuic_v4_token_loads_and_selects_v4",
-      "tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_is_named",
+      "tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_parses",
+      "tests/quic_peers.rs::tuic_v4_fast_open_returns_early_and_success_reaches_the_peer",
+      "tests/quic_peers.rs::tuic_v4_fast_open_replays_a_rejected_connect_response",
       "tests/quic_peers.rs::hysteria_v1_transport_options_load",
       "tests/quic_peers.rs::hysteria_v1_fast_open_defers_the_response",
+      "tests/quic_peers.rs::hysteria_v1_udp_session_roundtrips_through_the_peer",
+      "tests/ios_tunnel.rs::tuic_udp_over_stream_datagrams_cross_the_tunnel",
+      "tests/ios_tunnel.rs::hysteria_udp_session_crosses_the_tunnel",
       "tests/config.rs::shadowquic_transport_options_are_parsed_and_jls_gaps_named",
+      "tests/config.rs::t27_quic_transport_tuning_is_parsed",
       "src/outbound/tuic.rs::tests::v4_packet_round_trips_and_uses_u32_assoc_and_u16_length",
       "src/outbound/tuic.rs::tests::v5_packet_round_trips_with_the_pinned_layout",
       "src/outbound/tuic.rs::tests::fragments_reassemble_and_expire",
       "src/outbound/tuic.rs::tests::bbr_profile_maps_to_the_initial_window",
-      "src/outbound/tuic.rs::tests::uot_address_round_trips"
+      "src/outbound/tuic.rs::tests::uot_address_round_trips",
+      "src/outbound/udp.rs::tests::tuic_uot_through_a_hop_is_a_named_chain_error",
+      "src/outbound/udp.rs::tests::hysteria_udp_fragments_reassemble_by_message_id"
     ],
-    "hysteria_dependency_gap": "The pinned Mihomo v1.19.34 source and binary have no Hysteria v1 listener (only hysteria2 / hysteria2-realm). The family's transport features are therefore verified by the pinned Go XPlus algorithm, the local protocol peer for TCP, and load tests; the plan's 'pinned Mihomo hysteria listener' peer cannot be built from the pinned artifact.",
+    "hysteria_dependency_gap": "The pinned Mihomo v1.19.34 source and binary have no Hysteria v1 listener (only hysteria2 / hysteria2-realm). The family is verified by the pinned Go XPlus algorithm, the pinned control/UDP byte layouts, local protocol peers for TCP and the udp=1 session, TUN/mixed execution tests, and load tests; the plan's \"pinned Mihomo hysteria listener\" peer cannot be built from the pinned artifact and is registered for the Owner.",
     "hysteria_local_peer": [
       "tests/quic_peers.rs::hysteria_v1_tcp_roundtrip_and_target",
       "tests/quic_peers.rs::hysteria_v1_wrong_auth_fails_without_forwarding",
       "tests/quic_peers.rs::hysteria_v1_base64_auth_roundtrip",
-      "tests/quic_peers.rs::hysteria_v1_fast_open_defers_the_response"
+      "tests/quic_peers.rs::hysteria_v1_fast_open_defers_the_response",
+      "tests/quic_peers.rs::hysteria_v1_udp_session_roundtrips_through_the_peer",
+      "tests/ios_tunnel.rs::hysteria_udp_session_crosses_the_tunnel"
     ]
   },
   "counts": {
     "tuic_before_reject_rows": 9,
-    "tuic_after_reject_rows": 2,
+    "tuic_after_reject_rows": 1,
     "shadowquic_before_reject_rows": 6,
     "shadowquic_after_reject_rows": 2,
     "hysteria_before_reject_rows": 6,
@@ -143,14 +158,14 @@
   "validation": {
     "default_native_kernel": {
       "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel",
-      "result": "pass, 441 tests (0 failed; the ignored suites are the pinned-peer/device cases)"
+      "result": "pass, 446 tests (0 failed; the ignored suites are the pinned-peer/device cases)"
     },
     "pinned_peers": {
       "command": "KC_MIHOMO_BIN=tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel --test mihomo_peers -- --ignored --test-threads=1",
       "result": "pass, 104 tests (single-threaded, including the 8 TUIC cases with v4/UDP/UoT/fragmentation)"
     },
     "option_matrix": {
-      "result": "291 no-op / 107 implemented / 100 enabled / 0 problems"
+      "result": "291 no-op / 110 implemented / 99 enabled / 0 problems"
     },
     "t22_dns": {
       "result": "22/23 pass, 1 skipped (mmdb fixture), 0 differ, 0 unexpected"
@@ -170,6 +185,10 @@
     "runner": {
       "command": "node --test tool/kernel-compat/runner.test.mjs",
       "result": "10/10 pass"
+    },
+    "device_data_plane": {
+      "command": "cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel --features ios-vpn",
+      "result": "pass, 488 tests (0 failed; includes the TUIC UoT and Hysteria v1 UDP TUN cases)"
     }
   }
 }

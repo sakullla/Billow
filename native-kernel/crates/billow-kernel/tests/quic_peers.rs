@@ -14,6 +14,7 @@
 mod common;
 
 use std::io;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
@@ -392,6 +393,123 @@ async fn spawn_tuic_peer(password: &'static str, cert: Cert) -> (u16, Log) {
     (port, log)
 }
 
+/// TUIC v4 peer: `0x04 0x00 || BLAKE3(token)` authentication and the 3-byte
+/// connect response. `reject_connect` answers `0x04 0xff 0x01` (the replay a
+/// `fast-open` EarlyResponse must surface on its first read).
+async fn spawn_tuic_v4_peer(
+    token: &'static str,
+    reject_connect: bool,
+    cert: Cert,
+) -> (u16, Log) {
+    let port = free_udp_port();
+    let endpoint = quinn::Endpoint::server(
+        server_config(&cert, b"h3"),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+    .expect("QUIC server endpoint");
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let log = log_task.clone();
+            tokio::spawn(async move {
+                let connection = match incoming.await {
+                    Ok(connection) => connection,
+                    Err(e) => {
+                        push(
+                            &log,
+                            Attempt {
+                                details: vec![format!("handshake-failed={e}")],
+                                forwarded: false,
+                            },
+                        );
+                        return;
+                    }
+                };
+                let mut auth = match connection.accept_uni().await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                let mut head = [0u8; 2];
+                if auth.read_exact(&mut head).await.is_err() || head != [0x04, 0x00] {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec![format!("bad-v4-auth-head={head:02x?}")],
+                            forwarded: false,
+                        },
+                    );
+                    return;
+                }
+                let mut digest = [0u8; 32];
+                if auth.read_exact(&mut digest).await.is_err() {
+                    return;
+                }
+                let expected = billow_kernel::outbound::blake3::hash32(token.as_bytes());
+                if digest != expected {
+                    push(
+                        &log,
+                        Attempt {
+                            details: vec!["v4-auth-failed".into()],
+                            forwarded: false,
+                        },
+                    );
+                    connection.close(quinn::VarInt::from_u32(0xffff_fff1), b"auth");
+                    return;
+                }
+                push(
+                    &log,
+                    Attempt {
+                        details: vec!["v4-auth-ok".into()],
+                        forwarded: false,
+                    },
+                );
+                let (mut send, mut recv) = match connection.accept_bi().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut request = [0u8; 2];
+                if recv.read_exact(&mut request).await.is_err() || request != [0x04, 0x01] {
+                    return;
+                }
+                let (host, target_port) = match read_address(&mut recv).await {
+                    Ok(target) => target,
+                    Err(_) => return,
+                };
+                push(
+                    &log,
+                    Attempt {
+                        details: vec![format!("target={host}:{target_port}")],
+                        forwarded: !reject_connect,
+                    },
+                );
+                if reject_connect {
+                    let _ = send.write_all(&[0x04, 0xff, 0x01]).await;
+                    let _ = send.finish();
+                    // Keep the connection alive until the client has read the
+                    // replayed response; dropping it closes the QUIC socket.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    return;
+                }
+                let _ = send.write_all(&[0x04, 0xff, 0x00]).await;
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match recv.read(&mut buffer).await {
+                        Ok(Some(0)) | Ok(None) | Err(_) => break,
+                        Ok(Some(n)) => {
+                            if send.write_all(&buffer[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = send.finish();
+            });
+        }
+    });
+    (port, log)
+}
+
 // ---------------------------------------------------------------------------
 // Kernel helpers.
 // ---------------------------------------------------------------------------
@@ -490,6 +608,70 @@ async fn tuic_v5_wrong_password_fails_without_forwarding() {
     kernel.stop().unwrap();
 }
 
+fn start_tuic_v4_kernel(peer_port: u16, token: &str, fast_open: bool) -> Kernel {
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, token: {token}, skip-cert-verify: true, fast-open: {fast_open}}}\nrules:\n  - MATCH,t1\n",
+        free_port()
+    );
+    let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
+        .unwrap_or_else(|e| panic!("kernel rejected TUIC v4 config: {e}\n{yaml}"));
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    kernel
+}
+
+#[tokio::test]
+async fn tuic_v4_fast_open_returns_early_and_success_reaches_the_peer() {
+    let cert = make_cert("tuic-v4-fast-open");
+    let (peer_port, log) = spawn_tuic_v4_peer("legacy-token", false, cert).await;
+    let kernel = start_tuic_v4_kernel(peer_port, "legacy-token", true);
+    let echoed = roundtrip(&kernel, "example.com", 443, b"v4-fast-open")
+        .await
+        .expect("fast-open roundtrip");
+    assert_eq!(echoed, b"v4-fast-open");
+    assert!(wait_for_detail(&log, "v4-auth-ok").await, "{:?}", detail(&log));
+    assert!(
+        detail(&log).iter().any(|d| d == "target=example.com:443"),
+        "{:?}",
+        detail(&log)
+    );
+}
+
+#[tokio::test]
+async fn tuic_v4_fast_open_replays_a_rejected_connect_response() {
+    let cert = make_cert("tuic-v4-fast-open-reject");
+    let (peer_port, log) = spawn_tuic_v4_peer("legacy-token", true, cert).await;
+    let yaml = format!(
+        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, token: legacy-token, skip-cert-verify: true, fast-open: true}}\nrules:\n  - MATCH,t1\n"
+    );
+    let loaded = billow_kernel::load_config(&yaml, "tuic-v4-fast-open.yaml").expect("config");
+    let billow_kernel::proxies::Protocol::Tuic(option) = &loaded.config.proxies[0].protocol else {
+        panic!("expected tuic");
+    };
+    let tls = billow_kernel::outbound::tls::ClientTls::new(&[]);
+    let target = billow_kernel::outbound::Target {
+        host: "example.com".into(),
+        port: 443,
+    };
+    // `dial` returns the stream before the response is read; the first read
+    // replays `0x04 0xff 0x01` and must surface the rejection.
+    let mut dialed = tokio::time::timeout(
+        Duration::from_secs(10),
+        billow_kernel::outbound::tuic::dial(option, &target, &tls, Duration::from_secs(5)),
+    )
+    .await
+    .expect("dial completes early")
+    .expect("fast-open returns a stream");
+    let mut byte = [0u8; 1];
+    let error = dialed
+        .stream
+        .read(&mut byte)
+        .await
+        .expect_err("the rejected connect response must fail the first read");
+    let text = error.to_string();
+    assert!(text.contains("rejected"), "{text}");
+    assert!(wait_for_detail(&log, "v4-auth-ok").await, "{:?}", detail(&log));
+}
+
 #[tokio::test]
 async fn tuic_v4_token_loads_and_selects_v4() {
     let yaml = "mixed-port: 17890\nproxies:\n  - {name: t1, type: tuic, server: 127.0.0.1, port: 443, token: legacy}\nrules:\n  - MATCH,t1\n";
@@ -512,11 +694,12 @@ async fn tuic_v4_token_loads_and_selects_v4() {
 }
 
 #[tokio::test]
-async fn tuic_udp_options_load_and_reduce_rtt_is_named() {
-    // T32: the UDP relay/UoT/datagram/fast-open options are implemented; only
-    // `reduce-rtt` remains a named residual (no session-ticket cache).
+async fn tuic_udp_options_load_and_reduce_rtt_parses() {
+    // T32: the UDP relay/UoT/datagram/fast-open options are implemented, and
+    // `reduce-rtt` loads because the pinned TUIC adapter has no TLS session
+    // cache either (it passes DialEarly but never caches a ticket).
     let yaml = format!(
-        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, udp-relay-mode: quic, udp-over-stream: true, udp-over-stream-version: 2, fast-open: true, bbr-profile: aggressive, max-datagram-frame-size: 1400, max-udp-relay-packet-size: 1252}}\nrules:\n  - MATCH,t1\n"
+        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, udp-relay-mode: quic, udp-over-stream: true, udp-over-stream-version: 2, fast-open: true, reduce-rtt: true, bbr-profile: aggressive, max-datagram-frame-size: 1400, max-udp-relay-packet-size: 1252}}\nrules:\n  - MATCH,t1\n"
     );
     let loaded = billow_kernel::load_config(&yaml, "tuic-udp.yaml").expect("TUIC UDP options load");
     match &loaded.config.proxies[0].protocol {
@@ -525,6 +708,7 @@ async fn tuic_udp_options_load_and_reduce_rtt_is_named() {
             assert!(option.udp_over_stream);
             assert_eq!(option.udp_over_stream_version, 2);
             assert!(option.fast_open);
+            assert!(option.reduce_rtt);
             assert_eq!(option.bbr_profile.as_deref(), Some("aggressive"));
             // v5: 1400 - 29 = 1371, clamped to MaxFragSizeV5 (1168).
             assert_eq!(option.max_datagram_frame_size, 1400);
@@ -532,12 +716,21 @@ async fn tuic_udp_options_load_and_reduce_rtt_is_named() {
         }
         other => panic!("expected tuic, got {other:?}"),
     }
-    let reduced = format!(
-        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, reduce-rtt: true}}\nrules:\n  - MATCH,t1\n"
+    // `bbr_meta_v1` is the pinned legacy meta BBR name; quinn has one BBR
+    // controller, so the alias must load instead of rejecting a valid pinned
+    // configuration.
+    let legacy = format!(
+        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, congestion-controller: bbr_meta_v1, reduce-rtt: true}}\nrules:\n  - MATCH,t1\n"
     );
-    let error = billow_kernel::load_config(&reduced, "tuic-rtt.yaml").unwrap_err();
-    assert_eq!(error.tag(), "unsupported", "{error}");
-    assert!(error.to_string().contains("reduce-rtt"), "{error}");
+    let loaded = billow_kernel::load_config(&legacy, "tuic-legacy-bbr.yaml")
+        .expect("pinned bbr_meta_v1 / reduce-rtt load");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Tuic(option) => {
+            assert_eq!(option.congestion_controller.as_deref(), Some("bbr_meta_v1"));
+            assert!(option.reduce_rtt);
+        }
+        other => panic!("expected tuic, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -663,16 +856,46 @@ async fn spawn_hysteria_peer(auth: Vec<u8>, cert: Cert) -> (u16, Log) {
                     u16::from_be_bytes(port)
                 );
                 if udp[0] != 0 {
+                    // Hysteria v1 UDP session: `ok | u32 session id | u16 0`,
+                    // then datagrams are echoed on the connection.
                     push(
                         &log,
                         Attempt {
-                            details: vec![format!("udp-request={target}")],
-                            forwarded: false,
+                            details: vec![format!("udp-target={target}")],
+                            forwarded: true,
                         },
                     );
-                    let _ = send.write_all(&[0, 0, 0, 0, 0, 0, 2]).await;
-                    let _ = send.write_all(b"udp not implemented").await;
-                    let _ = send.finish();
+                    let session = 7u32;
+                    let mut response = vec![1u8];
+                    response.extend_from_slice(&session.to_be_bytes());
+                    response.extend_from_slice(&0u16.to_be_bytes());
+                    let _ = send.write_all(&response).await;
+                    let echo = connection.clone();
+                    let echo_log = log.clone();
+                    tokio::spawn(async move {
+                        while let Ok(datagram) = echo.read_datagram().await {
+                            if let Some((host, port)) = hysteria_datagram_target(&datagram) {
+                                push(
+                                    &echo_log,
+                                    Attempt {
+                                        details: vec![format!("udp-echo={host}:{port}")],
+                                        forwarded: true,
+                                    },
+                                );
+                            }
+                            if echo.send_datagram(datagram).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    // Hold the request stream open until the session closes.
+                    let mut buffer = [0u8; 1024];
+                    loop {
+                        match recv.read(&mut buffer).await {
+                            Ok(Some(0)) | Ok(None) | Err(_) => break,
+                            Ok(Some(_)) => {}
+                        }
+                    }
                     return;
                 }
                 push(
@@ -701,6 +924,68 @@ async fn spawn_hysteria_peer(auth: Vec<u8>, cert: Cert) -> (u16, Log) {
     (port, log)
 }
 
+/// `session id | host length | host | ...` prefix of a Hysteria v1 datagram.
+fn hysteria_datagram_target(datagram: &[u8]) -> Option<(String, u16)> {
+    let mut cursor = 4usize;
+    let host_len =
+        u16::from_be_bytes([*datagram.get(cursor)?, *datagram.get(cursor + 1)?]) as usize;
+    cursor += 2;
+    let host = String::from_utf8(datagram.get(cursor..cursor + host_len)?.to_vec()).ok()?;
+    cursor += host_len;
+    let port = u16::from_be_bytes([*datagram.get(cursor)?, *datagram.get(cursor + 1)?]);
+    Some((host, port))
+}
+
+fn udp_associate(proxy: SocketAddr) -> (std::net::TcpStream, SocketAddr) {
+    let mut stream = std::net::TcpStream::connect_timeout(&proxy, Duration::from_secs(5))
+        .expect("control");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
+    let mut selection = [0u8; 2];
+    stream.read_exact(&mut selection).unwrap();
+    assert_eq!(selection, [0x05, 0x00]);
+    stream
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    let mut reply = [0u8; 10];
+    stream.read_exact(&mut reply).unwrap();
+    assert_eq!(reply[1], 0x00, "UDP associate refused: {reply:02x?}");
+    let ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let port = u16::from_be_bytes([reply[8], reply[9]]);
+    (stream, SocketAddr::from((ip, port)))
+}
+
+fn udp_exchange(relay: SocketAddr, target: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut buffer = [0u8; 65535];
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        let mut packet = vec![0u8, 0u8, 0u8, 0x01];
+        packet.extend_from_slice(&[127, 0, 0, 1]);
+        packet.extend_from_slice(&target.port().to_be_bytes());
+        packet.extend_from_slice(payload);
+        socket.send_to(&packet, relay).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        match socket.recv_from(&mut buffer) {
+            Ok((read, _)) => {
+                // reply header: RSV(2) FRAG(1) ATYP(1) IPv4(4) port(2)
+                return buffer[10..read].to_vec();
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("UDP association error: {error}"),
+        }
+    }
+    panic!("no UDP reply through the kernel after 10 s (target {target})");
+}
+
 fn start_hysteria_kernel(peer_port: u16, auth: &str, extra: &str) -> Kernel {
     let yaml = format!(
         "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: {peer_port}, up: 50 Mbps, down: 50 Mbps, auth-str: \"{auth}\", skip-cert-verify: true{extra}}}\nrules:\n  - MATCH,h1\n",
@@ -724,6 +1009,32 @@ async fn hysteria_v1_tcp_roundtrip_and_target() {
     assert!(wait_for_detail(&log, "auth-ok").await, "{:?}", detail(&log));
     assert!(
         detail(&log).iter().any(|d| d == "target=example.com:8443"),
+        "{:?}",
+        detail(&log)
+    );
+    kernel.stop().unwrap();
+}
+
+#[tokio::test]
+async fn hysteria_v1_udp_session_roundtrips_through_the_peer() {
+    // T32: the pinned Hysteria v1 outbound always reports UDP support; the
+    // `udp=1` session requests a server session id and carries
+    // `session | host | port | msg/frag | data` on QUIC datagrams.
+    let cert = make_cert("hysteria-udp");
+    let (peer_port, log) = spawn_hysteria_peer(b"hysteria-secret".to_vec(), cert).await;
+    let mut kernel = start_hysteria_kernel(peer_port, "hysteria-secret", "");
+    let (_control, relay) = udp_associate(kernel.listen_addr());
+    let target = SocketAddr::from(([127, 0, 0, 1], 9));
+    let payload = b"marker-hysteria-v1-udp";
+    // The peer and the kernel's UDP association both need the async runtime to
+    // make progress, so the blocking SOCKS relay socket runs on a worker.
+    let reply = tokio::task::spawn_blocking(move || udp_exchange(relay, target, payload))
+        .await
+        .expect("UDP exchange task");
+    assert_eq!(reply, payload);
+    assert!(wait_for_detail(&log, "udp-target=").await, "{:?}", detail(&log));
+    assert!(
+        detail(&log).iter().any(|d| d == "udp-echo=127.0.0.1:9"),
         "{:?}",
         detail(&log)
     );

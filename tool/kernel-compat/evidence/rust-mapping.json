@@ -1137,7 +1137,7 @@
     },
     "tuic": {
       "status": "partial",
-      "reason": "TUIC over QUIC. v5 (`uuid`/`password`, TLS-exporter token) and v4 (`token`, BLAKE3 TKN) authentication, one TCP stream per session, the v4 connect response (`0x04 0xff rep`) and `fast-open`'s lazy response are implemented. The UDP relay is implemented in both pinned carriers (`udp-relay-mode: native` QUIC datagrams with v5 fragmentation, `udp-relay-mode: quic` one packet per uni stream), and `udp-over-stream` uses the pinned `sp[.v2].udp-over-tcp.arpa` UoT framing (v1 per-frame destination, v2 request). Datagram sizing follows the pinned `NewTuic` derivation; congestion-controller/cwnd/bbr-profile map onto quinn; client-fingerprint is a rustls approximation. `reduce-rtt` (0-RTT) remains a named residual: quinn needs a session-ticket cache and a pooled connection. One QUIC connection is created per dial instead of the pinned pool.",
+      "reason": "TUIC over QUIC. v5 (`uuid`/`password`, TLS-exporter token) and v4 (`token`, BLAKE3 TKN) authentication, one TCP stream per session, the v4 connect response (`0x04 0xff rep`) and `fast-open`'s lazy response are implemented. The UDP relay is implemented in both pinned carriers (`udp-relay-mode: native` QUIC datagrams with v5 fragmentation, `udp-relay-mode: quic` one packet per uni stream), and `udp-over-stream` uses the pinned `sp[.v2].udp-over-tcp.arpa` UoT framing (v1 per-frame destination, v2 request). Datagram sizing follows the pinned `NewTuic` derivation; congestion-controller/cwnd/bbr-profile map onto quinn; client-fingerprint is a rustls approximation. `reduce-rtt` is parsed: the pinned adapter passes quic-go `DialEarly` but never sets `tls.Config.ClientSessionCache`, so it always falls back to a full handshake (shadowquic sets the cache explicitly). `congestion-controller` accepts `bbr_meta_v1`/`bbr_meta_v2` as aliases of quinn's BBR sender. `udp-over-stream` also works in the TUN data plane, and both UoT paths refuse a `dialer-proxy` chain by name. One QUIC connection is created per dial instead of the pinned pool.",
       "options": [
         "alpn",
         "bbr-profile",
@@ -1163,6 +1163,7 @@
         "private-key",
         "recv-window",
         "recv-window-conn",
+        "reduce-rtt",
         "request-timeout",
         "routing-mark",
         "server",
@@ -1175,11 +1176,9 @@
         "udp-relay-mode",
         "uuid"
       ],
-      "udp": "implemented: native QUIC datagrams and quic uni-stream relay, plus udp-over-stream UoT; all verified against the pinned TUIC listener",
+      "udp": "implemented: native QUIC datagrams, quic uni-stream relay and udp-over-stream UoT in both the mixed inbound and the TUN data plane; verified against the pinned TUIC listener and local UoT peers",
       "notImplemented": [
-        "reduce-rtt: true (quinn has no session-ticket cache/pooled connection here)",
-        "ech-opts",
-        "congestion-controller: bbr_meta_v1 (quinn has no meta BBR v1 sender)"
+        "ech-opts"
       ],
       "evidence": [
         "crates/billow-kernel-cli/tests/family_cli.rs::cli_process_tunnels_through_tuic",
@@ -1205,19 +1204,23 @@
         "tests/protocols.rs::certificate_and_private_key_present_a_client_certificate",
         "tests/protocols.rs::fingerprint_pins_the_leaf_certificate",
         "tests/protocols.rs::name_cert_verify_checks_the_configured_name",
-        "tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_is_named",
         "tests/quic_peers.rs::tuic_v4_token_loads_and_selects_v4",
         "tests/quic_peers.rs::tuic_v5_domain_target_roundtrip",
         "tests/quic_peers.rs::tuic_v5_ip_target_roundtrip",
         "tests/quic_peers.rs::tuic_v5_legacy_token_is_rejected_at_load",
         "tests/quic_peers.rs::tuic_v5_unimplemented_options_are_named",
-        "tests/quic_peers.rs::tuic_v5_wrong_password_fails_without_forwarding"
+        "tests/quic_peers.rs::tuic_v5_wrong_password_fails_without_forwarding",
+        "tests/quic_peers.rs::tuic_v4_fast_open_returns_early_and_success_reaches_the_peer",
+        "tests/quic_peers.rs::tuic_v4_fast_open_replays_a_rejected_connect_response",
+        "tests/ios_tunnel.rs::tuic_udp_over_stream_datagrams_cross_the_tunnel",
+        "src/outbound/udp.rs::tests::tuic_uot_through_a_hop_is_a_named_chain_error",
+        "tests/quic_peers.rs::tuic_udp_options_load_and_reduce_rtt_parses"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). T32: BLAKE3 vectors were generated with the pinned `github.com/metacubex/blake3` v0.1.1 module; v4 packet layout (u32 assoc, u16 length) and the 3-byte connect response are covered by the pinned listener tests."
     },
     "hysteria": {
       "status": "partial",
-      "reason": "Hysteria v1 over QUIC: TCP with the binary control hello (auth/auth-str, up/down) and one stream per session; recv-window-conn/recv-window and disable-mtu-discovery are applied to quinn's transport config. T32 implements port hopping (`ports`/`hop-interval`, comma/range expansion with the pinned default 10 s), the XPlus obfuscator (`obfs` as the key; 16-byte salt + SHA-256(key||salt)), the `wechat[-video]` transport (13-byte header, optional XPlus inside) and `fast-open` (the response is replayed on the first read). `faketcp` loads like the pinned decoder but needs a raw-socket TCP stack and is refused by name at dial time on every platform (the pinned non-Linux build is unsupported too). UDP sessions are still a named gap.",
+      "reason": "Hysteria v1 over QUIC: TCP with the binary control hello (auth/auth-str, up/down) and one stream per session; recv-window-conn/recv-window and disable-mtu-discovery are applied to quinn's transport config. T32 implements port hopping (`ports`/`hop-interval`, comma/range expansion with the pinned default 10 s), the XPlus obfuscator (`obfs` as the key; 16-byte salt + SHA-256(key||salt)), the `wechat[-video]` transport (13-byte header, optional XPlus inside) and `fast-open` (the response is replayed on the first read). `faketcp` loads like the pinned decoder but needs a raw-socket TCP stack (CAP_NET_RAW + iptables + a gopacket TCP implementation; the pinned Linux-only build) and is refused by name at dial time on every platform. The `udp=1` session (server-assigned session id plus session|host|port|msg/frag|data datagrams with message-id fragmentation) is implemented for both the mixed inbound and the TUN data plane.",
       "options": [
         "alpn",
         "auth",
@@ -1250,10 +1253,9 @@
         "up",
         "up-speed"
       ],
-      "udp": "not implemented: the engine has no Hysteria UDP session relay; `udp` traffic routed to Hysteria is dropped and logged",
+      "udp": "implemented: the pinned Hysteria v1 `udp=1` session (one bidi stream for the session id, QUIC datagrams for session|host|port|msg/frag|data) in the mixed and TUN paths",
       "notImplemented": [
-        "ech-opts",
-        "udp: true (Hysteria v1 UDP session is not implemented; datagrams are dropped and logged)"
+        "ech-opts"
       ],
       "evidence": [
         "src/outbound/hysteria.rs::tests::base64_matches_the_standard_alphabet",
@@ -1271,9 +1273,12 @@
         "tests/quic_peers.rs::hysteria_v1_tcp_roundtrip_and_target",
         "tests/quic_peers.rs::hysteria_v1_transport_options_load",
         "tests/quic_peers.rs::hysteria_v1_unsupported_options_are_named",
-        "tests/quic_peers.rs::hysteria_v1_wrong_auth_fails_without_forwarding"
+        "tests/quic_peers.rs::hysteria_v1_wrong_auth_fails_without_forwarding",
+        "tests/quic_peers.rs::hysteria_v1_udp_session_roundtrips_through_the_peer",
+        "tests/ios_tunnel.rs::hysteria_udp_session_crosses_the_tunnel",
+        "src/outbound/udp.rs::tests::hysteria_udp_fragments_reassemble_by_message_id"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). T32: the pinned v1.19.34 binary has no Hysteria v1 listener, so the transport features are verified by the pinned Go XPlus algorithm (frames generated and cross-checked with the pinned `Deobfuscate`), the local protocol peer for TCP, and load tests; no end-to-end pinned v1 listener exists."
+      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). T32: the pinned v1.19.34 binary has no Hysteria v1 listener, so the transport features are verified by the pinned Go XPlus algorithm (frames generated and cross-checked with the pinned `Deobfuscate`), the local protocol peer for TCP, and load tests; no end-to-end pinned v1 listener exists; the UDP session is covered by a local protocol peer and TUN/mixed execution tests instead."
     },
     "hysteria2": {
       "status": "partial",
@@ -1362,7 +1367,7 @@
     },
     "shadowquic": {
       "status": "partial",
-      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md. T32 implements the private mihomo Brutal negotiation (`up`/`down`: the extension frame is written on its own stream and the reply is parsed), selects cubic/new_reno/bbr (bbr_meta_v2 alias), applies `cwnd` and maps `bbr-profile` onto the BBR initial window. `zero-rtt` and QUIC `v2` remain named residuals (no JLS session-ticket cache / quinn 0.11 supports v1 only). `dialer-proxy` remains a named residual. T28: the QUIC endpoint applies `interface-name`/`routing-mark`/`ip-version`; `tfo`/`mptcp` are accepted no-ops because the pinned packet dialer cannot apply TCP options to a QUIC UDP socket.",
+      "reason": "TCP and UDP (QUIC datagrams and `udp-over-stream`) are implemented against the pinned listener with an independent JLS random seal and a protocol-level transport; provenance is in tool/kernel-compat/evidence/t15-cleanroom.md. T32 implements the private mihomo Brutal negotiation (`up`/`down`: the extension frame is written on its own stream and the reply is parsed), selects cubic/new_reno/bbr (with `bbr_meta_v1` and `bbr_meta_v2` mapped onto quinn's one BBR sender), applies `cwnd` and maps `bbr-profile` onto the BBR initial window. `zero-rtt` and QUIC `v2` remain named residuals (no JLS session-ticket cache / quinn 0.11 supports v1 only). `dialer-proxy` remains a named residual. T28: the QUIC endpoint applies `interface-name`/`routing-mark`/`ip-version`; `tfo`/`mptcp` are accepted no-ops because the pinned packet dialer cannot apply TCP options to a QUIC UDP socket.",
       "options": [
         "alpn",
         "bbr-profile",

@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t32-target/release/billow-kernel
+# rust: /Users/yanggeng/.cache/cargo-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 291, implemented cases: 107, enabled cases: 100, problems: 0
+# no-op cases: 291, implemented cases: 110, enabled cases: 99, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -381,8 +381,10 @@ impl    vmess   tlsmirror-opts               rust=accept mihomo=accept
 impl    tuic    token                        rust=accept mihomo=accept
 impl    tuic    udp-relay-mode               rust=accept mihomo=accept
 impl    tuic    fast-open                    rust=accept mihomo=accept
+impl    tuic    reduce-rtt                   rust=accept mihomo=accept
 impl    tuic    udp-over-stream              rust=accept mihomo=accept
 impl    tuic    bbr-profile                  rust=accept mihomo=accept
+impl    tuic    congestion-controller:bbr_meta_v1 rust=accept mihomo=accept
 impl    tuic    max-datagram-frame-size      rust=accept mihomo=accept
 impl    tuic    max-udp-relay-packet-size    rust=accept mihomo=accept
 impl    tuic    client-fingerprint           rust=accept mihomo=accept
@@ -393,6 +395,7 @@ impl    hysteria protocol                     rust=accept mihomo=accept
 impl    hysteria fast-open                    rust=accept mihomo=accept
 impl    hysteria client-fingerprint           rust=accept mihomo=accept
 impl    shadowquic congestion-controller        rust=accept mihomo=accept
+impl    shadowquic congestion-controller:bbr_meta_v1 rust=accept mihomo=accept
 impl    shadowquic bbr-profile                  rust=accept mihomo=accept
 impl    shadowquic cwnd                         rust=accept mihomo=accept
 impl    shadowquic up                           rust=accept mihomo=accept
@@ -442,7 +445,6 @@ enabled gost-relay client-fingerprint           rust=reject mihomo=accept
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   traffic-pattern              rust=reject mihomo=reject
 enabled sudoku  udp                          rust=reject mihomo=accept
-enabled tuic    reduce-rtt                   rust=reject mihomo=accept
 enabled tuic    ech-opts                     rust=reject mihomo=reject
 enabled hysteria ech-opts                     rust=reject mihomo=reject
 enabled hysteria2 ech-opts                     rust=reject mihomo=reject

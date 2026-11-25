@@ -1507,11 +1507,19 @@ impl TuicUot {
     pub async fn connect(
         option: &crate::proxies::TuicOutbound,
         target: &Target,
-        _via: &[&crate::proxies::Proxy],
+        via: &[&crate::proxies::Proxy],
         timeout: std::time::Duration,
         tls: &ClientTls,
     ) -> Result<TuicUot, DialError> {
         debug_assert!(option.udp_over_stream);
+        // `TuicUdp` refuses a chain by name; the UoT stream must do the same
+        // instead of dialling the TUIC server directly and bypassing the hops.
+        if via.len() > 1 {
+            return Err(DialError::Chain(format!(
+                "tuic udp-over-stream through {} is not implemented: a QUIC stream cannot be carried through a SOCKS5/UoT hop; the association is never dialled around the chain",
+                via[1].name
+            )));
+        }
         let (stream, _server, version) =
             super::tuic::dial_uot(option, target, tls, timeout).await?;
         Ok(TuicUot {
@@ -1701,6 +1709,249 @@ pub fn spawn_uot_reader(
         let _ = events.send(UotEvent::Closed { key, id });
     });
     handle.abort_handle()
+}
+
+/// Hysteria v1 UDP association (`transport/hysteria/core/client.go`). The
+/// pinned `DialUDP` opens one bidirectional stream with `udp=1`, reads the
+/// server-assigned session id, and carries every datagram on the QUIC
+/// connection:
+///
+/// ```text
+/// session id (u32 BE) | host length (u16 BE) | host | port (u16 BE) |
+/// msg id (u16 BE) | fragment id (u8) | fragment count (u8) |
+/// data length (u16 BE) | data
+/// ```
+///
+/// One association serves every destination; the server keys sessions by the
+/// id and destinations by the address in each datagram. A message larger than
+/// the QUIC payload limit is split by `msg id` (never 0 when fragmented).
+pub struct HysteriaUdp {
+    session: super::hysteria::HysteriaUdpSession,
+    msg_id: u16,
+    fragments: HysteriaDefragger,
+}
+
+impl HysteriaUdp {
+    /// `via` is the `dialer-proxy` chain. A QUIC socket cannot ride a SOCKS5
+    /// UDP hop here, so any hop is refused by name before the handshake.
+    pub async fn connect(
+        option: &crate::proxies::HysteriaOutbound,
+        via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<HysteriaUdp, DialError> {
+        if via.len() > 1 {
+            return Err(DialError::Chain(format!(
+                "hysteria udp through {} is not implemented: a QUIC socket cannot be carried through a SOCKS5 UDP hop; the association is never dialled around the chain",
+                via[1].name
+            )));
+        }
+        let session = super::hysteria::dial_udp(option, tls, timeout).await?;
+        Ok(HysteriaUdp {
+            session,
+            msg_id: 0,
+            fragments: HysteriaDefragger::default(),
+        })
+    }
+
+    pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "hysteria: UDP payload exceeds the u16 data-length field",
+            ));
+        }
+        let Some(max) = self.session.connection.max_datagram_size() else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "hysteria: the QUIC peer disabled datagrams",
+            ));
+        };
+        let header = 14 + target.host.len();
+        if max <= header {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "hysteria: the QUIC datagram limit {max} cannot carry the {header}-byte header of a {}:{} message",
+                    target.host, target.port
+                ),
+            ));
+        }
+        let chunk = max - header;
+        let total = payload.len().div_ceil(chunk).max(1);
+        let total = u8::try_from(total).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "hysteria: a datagram needs more than 255 fragments",
+            )
+        })?;
+        if total <= 1 {
+            return self.send_message(0, 0, 1, target, payload).await;
+        }
+        self.msg_id = self.msg_id.wrapping_add(1);
+        if self.msg_id == 0 {
+            self.msg_id = 1;
+        }
+        let msg_id = self.msg_id;
+        for (index, part) in payload.chunks(chunk).enumerate() {
+            self.send_message(msg_id, index as u8, total, target, part)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn send_message(
+        &self,
+        msg_id: u16,
+        fragment: u8,
+        total: u8,
+        target: &Target,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        let mut message = Vec::with_capacity(14 + target.host.len() + payload.len());
+        message.extend_from_slice(&self.session.session_id.to_be_bytes());
+        message.extend_from_slice(&(target.host.len() as u16).to_be_bytes());
+        message.extend_from_slice(target.host.as_bytes());
+        message.extend_from_slice(&target.port.to_be_bytes());
+        message.extend_from_slice(&msg_id.to_be_bytes());
+        message.push(fragment);
+        message.push(total);
+        message.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        message.extend_from_slice(payload);
+        self.session
+            .connection
+            .send_datagram(bytes::Bytes::from(message))
+            .map_err(|error| {
+                io::Error::new(io::ErrorKind::Other, format!("hysteria: send UDP datagram: {error}"))
+            })
+    }
+
+    /// Receive one reassembled datagram. `Ok(None)` when the connection ended.
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        loop {
+            let datagram = match self.session.connection.read_datagram().await {
+                Ok(datagram) => datagram,
+                Err(_) => return Ok(None),
+            };
+            let Some(message) = decode_hysteria_message(&datagram) else {
+                continue;
+            };
+            if message.session != self.session.session_id {
+                continue;
+            }
+            let Some((target, payload)) = self.fragments.feed(message) else {
+                continue;
+            };
+            if payload.len() > buffer.len() {
+                continue;
+            }
+            buffer[..payload.len()].copy_from_slice(&payload);
+            return Ok(Some((target, payload.len())));
+        }
+    }
+}
+
+/// One decoded Hysteria v1 UDP datagram.
+struct HysteriaMessage {
+    session: u32,
+    host: String,
+    port: u16,
+    msg_id: u16,
+    fragment: u8,
+    total: u8,
+    data: Vec<u8>,
+}
+
+fn decode_hysteria_message(datagram: &[u8]) -> Option<HysteriaMessage> {
+    let mut cursor = 0usize;
+    let session = u32::from_be_bytes(datagram.get(cursor..cursor + 4)?.try_into().ok()?);
+    cursor += 4;
+    let host_len = u16::from_be_bytes(datagram.get(cursor..cursor + 2)?.try_into().ok()?) as usize;
+    cursor += 2;
+    let host = String::from_utf8(datagram.get(cursor..cursor + host_len)?.to_vec()).ok()?;
+    cursor += host_len;
+    let port = u16::from_be_bytes(datagram.get(cursor..cursor + 2)?.try_into().ok()?);
+    cursor += 2;
+    let msg_id = u16::from_be_bytes(datagram.get(cursor..cursor + 2)?.try_into().ok()?);
+    cursor += 2;
+    let fragment = *datagram.get(cursor)?;
+    cursor += 1;
+    let total = *datagram.get(cursor)?;
+    cursor += 1;
+    let data_len = u16::from_be_bytes(datagram.get(cursor..cursor + 2)?.try_into().ok()?) as usize;
+    cursor += 2;
+    let data = datagram.get(cursor..cursor + data_len)?.to_vec();
+    if cursor + data_len != datagram.len() {
+        return None;
+    }
+    Some(HysteriaMessage {
+        session,
+        host,
+        port,
+        msg_id,
+        fragment,
+        total,
+        data,
+    })
+}
+
+/// Reassembles fragmented Hysteria v1 datagrams by `msg id` (the pinned
+/// `defragger` resets when a new message id arrives).
+#[derive(Default)]
+struct HysteriaDefragger {
+    msg_id: u16,
+    host: String,
+    port: u16,
+    frags: Vec<Option<Vec<u8>>>,
+    count: u8,
+}
+
+impl HysteriaDefragger {
+    fn feed(&mut self, message: HysteriaMessage) -> Option<(Target, Vec<u8>)> {
+        if message.total <= 1 {
+            return Some((
+                Target {
+                    host: message.host,
+                    port: message.port,
+                },
+                message.data,
+            ));
+        }
+        if message.fragment >= message.total {
+            return None;
+        }
+        if message.msg_id != self.msg_id {
+            self.msg_id = message.msg_id;
+            self.host = message.host.clone();
+            self.port = message.port;
+            self.frags = vec![None; message.total as usize];
+            self.count = 0;
+        } else if self.frags.len() != message.total as usize {
+            return None;
+        }
+        match self.frags.get_mut(message.fragment as usize) {
+            Some(slot @ None) => {
+                *slot = Some(message.data);
+                self.count += 1;
+            }
+            _ => return None,
+        }
+        if self.count as usize != self.frags.len() {
+            return None;
+        }
+        let mut payload = Vec::new();
+        for fragment in self.frags.drain(..).flatten() {
+            payload.extend_from_slice(&fragment);
+        }
+        self.count = 0;
+        Some((
+            Target {
+                host: std::mem::take(&mut self.host),
+                port: self.port,
+            },
+            payload,
+        ))
+    }
 }
 
 /// Largest UDP payload the Hysteria2 session carries (`protocol.MaxUDPSize`).
@@ -2281,6 +2532,73 @@ mod tests {
         };
         let text = error.to_string();
         assert!(text.contains("hysteria2 udp through hop"), "{text}");
+    }
+
+    #[test]
+    fn tuic_uot_through_a_hop_is_a_named_chain_error() {
+        // `TuicUdp` refuses a chain; the per-destination UoT stream must not
+        // dial the TUIC server directly and bypass the hop.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "proxies:\n  - {name: q, type: tuic, server: 127.0.0.1, port: 8443, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p, udp-over-stream: true, dialer-proxy: hop}\n  - {name: hop, type: socks5, server: 127.0.0.1, port: 1081}\n",
+        )
+        .expect("yaml");
+        let proxies = crate::proxies::parse_proxies(yaml.get("proxies").expect("proxies"))
+            .expect("a TUIC UoT chain still loads");
+        let option = match &proxies[0].protocol {
+            crate::proxies::Protocol::Tuic(option) => option,
+            other => panic!("expected tuic, got {other:?}"),
+        };
+        let via: Vec<&crate::proxies::Proxy> = proxies.iter().collect();
+        let target = Target {
+            host: "127.0.0.1".into(),
+            port: 9,
+        };
+        let error = match futures_block_on(TuicUot::connect(
+            option,
+            &target,
+            &via,
+            std::time::Duration::from_secs(1),
+            &crate::outbound::tls::ClientTls::new(&[]),
+        )) {
+            Ok(_) => panic!("a chain must be refused"),
+            Err(error) => error,
+        };
+        let text = error.to_string();
+        assert!(text.contains("tuic udp-over-stream through hop"), "{text}");
+    }
+
+    #[test]
+    fn hysteria_udp_fragments_reassemble_by_message_id() {
+        let encode = |msg_id: u16, fragment: u8, total: u8, data: &[u8]| {
+            let mut message = Vec::new();
+            message.extend_from_slice(&7u32.to_be_bytes());
+            message.extend_from_slice(&9u16.to_be_bytes());
+            message.extend_from_slice(b"127.0.0.1");
+            message.extend_from_slice(&53u16.to_be_bytes());
+            message.extend_from_slice(&msg_id.to_be_bytes());
+            message.push(fragment);
+            message.push(total);
+            message.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            message.extend_from_slice(data);
+            message
+        };
+        let mut defragger = HysteriaDefragger::default();
+        let second = decode_hysteria_message(&encode(9, 1, 2, b"world")).expect("decode");
+        assert_eq!(second.session, 7);
+        assert!(defragger.feed(second).is_none(), "the first half is missing");
+        let first = decode_hysteria_message(&encode(9, 0, 2, b"hello ")).expect("decode");
+        let (target, payload) = defragger.feed(first).expect("both halves now");
+        assert_eq!(target.host, "127.0.0.1");
+        assert_eq!(target.port, 53);
+        assert_eq!(payload, b"hello world");
+        // A new message id discards an incomplete one instead of joining it.
+        let stale = decode_hysteria_message(&encode(10, 1, 2, b"b")).expect("decode");
+        assert!(defragger.feed(stale).is_none());
+        let fresh = decode_hysteria_message(&encode(11, 0, 2, b"a")).expect("decode");
+        assert!(defragger.feed(fresh).is_none());
+        let other_half = decode_hysteria_message(&encode(11, 1, 2, b"c")).expect("decode");
+        let (_, payload) = defragger.feed(other_half).expect("fresh message completes");
+        assert_eq!(payload, b"ac");
     }
 
     /// A tiny block_on so the unit tests do not need a tokio test runtime.

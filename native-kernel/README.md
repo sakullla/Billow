@@ -21,9 +21,9 @@ remaining TUIC/ShadowQUIC/Hysteria-v1 options: TUIC v4 (`token`/BLAKE3), both
 UDP relay carriers, `udp-over-stream`, datagram sizing, `fast-open` and
 `bbr-profile`; ShadowQUIC's private Brutal negotiation plus its
 `congestion-controller`/`cwnd`/`bbr-profile`; and Hysteria v1 port hopping, the
-XPlus obfuscator, the `wechat` transport and `fast-open`. The residuals are
-`tuic reduce-rtt`, `shadowquic zero-rtt`/QUIC v2, Hysteria v1 `faketcp` at dial
-time and its UDP session (see `tool/kernel-compat/evidence/t32-option-closure.md`).
+XPlus obfuscator, the `wechat` transport, `fast-open` and the `udp=1` session.
+The residuals are `shadowquic zero-rtt`/QUIC v2 and Hysteria v1 `faketcp` at
+dial time (see `tool/kernel-compat/evidence/t32-option-closure.md`).
 T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol).
 T17 added `sudoku` as a translation of the pinned GPL-3.0 `transport/sudoku`
@@ -756,8 +756,8 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   CONNECT-IP for UDP and TCP with a minimal in-tree TCP client; `h2`,
   `h3-l4proxy`, gVisor and the pinned TCP-stack behaviour are not reproduced),
   `tuic`, `hysteria` and
-  `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP and JLS, but `zero-rtt`,
-  QUIC `v2` and the private Brutal congestion options are rejected), and
+  `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP, JLS and the private
+  Brutal/congestion options, but `zero-rtt` and QUIC `v2` are rejected), and
   `wireguard`/`openvpn` (protocol transports implemented, TCP/UDP dial needs
   the T6/T7 userspace IP stack and TUN device);
 - **partial (2 more)**: `tailscale` (control/DERP protocol halves; the tunnel
@@ -962,19 +962,23 @@ fragmentation, `quic` one packet per uni stream), `udp-over-stream` (the pinned
 `sp[.v2].udp-over-tcp.arpa` UoT framing), `fast-open` (lazy v4 response),
 `bbr-profile` (BBR initial-window approximation), `max-datagram-frame-size`/
 `max-udp-relay-packet-size` (the pinned derivation, v5 clamped to 1168) and
-`client-fingerprint` (rustls approximation); the cubic/new_reno/bbr/bbr_meta_v2
-controller (v2 is the pinned alias of bbr), `cwnd`, receive windows and
-`disable-mtu-discovery` are applied to quinn; `cwnd` becomes a BBR initial
-window of `cwnd × 1280` for TUIC and `cwnd × 1242` for masque. `reduce-rtt`
-(0-RTT needs a session-ticket cache and a pooled connection), `bbr_meta_v1` and
-`ech-opts` are named. `hysteria` implements `ports`/`hop-interval` (comma/range
-expansion, pinned 10 s default, destination-port rewriting with reply mapping),
-`obfs` (XPlus: 16-byte salt + SHA-256(key‖salt) XOR), `protocol: wechat[-video]`
-(the 13-byte header with XPlus or identity inside), `fast-open` (the response is
-replayed on the first read) and `client-fingerprint`; `recv-window*` and
-`disable-mtu-discovery` are applied. `protocol: faketcp` loads like the pinned
-decoder and is refused at dial time (a raw-socket TCP stack; the pinned
-non-Linux build is unsupported too), and UDP sessions are still a named gap. `hysteria2` `ports`/`hop-interval` (a wrapped `quinn::AsyncUdpSocket` rewrites
+`client-fingerprint` (rustls approximation); the cubic/new_reno/bbr/bbr_meta_v1/
+bbr_meta_v2 controller (v1 and v2 are pinned names that map onto quinn's one
+BBR sender), `cwnd`, receive windows and `disable-mtu-discovery` are applied to
+quinn; `cwnd` becomes a BBR initial window of `cwnd × 1280` for TUIC and
+`cwnd × 1242` for masque. `reduce-rtt` is parsed because the pinned TUIC
+adapter also never configures `ClientSessionCache`, so its `DialEarly` always
+falls back to a full handshake; `ech-opts` is named. `hysteria` implements
+`ports`/`hop-interval` (comma/range expansion, pinned 10 s default,
+destination-port rewriting with reply mapping), `obfs` (XPlus: 16-byte salt +
+SHA-256(key‖salt) XOR), `protocol: wechat[-video]` (the 13-byte header with
+XPlus or identity inside), `fast-open` (the response is replayed on the first
+read) and `client-fingerprint`; `recv-window*` and `disable-mtu-discovery` are
+applied. The `udp=1` session (one stream for the server-assigned session id,
+`session|host|port|msg/frag|data` QUIC datagrams, message-id fragmentation) is
+implemented for both the mixed inbound and the TUN data plane.
+`protocol: faketcp` loads like the pinned decoder and is refused at dial time
+(a raw-socket TCP stack; the pinned non-Linux build is unsupported too). `hysteria2` `ports`/`hop-interval` (a wrapped `quinn::AsyncUdpSocket` rewrites
 the destination port and maps replies back), `obfs: salamander` (BLAKE2b-256
 salt/XOR), `obfs: gecko` (Salamander plus the pinned long-header fragmentation,
 padding and reassembly), `realm-opts` (the control HTTP `/connect`, STUN
@@ -1007,9 +1011,10 @@ and refuses UDP dials while TCP still uses the tunnel. `shadowquic` implements t
 negotiation (`up`/`down` write the extension frame on its own stream and parse
 the reply; the controller is selected before the handshake because quinn cannot
 swap a live transport), `congestion-controller` (cubic/new_reno/bbr, with
-`bbr_meta_v2` as the pinned alias), `cwnd` and `bbr-profile` (initial-window
-approximation). It rejects `zero-rtt` (JLS 0-RTT needs the pinned authenticated
-session ticket), `quic-versions: v2` (quinn 0.11 implements v1 only) and
+`bbr_meta_v1` and `bbr_meta_v2` mapped onto quinn's BBR sender), `cwnd` and
+`bbr-profile` (initial-window approximation). It rejects `zero-rtt` (JLS 0-RTT
+needs the pinned authenticated session ticket), `quic-versions: v2` (quinn
+0.11 implements v1 only) and
 `dialer-proxy`; its `skip-cert-verify`/`udp`/`tls` keys are not declared by the
 pinned type, so they load and are ignored exactly as Mihomo ignores them. `wireguard` rejects
 `amnezia-wg-option` (AmneziaWG's header obfuscation is a different device,
@@ -1234,9 +1239,10 @@ group differential runs the same pinned binary with loopback CONNECT nodes:
 - `tests/sessions.rs` — inbound sessions, half-close, stop/restart, limits.
 - `tests/quic_peers.rs` — T10/T14 QUIC loopback peers: TUIC v5 (auth token,
   domain and IP targets, wrong password, v4 token rejection, unimplemented
-  options, `request-timeout` bounding a blocked stream open), Hysteria v1
-  (control hello, `auth-str` and base64 auth, wrong auth,
-  port-hopping/XPlus/faketcp rejection, rate validation), the Hysteria2 `up`
+  options, `request-timeout` bounding a blocked stream open), TUIC v4
+  `fast-open` (early success and the replayed `0x04 0xff 01` rejection),
+  Hysteria v1 (control hello, `auth-str` and base64 auth, wrong auth, the
+  `udp=1` session, port-hopping/XPlus/faketcp rejection, rate validation), the Hysteria2 `up`
   rejection, and the MASQUE CONNECT-UDP peer (request headers and proxy
   authority, one flow per destination, capsule echo, a refused request, a peer
   without extended CONNECT, a 200 without the capsule protocol, an untrusted

@@ -1,35 +1,35 @@
 {
   "format": "t5-integration",
   "version": 1,
-  "startedAt": "2026-11-25T12:21:48.796Z",
+  "startedAt": "2026-11-25T13:40:22.274Z",
   "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
-  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t32-target/release/billow-kernel",
+  "rust": "/Users/yanggeng/.cache/cargo-target/debug/billow-kernel",
   "peers": {
     "ss": {
-      "port": 61049,
+      "port": 65457,
       "ready": true
     },
     "trojan": {
-      "port": 61053,
+      "port": 65461,
       "ready": true
     },
     "ssr": {
       "binary": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/peers/ssr-server",
-      "port": 61061,
+      "port": 65469,
       "ready": true
     },
     "shadowquic": {
-      "port": 61057,
+      "port": 65465,
       "ready": true,
-      "jlsUpstream": 60294
+      "jlsUpstream": 52651
     },
-    "dns": 53069,
-    "provider": 61048,
-    "echoA": 61043,
-    "echoB": 61044,
-    "echoC": 61045,
-    "echoD": 61046,
-    "health": 61047,
+    "dns": 51679,
+    "provider": 65456,
+    "echoA": 65451,
+    "echoB": 65452,
+    "echoC": 65453,
+    "echoD": 65454,
+    "health": 65455,
     "dnsQueries": [
       "alias-target.test/1",
       "real.test/1",
@@ -43,12 +43,12 @@
     "mihomo": {
       "engine": "mihomo",
       "ready": true,
-      "mixed": 61064,
-      "dns": 61065,
-      "controller": 61066,
-      "config": "mixed-port: 61064\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:61066\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:61065\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:53069']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:61048/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:61047/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 61049, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 61053, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 61061, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 61057, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 61049, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:61047/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:61047/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,61043)),REJECT\n  - DST-PORT,61044,trojan-node\n  - DST-PORT,61045,ssr-node\n  - DST-PORT,61046,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
+      "mixed": 65472,
+      "dns": 65473,
+      "controller": 65474,
+      "config": "mixed-port: 65472\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:65474\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:65473\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:51679']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:65456/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:65455/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 65457, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 65461, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 65469, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 65465, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 65457, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:65455/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:65455/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,65451)),REJECT\n  - DST-PORT,65452,trojan-node\n  - DST-PORT,65453,ssr-node\n  - DST-PORT,65454,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
       "logs": {
-        "stdout": "time=\"2026-11-25T20:21:49.575702000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T20:21:49.577884000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T20:21:49.577898000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T20:21:49.578077000+08:00\" level=info msg=\"Load GeoSite rule: cn\"\ntime=\"2026-11-25T20:21:49.578831000+08:00\" level=info msg=\"Load GeoSite rule: t5site\"\ntime=\"2026-11-25T20:21:49.579282000+08:00\" level=info msg=\"Finished initial GeoSite rule t5site => REJECT, records: 1\"\ntime=\"2026-11-25T20:21:49.579347000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T20:21:49.579809000+08:00\" level=info msg=\"Load GeoIP rule: zz\"\ntime=\"2026-11-25T20:21:49.580299000+08:00\" level=info msg=\"Finished initial GeoIP rule zz => ss-node, records: 1\"\ntime=\"2026-11-25T20:21:49.580730000+08:00\" level=info msg=\"Initial configuration complete, total time: 5ms\"\ntime=\"2026-11-25T20:22:04.425436000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+        "stdout": "time=\"2026-11-25T21:40:23.061179000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T21:40:23.063522000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T21:40:23.063534000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T21:40:23.063680000+08:00\" level=info msg=\"Load GeoSite rule: cn\"\ntime=\"2026-11-25T21:40:23.064316000+08:00\" level=info msg=\"Load GeoSite rule: t5site\"\ntime=\"2026-11-25T21:40:23.064814000+08:00\" level=info msg=\"Finished initial GeoSite rule t5site => REJECT, records: 1\"\ntime=\"2026-11-25T21:40:23.064918000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T21:40:23.065428000+08:00\" level=info msg=\"Load GeoIP rule: zz\"\ntime=\"2026-11-25T21:40:23.065797000+08:00\" level=info msg=\"Finished initial GeoIP rule zz => ss-node, records: 1\"\ntime=\"2026-11-25T21:40:23.065935000+08:00\" level=info msg=\"Initial configuration complete, total time: 4ms\"\ntime=\"2026-11-25T21:40:42.959695000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
         "stderr": ""
       },
       "dnsAnswers": {
@@ -157,31 +157,31 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.586004+08:00",
-                        "delay": 3
+                        "time": "2026-11-25T21:40:23.071923+08:00",
+                        "delay": 4
                       },
                       {
-                        "time": "2026-11-25T20:21:49.587278+08:00",
-                        "delay": 4
+                        "time": "2026-11-25T21:40:23.072537+08:00",
+                        "delay": 5
                       }
                     ]
                   }
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.586004+08:00",
-                    "delay": 3
+                    "time": "2026-11-25T21:40:23.071923+08:00",
+                    "delay": 4
                   },
                   {
-                    "time": "2026-11-25T20:21:49.587278+08:00",
-                    "delay": 4
+                    "time": "2026-11-25T21:40:23.072537+08:00",
+                    "delay": 5
                   }
                 ],
-                "id": "212f04ee-9d8e-4aa8-8d8b-f1c91bf61057",
+                "id": "25ce22b8-542b-4fe0-b300-971f947001c6",
                 "interface": "",
                 "mptcp": false,
                 "name": "ss-node",
@@ -198,15 +198,15 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.588984+08:00",
-                        "delay": 6
+                        "time": "2026-11-25T21:40:23.073327+08:00",
+                        "delay": 5
                       },
                       {
-                        "time": "2026-11-25T20:21:49.589124+08:00",
+                        "time": "2026-11-25T21:40:23.073987+08:00",
                         "delay": 6
                       }
                     ]
@@ -214,15 +214,15 @@
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.588984+08:00",
-                    "delay": 6
+                    "time": "2026-11-25T21:40:23.073327+08:00",
+                    "delay": 5
                   },
                   {
-                    "time": "2026-11-25T20:21:49.589124+08:00",
+                    "time": "2026-11-25T21:40:23.073987+08:00",
                     "delay": 6
                   }
                 ],
-                "id": "2c108ffb-1ebb-4bae-9775-0c82210cbe89",
+                "id": "f684e97d-9cce-4b1a-a193-aa59333e6865",
                 "interface": "",
                 "mptcp": false,
                 "name": "trojan-node",
@@ -236,7 +236,7 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "expectedStatus": "*",
             "updatedAt": "0001-01-01T00:00:00Z"
           },
@@ -250,7 +250,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "7737ff2e-b16f-4c23-bcdf-65f3d6cf202b",
+                "id": "df7f0963-c4dd-48f9-982f-4234516d423f",
                 "interface": "",
                 "mptcp": false,
                 "name": "bad-ss",
@@ -277,31 +277,31 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.586004+08:00",
-                        "delay": 3
+                        "time": "2026-11-25T21:40:23.071923+08:00",
+                        "delay": 4
                       },
                       {
-                        "time": "2026-11-25T20:21:49.587278+08:00",
-                        "delay": 4
+                        "time": "2026-11-25T21:40:23.072537+08:00",
+                        "delay": 5
                       }
                     ]
                   }
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.586004+08:00",
-                    "delay": 3
+                    "time": "2026-11-25T21:40:23.071923+08:00",
+                    "delay": 4
                   },
                   {
-                    "time": "2026-11-25T20:21:49.587278+08:00",
-                    "delay": 4
+                    "time": "2026-11-25T21:40:23.072537+08:00",
+                    "delay": 5
                   }
                 ],
-                "id": "212f04ee-9d8e-4aa8-8d8b-f1c91bf61057",
+                "id": "25ce22b8-542b-4fe0-b300-971f947001c6",
                 "interface": "",
                 "mptcp": false,
                 "name": "ss-node",
@@ -318,15 +318,15 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.588984+08:00",
-                        "delay": 6
+                        "time": "2026-11-25T21:40:23.073327+08:00",
+                        "delay": 5
                       },
                       {
-                        "time": "2026-11-25T20:21:49.589124+08:00",
+                        "time": "2026-11-25T21:40:23.073987+08:00",
                         "delay": 6
                       }
                     ]
@@ -334,15 +334,15 @@
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.588984+08:00",
-                    "delay": 6
+                    "time": "2026-11-25T21:40:23.073327+08:00",
+                    "delay": 5
                   },
                   {
-                    "time": "2026-11-25T20:21:49.589124+08:00",
+                    "time": "2026-11-25T21:40:23.073987+08:00",
                     "delay": 6
                   }
                 ],
-                "id": "2c108ffb-1ebb-4bae-9775-0c82210cbe89",
+                "id": "f684e97d-9cce-4b1a-a193-aa59333e6865",
                 "interface": "",
                 "mptcp": false,
                 "name": "trojan-node",
@@ -356,7 +356,7 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "expectedStatus": "*",
             "updatedAt": "0001-01-01T00:00:00Z"
           },
@@ -369,31 +369,31 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.586004+08:00",
-                        "delay": 3
+                        "time": "2026-11-25T21:40:23.071923+08:00",
+                        "delay": 4
                       },
                       {
-                        "time": "2026-11-25T20:21:49.587278+08:00",
-                        "delay": 4
+                        "time": "2026-11-25T21:40:23.072537+08:00",
+                        "delay": 5
                       }
                     ]
                   }
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.586004+08:00",
-                    "delay": 3
+                    "time": "2026-11-25T21:40:23.071923+08:00",
+                    "delay": 4
                   },
                   {
-                    "time": "2026-11-25T20:21:49.587278+08:00",
-                    "delay": 4
+                    "time": "2026-11-25T21:40:23.072537+08:00",
+                    "delay": 5
                   }
                 ],
-                "id": "212f04ee-9d8e-4aa8-8d8b-f1c91bf61057",
+                "id": "25ce22b8-542b-4fe0-b300-971f947001c6",
                 "interface": "",
                 "mptcp": false,
                 "name": "ss-node",
@@ -410,15 +410,15 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.588984+08:00",
-                        "delay": 6
+                        "time": "2026-11-25T21:40:23.073327+08:00",
+                        "delay": 5
                       },
                       {
-                        "time": "2026-11-25T20:21:49.589124+08:00",
+                        "time": "2026-11-25T21:40:23.073987+08:00",
                         "delay": 6
                       }
                     ]
@@ -426,15 +426,15 @@
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.588984+08:00",
-                    "delay": 6
+                    "time": "2026-11-25T21:40:23.073327+08:00",
+                    "delay": 5
                   },
                   {
-                    "time": "2026-11-25T20:21:49.589124+08:00",
+                    "time": "2026-11-25T21:40:23.073987+08:00",
                     "delay": 6
                   }
                 ],
-                "id": "2c108ffb-1ebb-4bae-9775-0c82210cbe89",
+                "id": "f684e97d-9cce-4b1a-a193-aa59333e6865",
                 "interface": "",
                 "mptcp": false,
                 "name": "trojan-node",
@@ -452,7 +452,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "1cd64f5d-0f62-44b5-bc3a-7cc2f6a49c6d",
+                "id": "ad77a58b-d581-41b1-8988-c24d20a6a3a4",
                 "interface": "",
                 "mptcp": false,
                 "name": "ssr-node",
@@ -480,7 +480,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "af8210ea-0f61-467b-8c6c-9852f32f665d",
+                "id": "39cf475a-922b-42d2-a0c9-5aeda5462ee1",
                 "interface": "",
                 "mptcp": false,
                 "name": "DIRECT",
@@ -498,7 +498,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "be67386f-f009-49ac-a657-227cf38ed041",
+                "id": "768f8e82-9bcf-48b6-800a-8e60ac3fa638",
                 "interface": "",
                 "mptcp": false,
                 "name": "REJECT",
@@ -515,31 +515,31 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.586004+08:00",
-                        "delay": 3
+                        "time": "2026-11-25T21:40:23.071923+08:00",
+                        "delay": 4
                       },
                       {
-                        "time": "2026-11-25T20:21:49.587278+08:00",
-                        "delay": 4
+                        "time": "2026-11-25T21:40:23.072537+08:00",
+                        "delay": 5
                       }
                     ]
                   }
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.586004+08:00",
-                    "delay": 3
+                    "time": "2026-11-25T21:40:23.071923+08:00",
+                    "delay": 4
                   },
                   {
-                    "time": "2026-11-25T20:21:49.587278+08:00",
-                    "delay": 4
+                    "time": "2026-11-25T21:40:23.072537+08:00",
+                    "delay": 5
                   }
                 ],
-                "id": "212f04ee-9d8e-4aa8-8d8b-f1c91bf61057",
+                "id": "25ce22b8-542b-4fe0-b300-971f947001c6",
                 "interface": "",
                 "mptcp": false,
                 "name": "ss-node",
@@ -556,15 +556,15 @@
                 "alive": true,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": true,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.588984+08:00",
-                        "delay": 6
+                        "time": "2026-11-25T21:40:23.073327+08:00",
+                        "delay": 5
                       },
                       {
-                        "time": "2026-11-25T20:21:49.589124+08:00",
+                        "time": "2026-11-25T21:40:23.073987+08:00",
                         "delay": 6
                       }
                     ]
@@ -572,15 +572,15 @@
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.588984+08:00",
-                    "delay": 6
+                    "time": "2026-11-25T21:40:23.073327+08:00",
+                    "delay": 5
                   },
                   {
-                    "time": "2026-11-25T20:21:49.589124+08:00",
+                    "time": "2026-11-25T21:40:23.073987+08:00",
                     "delay": 6
                   }
                 ],
-                "id": "2c108ffb-1ebb-4bae-9775-0c82210cbe89",
+                "id": "f684e97d-9cce-4b1a-a193-aa59333e6865",
                 "interface": "",
                 "mptcp": false,
                 "name": "trojan-node",
@@ -598,7 +598,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "1cd64f5d-0f62-44b5-bc3a-7cc2f6a49c6d",
+                "id": "ad77a58b-d581-41b1-8988-c24d20a6a3a4",
                 "interface": "",
                 "mptcp": false,
                 "name": "ssr-node",
@@ -616,7 +616,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "c4410a7b-ffe1-4a77-90c7-923a99a55079",
+                "id": "4eba503a-3cf1-4b2e-904b-64d0a54d3410",
                 "interface": "",
                 "mptcp": false,
                 "name": "squic-node",
@@ -634,7 +634,7 @@
                 "dialer-proxy": "",
                 "extra": {},
                 "history": [],
-                "id": "7737ff2e-b16f-4c23-bcdf-65f3d6cf202b",
+                "id": "df7f0963-c4dd-48f9-982f-4234516d423f",
                 "interface": "",
                 "mptcp": false,
                 "name": "bad-ss",
@@ -695,7 +695,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "URLTest",
                 "udp": true,
@@ -723,7 +723,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "Fallback",
                 "udp": true,
@@ -773,7 +773,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "Selector",
                 "udp": false,
@@ -794,11 +794,11 @@
                 "alive": false,
                 "dialer-proxy": "",
                 "extra": {
-                  "http://127.0.0.1:61047/generate_204": {
+                  "http://127.0.0.1:65455/generate_204": {
                     "alive": false,
                     "history": [
                       {
-                        "time": "2026-11-25T20:21:49.584159+08:00",
+                        "time": "2026-11-25T21:40:23.068091+08:00",
                         "delay": 0
                       }
                     ]
@@ -806,11 +806,11 @@
                 },
                 "history": [
                   {
-                    "time": "2026-11-25T20:21:49.584159+08:00",
+                    "time": "2026-11-25T21:40:23.068091+08:00",
                     "delay": 0
                   }
                 ],
-                "id": "5a0f5a10-fd42-4f38-9764-3bb9effa623f",
+                "id": "471c2b02-0efc-4909-ba09-399e68fabbf6",
                 "interface": "",
                 "mptcp": false,
                 "name": "sub-a",
@@ -824,9 +824,9 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "expectedStatus": "*",
-            "updatedAt": "2026-11-25T20:21:49.562119104+08:00"
+            "updatedAt": "2026-11-25T21:40:23.041172667+08:00"
           }
         }
       },
@@ -883,19 +883,19 @@
           "error": "connection closed before the response head"
         },
         "www.google.com": {
-          "category": "timeout",
-          "connectStatus": 200,
-          "error": "no response within 5000 ms"
-        },
-        "geo.test": {
-          "category": "timeout",
-          "connectStatus": 200,
-          "error": "no response within 5000 ms"
-        },
-        "http-probe.test": {
           "category": "closed",
           "connectStatus": 0,
           "error": "connection closed before the response head"
+        },
+        "geo.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head"
+        },
+        "http-probe.test": {
+          "category": "timeout",
+          "connectStatus": 200,
+          "error": "no response within 5000 ms"
         },
         "and-probe.test": {
           "category": "closed",
@@ -937,7 +937,7 @@
         "localhostAfter": "blocked",
         "failureStatus": 400,
         "localhostAfterFailure": "blocked",
-        "mixedPort": 61064,
+        "mixedPort": 65472,
         "groups": "ss-node",
         "dnsAfter": {
           "name": "fake.test",
@@ -956,13 +956,13 @@
     "rust": {
       "engine": "rust",
       "ready": true,
-      "mixed": 61152,
-      "dns": 61153,
-      "controller": 61154,
-      "config": "mixed-port: 61152\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:61154\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:61153\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:53069']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:61048/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:61047/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 61049, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 61053, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 61061, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 61057, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 61049, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:61047/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:61047/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,61043)),REJECT\n  - DST-PORT,61044,trojan-node\n  - DST-PORT,61045,ssr-node\n  - DST-PORT,61046,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
+      "mixed": 49179,
+      "dns": 49180,
+      "controller": 49181,
+      "config": "mixed-port: 49179\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:49181\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:49180\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:51679']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:65456/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:65455/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 65457, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 65461, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 65469, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 65465, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 65457, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:65455/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:65455/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,65451)),REJECT\n  - DST-PORT,65452,trojan-node\n  - DST-PORT,65453,ssr-node\n  - DST-PORT,65454,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
       "logs": {
-        "stdout": "instance=68d11d91-1d11-435e-b9d8-7c588628a9ee pid=79526 version=0.1.0 listen=127.0.0.1:61152 overridden_port=61152 config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75 rules=13 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/rust state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:61153)\nstopped instance=68d11d91-1d11-435e-b9d8-7c588628a9ee accepted=20 active=0 completed=9 rejected=10 failed=1 bytes_up=886 bytes_down=1055\n",
-        "stderr": "[12:22:04.572 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:61153) instance=68d11d91-1d11-435e-b9d8-7c588628a9ee pid=79526 version=\"0.1.0\" listen=127.0.0.1:61152\n[12:22:04.635 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:61167 code=\"closed\"\n[12:22:04.644 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=localhost:61043 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=trojan-node type=trojan server=127.0.0.1:61053 chain=trojan-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:04.664 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:61043 bytes_up=104 bytes_down=137\n[12:22:05.187 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=127.0.0.1:61043 protocol=\"http-connect\" rule=GEOIP,zz -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:61049 chain=ss-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:05.210 INFO  billow_kernel::engine] message=session closed session=3 target=127.0.0.1:61043 bytes_up=94 bytes_down=127\n[12:22:05.714 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=127.0.0.1:61044 protocol=\"http-connect\" rule=DST-PORT,61044 -> PROXY outbound=proxy=trojan-node type=trojan server=127.0.0.1:61053 chain=trojan-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:05.734 INFO  billow_kernel::engine] message=session closed session=4 target=127.0.0.1:61044 bytes_up=98 bytes_down=131\n[12:22:06.236 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=127.0.0.1:61045 protocol=\"http-connect\" rule=DST-PORT,61045 -> PROXY outbound=proxy=ssr-node type=ssr server=127.0.0.1:61061 chain=ssr-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:06.239 INFO  billow_kernel::engine] message=session closed session=5 target=127.0.0.1:61045 bytes_up=95 bytes_down=128\n[12:22:06.245 INFO  billow_kernel::engine] message=PROXY tunnel established session=6 target=127.0.0.1:61046 protocol=\"http-connect\" rule=DST-PORT,61046 -> PROXY outbound=proxy=squic-node type=shadowquic server=127.0.0.1:61057 chain=squic-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:06.261 INFO  billow_kernel::engine] message=session closed session=6 target=127.0.0.1:61046 bytes_up=97 bytes_down=130\n[12:22:06.763 INFO  billow_kernel::engine] message=PROXY tunnel established session=7 target=bad.localhost:61043 protocol=\"http-connect\" rule=DOMAIN,bad.localhost -> GROUP outbound=proxy=bad-ss type=ss server=127.0.0.1:61049 chain=bad-ss config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:06.785 INFO  billow_kernel::engine] message=session closed session=7 target=bad.localhost:61043 bytes_up=95 bytes_down=0\n[12:22:12.293 INFO  billow_kernel::engine] message=PROXY tunnel established session=8 target=bad-ok.localhost:61043 protocol=\"http-connect\" rule=DOMAIN,bad-ok.localhost -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:61049 chain=ss-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:12.315 INFO  billow_kernel::engine] message=session closed session=8 target=bad-ok.localhost:61043 bytes_up=98 bytes_down=131\n[12:22:12.839 INFO  billow_kernel::engine] message=REJECT session=9 target=text-probe.test:61043 protocol=\"http-connect\" rule=RULE-SET,rp-text -> REJECT\n[12:22:12.840 INFO  billow_kernel::engine] message=REJECT session=10 target=www.google.com:61043 protocol=\"http-connect\" rule=RULE-SET,rp-mrs -> REJECT\n[12:22:12.840 INFO  billow_kernel::engine] message=REJECT session=11 target=geo.test:61043 protocol=\"http-connect\" rule=GEOSITE,t5site -> REJECT\n[12:22:12.840 INFO  billow_kernel::engine] message=REJECT session=12 target=http-probe.test:61043 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[12:22:12.840 INFO  billow_kernel::engine] message=REJECT session=13 target=and-probe.test:61043 protocol=\"http-connect\" rule=AND,(DOMAIN,and-probe.test,DST-PORT,61043) -> REJECT\n[12:22:12.842 INFO  billow_kernel::engine] message=PROXY tunnel established session=14 target=localhost:61043 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:61049 chain=ss-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:12.862 INFO  billow_kernel::engine] message=session closed session=14 target=localhost:61043 bytes_up=100 bytes_down=133\n[12:22:13.366 INFO  billow_kernel::engine] message=PROXY tunnel established session=15 target=localhost:61043 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:61049 chain=ss-node config=sha256:a0499a2b70da5b911a23741165bea32f6aec794143515d030fbeaba86063de75\n[12:22:13.368 INFO  billow_kernel::engine] message=session closed session=15 target=localhost:61043 bytes_up=105 bytes_down=138\n[12:22:13.871 INFO  billow_kernel::engine] message=REJECT session=16 target=http-probe.test:61043 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[12:22:13.873 INFO  billow_kernel::engine] message=REJECT session=17 target=localhost:61043 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[12:22:13.874 INFO  billow_kernel::engine] message=REJECT session=18 target=localhost:61043 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[12:22:13.982 INFO  billow_kernel::engine] message=REJECT session=19 target=localhost:61043 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[12:22:13.983 INFO  billow_kernel::engine] message=REJECT session=20 target=localhost:61043 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[12:22:13.984 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:22:13.985 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=20\n[12:22:13.985 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:22:13.985 INFO  billow_kernel::engine] message=billow-kernel stopped instance=68d11d91-1d11-435e-b9d8-7c588628a9ee sessions=20 active=0 finished=20\n"
+        "stdout": "instance=1ae976c5-d798-4591-b244-0a17bf7ddefe pid=48495 version=0.1.0 listen=127.0.0.1:49179 overridden_port=49179 config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262 rules=13 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/rust state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:49180)\nstopped instance=1ae976c5-d798-4591-b244-0a17bf7ddefe accepted=20 active=0 completed=9 rejected=10 failed=1 bytes_up=886 bytes_down=1055\n",
+        "stderr": "[13:40:43.085 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:49180) instance=1ae976c5-d798-4591-b244-0a17bf7ddefe pid=48495 version=\"0.1.0\" listen=127.0.0.1:49179\n[13:40:43.168 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:49194 code=\"closed\"\n[13:40:43.179 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=localhost:65451 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=trojan-node type=trojan server=127.0.0.1:65461 chain=trojan-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:43.198 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:65451 bytes_up=104 bytes_down=137\n[13:40:43.703 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=127.0.0.1:65451 protocol=\"http-connect\" rule=GEOIP,zz -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:65457 chain=ss-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:43.725 INFO  billow_kernel::engine] message=session closed session=3 target=127.0.0.1:65451 bytes_up=94 bytes_down=127\n[13:40:44.253 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=127.0.0.1:65452 protocol=\"http-connect\" rule=DST-PORT,65452 -> PROXY outbound=proxy=trojan-node type=trojan server=127.0.0.1:65461 chain=trojan-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:44.268 INFO  billow_kernel::engine] message=session closed session=4 target=127.0.0.1:65452 bytes_up=98 bytes_down=131\n[13:40:44.771 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=127.0.0.1:65453 protocol=\"http-connect\" rule=DST-PORT,65453 -> PROXY outbound=proxy=ssr-node type=ssr server=127.0.0.1:65469 chain=ssr-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:44.791 INFO  billow_kernel::engine] message=session closed session=5 target=127.0.0.1:65453 bytes_up=95 bytes_down=128\n[13:40:44.800 INFO  billow_kernel::engine] message=PROXY tunnel established session=6 target=127.0.0.1:65454 protocol=\"http-connect\" rule=DST-PORT,65454 -> PROXY outbound=proxy=squic-node type=shadowquic server=127.0.0.1:65465 chain=squic-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:44.813 INFO  billow_kernel::engine] message=session closed session=6 target=127.0.0.1:65454 bytes_up=97 bytes_down=130\n[13:40:45.334 INFO  billow_kernel::engine] message=PROXY tunnel established session=7 target=bad.localhost:65451 protocol=\"http-connect\" rule=DOMAIN,bad.localhost -> GROUP outbound=proxy=bad-ss type=ss server=127.0.0.1:65457 chain=bad-ss config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:45.354 INFO  billow_kernel::engine] message=session closed session=7 target=bad.localhost:65451 bytes_up=95 bytes_down=0\n[13:40:50.874 INFO  billow_kernel::engine] message=PROXY tunnel established session=8 target=bad-ok.localhost:65451 protocol=\"http-connect\" rule=DOMAIN,bad-ok.localhost -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:65457 chain=ss-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:50.896 INFO  billow_kernel::engine] message=session closed session=8 target=bad-ok.localhost:65451 bytes_up=98 bytes_down=131\n[13:40:51.415 INFO  billow_kernel::engine] message=REJECT session=9 target=text-probe.test:65451 protocol=\"http-connect\" rule=RULE-SET,rp-text -> REJECT\n[13:40:51.417 INFO  billow_kernel::engine] message=REJECT session=10 target=www.google.com:65451 protocol=\"http-connect\" rule=RULE-SET,rp-mrs -> REJECT\n[13:40:51.419 INFO  billow_kernel::engine] message=REJECT session=11 target=geo.test:65451 protocol=\"http-connect\" rule=GEOSITE,t5site -> REJECT\n[13:40:51.420 INFO  billow_kernel::engine] message=REJECT session=12 target=http-probe.test:65451 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[13:40:51.421 INFO  billow_kernel::engine] message=REJECT session=13 target=and-probe.test:65451 protocol=\"http-connect\" rule=AND,(DOMAIN,and-probe.test,DST-PORT,65451) -> REJECT\n[13:40:51.427 INFO  billow_kernel::engine] message=PROXY tunnel established session=14 target=localhost:65451 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:65457 chain=ss-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:51.448 INFO  billow_kernel::engine] message=session closed session=14 target=localhost:65451 bytes_up=100 bytes_down=133\n[13:40:51.970 INFO  billow_kernel::engine] message=PROXY tunnel established session=15 target=localhost:65451 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:65457 chain=ss-node config=sha256:38d395528f2af38443b59237552461fafa3e8133c393338fd6aabe7177974262\n[13:40:51.971 INFO  billow_kernel::engine] message=session closed session=15 target=localhost:65451 bytes_up=105 bytes_down=138\n[13:40:52.492 INFO  billow_kernel::engine] message=REJECT session=16 target=http-probe.test:65451 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[13:40:52.496 INFO  billow_kernel::engine] message=REJECT session=17 target=localhost:65451 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[13:40:52.500 INFO  billow_kernel::engine] message=REJECT session=18 target=localhost:65451 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[13:40:52.618 INFO  billow_kernel::engine] message=REJECT session=19 target=localhost:65451 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[13:40:52.620 INFO  billow_kernel::engine] message=REJECT session=20 target=localhost:65451 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[13:40:52.621 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:40:52.622 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=20\n[13:40:52.622 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:40:52.622 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1ae976c5-d798-4591-b244-0a17bf7ddefe sessions=20 active=0 finished=20\n"
       },
       "dnsAnswers": {
         "fake.test": {
@@ -1102,7 +1102,7 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "type": "Proxy",
             "updatedAt": "1970-01-01T00:00:00.000Z",
             "vehicleType": "Compatible"
@@ -1176,7 +1176,7 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "type": "Proxy",
             "updatedAt": "1970-01-01T00:00:00.000Z",
             "vehicleType": "Compatible"
@@ -1249,7 +1249,7 @@
             "expectedStatus": "*",
             "name": "SUB",
             "proxies": [],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "type": "Proxy",
             "updatedAt": "1970-01-01T00:00:00.000Z",
             "vehicleType": "Compatible"
@@ -1450,7 +1450,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "URLTest",
                 "udp": true,
@@ -1478,7 +1478,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "Fallback",
                 "udp": true,
@@ -1528,7 +1528,7 @@
                 "provider-name": "",
                 "routing-mark": 0,
                 "smux": false,
-                "testUrl": "http://127.0.0.1:61047/generate_204",
+                "testUrl": "http://127.0.0.1:65455/generate_204",
                 "tfo": false,
                 "type": "Selector",
                 "udp": true,
@@ -1564,9 +1564,9 @@
                 "xudp": false
               }
             ],
-            "testUrl": "http://127.0.0.1:61047/generate_204",
+            "testUrl": "http://127.0.0.1:65455/generate_204",
             "type": "Proxy",
-            "updatedAt": "2026-11-25T12:22:04.571Z",
+            "updatedAt": "2026-11-25T13:40:43.085Z",
             "vehicleType": "File"
           }
         }
@@ -1603,7 +1603,7 @@
           "echoed": "t5-trojan",
           "replyBytes": 131,
           "trace": {
-            "rule": "DST-PORT,61044",
+            "rule": "DST-PORT,65452",
             "outbound": "trojan-node"
           }
         },
@@ -1613,7 +1613,7 @@
           "echoed": "t5-ssr",
           "replyBytes": 128,
           "trace": {
-            "rule": "DST-PORT,61045",
+            "rule": "DST-PORT,65453",
             "outbound": "ssr-node"
           }
         },
@@ -1623,7 +1623,7 @@
           "echoed": "t5-squic",
           "replyBytes": 130,
           "trace": {
-            "rule": "DST-PORT,61046",
+            "rule": "DST-PORT,65454",
             "outbound": "squic-node"
           }
         },
@@ -1647,8 +1647,9 @@
           }
         },
         "text-probe.test": {
-          "category": "blocked",
-          "connectStatus": 403,
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
           "trace": {
             "rule": "RULE-SET,rp-text",
             "outbound": "REJECT"
@@ -1686,7 +1687,7 @@
           "connectStatus": 0,
           "error": "connection closed before the response head",
           "trace": {
-            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,61043)",
+            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,65451)",
             "outbound": "REJECT"
           }
         }
@@ -1725,7 +1726,7 @@
         "localhostAfter": "blocked",
         "failureStatus": 400,
         "localhostAfterFailure": "blocked",
-        "mixedPort": 61152,
+        "mixedPort": 49179,
         "groups": "ss-node",
         "dnsAfter": {
           "name": "fake.test",
@@ -1748,12 +1749,12 @@
         "exit": 1,
         "accepted": false,
         "stderr": "",
-        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T20:22:13.997858000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T20:22:13.997891000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range/config.yaml test failed\n"
+        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T21:40:52.633250000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T21:40:52.633276000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range/config.yaml test failed\n"
       },
       "rust": {
         "exit": 1,
         "accepted": false,
-        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
+        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
         "stdout": ""
       }
     },
@@ -1762,7 +1763,7 @@
         "exit": 0,
         "accepted": true,
         "stderr": "",
-        "stdout": "time=\"2026-11-25T20:22:14.119932000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T20:22:14.119972000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T20:22:14.119977000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T20:22:14.120083000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/tun-on/config.yaml test is successful\n"
+        "stdout": "time=\"2026-11-25T21:40:52.750881000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T21:40:52.750918000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T21:40:52.750922000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T21:40:52.751024000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/tun-on/config.yaml test is successful\n"
       },
       "rust": {
         "exit": 1,
@@ -1817,7 +1818,7 @@
           "exit": 0,
           "accepted": true,
           "stderr": "",
-          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T20:22:14.146434000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T20:22:14.146755000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T20:22:14.146810000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T20:22:14.146820000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/effective-desktop/config.yaml test is successful\n"
+          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T21:40:52.775370000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T21:40:52.775690000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T21:40:52.775757000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T21:40:52.775768000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/effective-desktop/config.yaml test is successful\n"
         }
       },
       "android": {
@@ -1831,7 +1832,7 @@
           "exit": 0,
           "accepted": true,
           "stderr": "",
-          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T20:22:14.397193000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T20:22:14.397595000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T20:22:14.397658000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T20:22:14.397670000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/effective-android/config.yaml test is successful\n"
+          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T21:40:53.003731000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T21:40:53.004049000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T21:40:53.004125000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T21:40:53.004136000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/effective-android/config.yaml test is successful\n"
         }
       }
     },
@@ -1841,8 +1842,8 @@
         "check": {
           "exit": 0,
           "accepted": true,
-          "stderr": "N  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[12:22:14.153 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[12:22:14.153 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[12:22:14.259 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=bf721b59-04fc-48fc-991e-4325cab48b60 pid=79539 version=\"0.1.0\" listen=127.0.0.1:61255\n[12:22:14.259 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:22:14.259 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:22:14.259 INFO  billow_kernel::engine] message=billow-kernel stopped instance=bf721b59-04fc-48fc-991e-4325cab48b60 sessions=0 active=0 finished=0\n",
-          "stdout": "instance=bf721b59-04fc-48fc-991e-4325cab48b60 pid=79539 version=0.1.0 listen=127.0.0.1:61255 overridden_port=61255 config=sha256:5cb8af8a9df29781e4fd0724366ed0e71c79861f0bcde780728c6f4f5c9a28c2 rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/effective-desktop-reduced state_dir=-\nconfiguration accepted\n"
+          "stderr": "N  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[13:40:52.782 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[13:40:52.782 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[13:40:52.880 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=95f71406-d9c0-43ac-80a7-f2a065a80727 pid=48502 version=\"0.1.0\" listen=127.0.0.1:49267\n[13:40:52.880 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:40:52.880 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:40:52.880 INFO  billow_kernel::engine] message=billow-kernel stopped instance=95f71406-d9c0-43ac-80a7-f2a065a80727 sessions=0 active=0 finished=0\n",
+          "stdout": "instance=95f71406-d9c0-43ac-80a7-f2a065a80727 pid=48502 version=0.1.0 listen=127.0.0.1:49267 overridden_port=49267 config=sha256:5cb8af8a9df29781e4fd0724366ed0e71c79861f0bcde780728c6f4f5c9a28c2 rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/effective-desktop-reduced state_dir=-\nconfiguration accepted\n"
         },
         "groups": [
           {
@@ -1864,15 +1865,15 @@
             "members": 2
           }
         ],
-        "stderr": "oxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=0e72e608-06e6-43d7-9127-b435ccce1815 pid=79540 version=\"0.1.0\" listen=127.0.0.1:61256\n[12:22:14.376 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:22:14.376 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:22:14.376 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0e72e608-06e6-43d7-9127-b435ccce1815 sessions=0 active=0 finished=0\n"
+        "stderr": "oxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=8dbdb42a-c86d-459c-a992-ea85bcdac5bd pid=48503 version=\"0.1.0\" listen=127.0.0.1:49268\n[13:40:52.984 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:40:52.984 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:40:52.984 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8dbdb42a-c86d-459c-a992-ea85bcdac5bd sessions=0 active=0 finished=0\n"
       },
       "android": {
         "path": "/Users/yanggeng/github/Billow/tool/kernel-compat/evidence/t5-effective/billow-android-reduced.yaml",
         "check": {
           "exit": 0,
           "accepted": true,
-          "stderr": "N  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[12:22:14.404 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[12:22:14.404 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[12:22:14.534 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=c9923d5a-e45c-4d44-8bd7-9486932b66d3 pid=79543 version=\"0.1.0\" listen=127.0.0.1:61259\n[12:22:14.534 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:22:14.534 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:22:14.534 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c9923d5a-e45c-4d44-8bd7-9486932b66d3 sessions=0 active=0 finished=0\n",
-          "stdout": "instance=c9923d5a-e45c-4d44-8bd7-9486932b66d3 pid=79543 version=0.1.0 listen=127.0.0.1:61259 overridden_port=61259 config=sha256:98892a4cefd294dc6fcb2ce341a337d937ab6596a05460df9768f917844895be rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/effective-android-reduced state_dir=-\nconfiguration accepted\n"
+          "stderr": "N  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[13:40:53.011 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[13:40:53.011 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[13:40:53.109 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=13b5951b-71cd-434a-9be1-03685cbeb7e7 pid=48509 version=\"0.1.0\" listen=127.0.0.1:49271\n[13:40:53.110 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:40:53.110 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:40:53.110 INFO  billow_kernel::engine] message=billow-kernel stopped instance=13b5951b-71cd-434a-9be1-03685cbeb7e7 sessions=0 active=0 finished=0\n",
+          "stdout": "instance=13b5951b-71cd-434a-9be1-03685cbeb7e7 pid=48509 version=0.1.0 listen=127.0.0.1:49271 overridden_port=49271 config=sha256:98892a4cefd294dc6fcb2ce341a337d937ab6596a05460df9768f917844895be rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/effective-android-reduced state_dir=-\nconfiguration accepted\n"
         },
         "groups": [
           {
@@ -1894,7 +1895,7 @@
             "members": 2
           }
         ],
-        "stderr": "oxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=d4da7560-1ec9-44d8-8dc3-1245a71e8376 pid=79544 version=\"0.1.0\" listen=127.0.0.1:61260\n[12:22:14.666 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:22:14.666 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:22:14.666 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d4da7560-1ec9-44d8-8dc3-1245a71e8376 sessions=0 active=0 finished=0\n"
+        "stderr": "oxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=46f6b679-d19c-4841-9f8c-918b7f31603b pid=48512 version=\"0.1.0\" listen=127.0.0.1:49272\n[13:40:53.214 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:40:53.214 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:40:53.214 INFO  billow_kernel::engine] message=billow-kernel stopped instance=46f6b679-d19c-4841-9f8c-918b7f31603b sessions=0 active=0 finished=0\n"
       }
     },
     "namedRejections": [
@@ -2176,15 +2177,15 @@
         },
         "www.google.com": {
           "reached": false,
-          "category": "timeout"
+          "category": "closed"
         },
         "geo.test": {
           "reached": false,
-          "category": "timeout"
+          "category": "closed"
         },
         "http-probe.test": {
           "reached": false,
-          "category": "closed"
+          "category": "timeout"
         },
         "and-probe.test": {
           "reached": false,
@@ -2212,7 +2213,7 @@
           "reached": true,
           "category": "echoed",
           "trace": {
-            "rule": "DST-PORT,61044",
+            "rule": "DST-PORT,65452",
             "outbound": "trojan-node"
           }
         },
@@ -2220,7 +2221,7 @@
           "reached": true,
           "category": "echoed",
           "trace": {
-            "rule": "DST-PORT,61045",
+            "rule": "DST-PORT,65453",
             "outbound": "ssr-node"
           }
         },
@@ -2228,7 +2229,7 @@
           "reached": true,
           "category": "echoed",
           "trace": {
-            "rule": "DST-PORT,61046",
+            "rule": "DST-PORT,65454",
             "outbound": "squic-node"
           }
         },
@@ -2250,7 +2251,7 @@
         },
         "text-probe.test": {
           "reached": false,
-          "category": "blocked",
+          "category": "closed",
           "trace": {
             "rule": "RULE-SET,rp-text",
             "outbound": "REJECT"
@@ -2284,7 +2285,7 @@
           "reached": false,
           "category": "closed",
           "trace": {
-            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,61043)",
+            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,65451)",
             "outbound": "REJECT"
           }
         }
@@ -2313,15 +2314,15 @@
           "outbound": "ss-node"
         },
         "trojan-port": {
-          "rule": "DST-PORT,61044",
+          "rule": "DST-PORT,65452",
           "outbound": "trojan-node"
         },
         "ssr-port": {
-          "rule": "DST-PORT,61045",
+          "rule": "DST-PORT,65453",
           "outbound": "ssr-node"
         },
         "squic-port": {
-          "rule": "DST-PORT,61046",
+          "rule": "DST-PORT,65454",
           "outbound": "squic-node"
         },
         "bad.localhost": {
@@ -2435,12 +2436,12 @@
         "exit": 1,
         "accepted": false,
         "stderr": "",
-        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T20:22:13.997858000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T20:22:13.997891000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range/config.yaml test failed\n"
+        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T21:40:52.633250000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T21:40:52.633276000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range/config.yaml test failed\n"
       },
       "rust": {
         "exit": 1,
         "accepted": false,
-        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
+        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
         "stdout": ""
       }
     },
@@ -2453,7 +2454,7 @@
         "exit": 0,
         "accepted": true,
         "stderr": "",
-        "stdout": "time=\"2026-11-25T20:22:14.119932000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T20:22:14.119972000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T20:22:14.119977000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T20:22:14.120083000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-VLK1sd/reject/tun-on/config.yaml test is successful\n"
+        "stdout": "time=\"2026-11-25T21:40:52.750881000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T21:40:52.750918000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T21:40:52.750922000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T21:40:52.751024000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-2rFMaO/reject/tun-on/config.yaml test is successful\n"
       },
       "rust": {
         "exit": 1,

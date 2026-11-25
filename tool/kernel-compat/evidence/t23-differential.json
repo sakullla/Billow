@@ -1,9 +1,9 @@
 {
   "format": "t23-differential",
   "version": 1,
-  "startedAt": "2026-11-25T12:19:11.777Z",
+  "startedAt": "2026-11-25T13:38:56.404Z",
   "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
-  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t32-target/release/billow-kernel",
+  "rust": "/Users/yanggeng/.cache/cargo-target/debug/billow-kernel",
   "summary": {
     "cases": 27,
     "persistence": 1,
@@ -64,7 +64,7 @@
               }
             ]
           },
-          "stderr": "[12:16:44.893 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=ef3660d3-9391-468c-bfc7-5e7e4b24a644 pid=64568 version=\"0.1.0\" listen=127.0.0.1:58492\n[12:16:45.198 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:45.198 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:45.199 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ef3660d3-9391-468c-bfc7-5e7e4b24a644 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:32.213 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=af461799-130b-483b-973e-ff8033773c28 pid=48171 version=\"0.1.0\" listen=127.0.0.1:64337\n[13:36:32.515 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:32.515 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:32.516 INFO  billow_kernel::engine] message=billow-kernel stopped instance=af461799-130b-483b-973e-ff8033773c28 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -142,7 +142,7 @@
               }
             ]
           },
-          "stderr": "[12:16:45.390 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=93ffaeb1-f9e4-41b8-924e-4fa9b454c5b2 pid=64578 version=\"0.1.0\" listen=127.0.0.1:58506\n[12:16:45.691 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:45.691 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:45.691 INFO  billow_kernel::engine] message=billow-kernel stopped instance=93ffaeb1-f9e4-41b8-924e-4fa9b454c5b2 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:32.656 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=9a7e762c-7d4b-46ea-8972-61f780982e2e pid=48173 version=\"0.1.0\" listen=127.0.0.1:64344\n[13:36:32.962 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:32.962 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:32.962 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9a7e762c-7d4b-46ea-8972-61f780982e2e sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -220,7 +220,7 @@
               }
             ]
           },
-          "stderr": "[12:16:45.892 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=c6db9dd6-76a6-4017-9373-341972806feb pid=64580 version=\"0.1.0\" listen=127.0.0.1:58514\n[12:16:46.196 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:46.196 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:46.196 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c6db9dd6-76a6-4017-9373-341972806feb sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:33.086 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,B=http; hosts=0; dns=off instance=1d846c5f-ca80-4b98-93c8-3d9f3bf5a126 pid=48174 version=\"0.1.0\" listen=127.0.0.1:64351\n[13:36:33.393 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:33.393 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:33.393 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1d846c5f-ca80-4b98-93c8-3d9f3bf5a126 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -289,16 +289,16 @@
               {
                 "name": "slow",
                 "alive": true,
-                "delay": 300
+                "delay": 302
               },
               {
                 "name": "fast",
                 "alive": true,
-                "delay": 11
+                "delay": 12
               }
             ]
           },
-          "stderr": "[12:16:46.389 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=baaf38d8-d2db-4f63-9a86-caa8541befc8 pid=64583 version=\"0.1.0\" listen=127.0.0.1:58522\n[12:16:49.593 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:49.593 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:49.593 INFO  billow_kernel::engine] message=billow-kernel stopped instance=baaf38d8-d2db-4f63-9a86-caa8541befc8 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:33.516 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=d3a07f08-4f2a-4f38-983b-0e62b38ba699 pid=48177 version=\"0.1.0\" listen=127.0.0.1:64358\n[13:36:36.722 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:36.722 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:36.722 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d3a07f08-4f2a-4f38-983b-0e62b38ba699 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -321,12 +321,12 @@
             {
               "name": "slow",
               "alive": true,
-              "delay": 300
+              "delay": 302
             },
             {
               "name": "fast",
               "alive": true,
-              "delay": 11
+              "delay": 12
             }
           ]
         },
@@ -372,11 +372,11 @@
               {
                 "name": "backup",
                 "alive": true,
-                "delay": 12
+                "delay": 11
               }
             ]
           },
-          "stderr": "[12:16:49.809 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=d92c8c72-aec6-4299-b9d7-091c259570f6 pid=64772 version=\"0.1.0\" listen=127.0.0.1:58579\n[12:16:53.010 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:53.010 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:53.010 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d92c8c72-aec6-4299-b9d7-091c259570f6 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:36.845 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=607eeaf8-57f6-48f1-b3f6-0eace2d01e9d pid=48179 version=\"0.1.0\" listen=127.0.0.1:64379\n[13:36:40.050 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:40.050 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:40.051 INFO  billow_kernel::engine] message=billow-kernel stopped instance=607eeaf8-57f6-48f1-b3f6-0eace2d01e9d sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -404,7 +404,7 @@
             {
               "name": "backup",
               "alive": true,
-              "delay": 12
+              "delay": 11
             }
           ]
         },
@@ -454,7 +454,7 @@
               }
             ]
           },
-          "stderr": "[12:16:53.214 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=c8420bdb-561b-488f-8d7f-27eb569a8f8f pid=64877 version=\"0.1.0\" listen=127.0.0.1:58605\n[12:16:56.420 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:56.420 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:56.420 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c8420bdb-561b-488f-8d7f-27eb569a8f8f sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:40.175 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=2a9d25ed-3c3d-40ca-9da4-fccf26ca013e pid=48182 version=\"0.1.0\" listen=127.0.0.1:64399\n[13:36:43.376 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:43.376 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:43.376 INFO  billow_kernel::engine] message=billow-kernel stopped instance=2a9d25ed-3c3d-40ca-9da4-fccf26ca013e sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -528,11 +528,11 @@
               {
                 "name": "ok",
                 "alive": true,
-                "delay": 100
+                "delay": 102
               }
             ]
           },
-          "stderr": "[12:16:56.629 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=860f9f9f-1873-4ede-a15b-d2dea90f57e0 pid=64881 version=\"0.1.0\" listen=127.0.0.1:58648\n[12:16:59.831 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:16:59.831 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:16:59.831 INFO  billow_kernel::engine] message=billow-kernel stopped instance=860f9f9f-1873-4ede-a15b-d2dea90f57e0 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:43.491 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=err=http,ok=http; hosts=0; dns=off instance=2f2cc527-b8cf-4c6b-b631-ba3f4247ef30 pid=48200 version=\"0.1.0\" listen=127.0.0.1:64424\n[13:36:46.697 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:46.697 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:46.697 INFO  billow_kernel::engine] message=billow-kernel stopped instance=2f2cc527-b8cf-4c6b-b631-ba3f4247ef30 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -560,7 +560,7 @@
             {
               "name": "ok",
               "alive": true,
-              "delay": 100
+              "delay": 102
             }
           ]
         },
@@ -601,7 +601,7 @@
               {
                 "name": "slow",
                 "alive": true,
-                "delay": 301
+                "delay": 302
               },
               {
                 "name": "fast",
@@ -610,7 +610,7 @@
               }
             ]
           },
-          "stderr": "[12:17:00.029 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=ebf5c82f-d4c1-4747-86ec-d926fdb4d33e pid=64886 version=\"0.1.0\" listen=127.0.0.1:58685\n[12:17:00.729 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:17:00.729 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:00.729 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ebf5c82f-d4c1-4747-86ec-d926fdb4d33e sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:46.825 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=45eea9a9-fc98-44e5-9a6b-99f33cc2a41c pid=48206 version=\"0.1.0\" listen=127.0.0.1:64443\n[13:36:47.530 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:47.530 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:47.531 INFO  billow_kernel::engine] message=billow-kernel stopped instance=45eea9a9-fc98-44e5-9a6b-99f33cc2a41c sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -633,7 +633,7 @@
             {
               "name": "slow",
               "alive": true,
-              "delay": 301
+              "delay": 302
             },
             {
               "name": "fast",
@@ -679,7 +679,7 @@
               {
                 "name": "slow",
                 "alive": true,
-                "delay": 301
+                "delay": 302
               },
               {
                 "name": "fast",
@@ -688,7 +688,7 @@
               }
             ]
           },
-          "stderr": "[12:17:00.922 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=3e812eaa-bacf-442e-95a7-ba31cbd9c1d8 pid=64888 version=\"0.1.0\" listen=127.0.0.1:58699\n[12:17:01.624 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:17:01.624 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:01.624 INFO  billow_kernel::engine] message=billow-kernel stopped instance=3e812eaa-bacf-442e-95a7-ba31cbd9c1d8 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:47.658 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=38462fc7-6e59-4abe-a5b0-6a8358bebe69 pid=48207 version=\"0.1.0\" listen=127.0.0.1:64454\n[13:36:48.363 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:48.363 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:48.363 INFO  billow_kernel::engine] message=billow-kernel stopped instance=38462fc7-6e59-4abe-a5b0-6a8358bebe69 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -711,7 +711,7 @@
             {
               "name": "slow",
               "alive": true,
-              "delay": 301
+              "delay": 302
             },
             {
               "name": "fast",
@@ -757,7 +757,7 @@
               ]
             }
           ],
-          "stderr": "[12:17:03.210 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=e6cccbf7-819d-4645-b7ec-46032e7ad266 pid=64891 version=\"0.1.0\" listen=127.0.0.1:58718\n[12:17:03.283 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:58742 code=\"closed\"\n[12:17:03.985 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=fast type=http server=127.0.0.1:58481 chain=fast config=sha256:38c3efb841662cac9ec3dcd9c24faaa16f4aacc1f49e473d35bcc9c145bcfad0\n[12:17:04.005 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:17:04.526 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:17:04.526 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[12:17:04.526 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:04.526 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e6cccbf7-819d-4645-b7ec-46032e7ad266 sessions=2 active=0 finished=2\n"
+          "stderr": "[13:36:49.840 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=slow=http,fast=http; hosts=0; dns=off instance=fe759aa1-8a08-4a27-846d-59576e54457e pid=48210 version=\"0.1.0\" listen=127.0.0.1:64465\n[13:36:49.923 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64477 code=\"closed\"\n[13:36:50.626 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=fast type=http server=127.0.0.1:64326 chain=fast config=sha256:8230b47d724119130ee11b8ce5207928264aa53a3956444d81d6b5da7b6d2db1\n[13:36:50.646 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:36:51.165 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:36:51.165 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[13:36:51.165 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:51.166 INFO  billow_kernel::engine] message=billow-kernel stopped instance=fe759aa1-8a08-4a27-846d-59576e54457e sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -803,11 +803,11 @@
               {
                 "name": "fast",
                 "alive": true,
-                "delay": 12
+                "delay": 10
               }
             ]
           },
-          "stderr": "[12:17:04.728 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=839b09ee-156c-445c-a2d9-371ffebe48b6 pid=64896 version=\"0.1.0\" listen=127.0.0.1:58753\n[12:17:07.932 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:17:07.932 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:07.932 INFO  billow_kernel::engine] message=billow-kernel stopped instance=839b09ee-156c-445c-a2d9-371ffebe48b6 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:36:51.293 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9f1c6b91-53a0-4534-a75f-9a2c19a51296 pid=48211 version=\"0.1.0\" listen=127.0.0.1:64485\n[13:36:54.498 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:36:54.498 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:36:54.499 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9f1c6b91-53a0-4534-a75f-9a2c19a51296 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -835,7 +835,7 @@
             {
               "name": "fast",
               "alive": true,
-              "delay": 12
+              "delay": 10
             }
           ]
         },
@@ -895,7 +895,7 @@
               {
                 "name": "n1",
                 "alive": true,
-                "delay": 506
+                "delay": 502
               },
               {
                 "name": "n2",
@@ -904,7 +904,7 @@
               }
             ]
           },
-          "stderr": "[12:17:19.866 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=leaf=http,n1=http,n2=http; hosts=0; dns=off instance=8500bde0-1939-4074-8d19-6aaeb0b0162e pid=65218 version=\"0.1.0\" listen=127.0.0.1:58806\n[12:17:19.995 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59137 code=\"closed\"\n[12:17:20.995 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=leaf type=http server=127.0.0.1:58485 chain=leaf config=sha256:df6f50af4ddffe7e82b5f32cd3ba13f5a986726b4a3ad50463030ed0f03646a0\n[12:17:21.015 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:17:31.371 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[12:17:31.371 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:31.372 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8500bde0-1939-4074-8d19-6aaeb0b0162e sessions=2 active=0 finished=2\n"
+          "stderr": "[13:37:06.229 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=leaf=http,n1=http,n2=http; hosts=0; dns=off instance=f28c5bcd-8d2c-4f49-8f90-c0a821096e9f pid=48219 version=\"0.1.0\" listen=127.0.0.1:64506\n[13:37:06.313 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64553 code=\"closed\"\n[13:37:07.315 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=leaf type=http server=127.0.0.1:64330 chain=leaf config=sha256:7db10f8652128a77bddc4d160c131147992980c6329facd16cd98ca3f168befd\n[13:37:07.335 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:37:17.734 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[13:37:17.734 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:37:17.735 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f28c5bcd-8d2c-4f49-8f90-c0a821096e9f sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -961,7 +961,7 @@
               ]
             }
           ],
-          "stderr": "3308a-e779-4e5b-9ba0-c57314394229 pid=65395 version=\"0.1.0\" listen=127.0.0.1:59234\n[12:17:42.736 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59400 code=\"closed\"\n[12:17:43.038 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:58483 chain=steady config=sha256:c9df7ba86465d4f42a610da8bdc6922864fae546114c8fb7c72bd5eeeeebff3c\n[12:17:43.059 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:17:53.240 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:58483 chain=steady config=sha256:c9df7ba86465d4f42a610da8bdc6922864fae546114c8fb7c72bd5eeeeebff3c\n[12:17:53.261 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:17:53.782 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:17:53.782 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[12:17:53.782 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:17:53.782 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ad83308a-e779-4e5b-9ba0-c57314394229 sessions=3 active=0 finished=3\n"
+          "stderr": "c3af9-43a6-418f-b8a3-03a852fde93d pid=48234 version=\"0.1.0\" listen=127.0.0.1:64576\n[13:37:29.091 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64609 code=\"closed\"\n[13:37:29.392 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:64328 chain=steady config=sha256:f31135d68f6054c227c288bca89cfccb406d5bdd3263ec9abc615b091338ab6c\n[13:37:29.412 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:37:39.593 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:64328 chain=steady config=sha256:f31135d68f6054c227c288bca89cfccb406d5bdd3263ec9abc615b091338ab6c\n[13:37:39.614 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:37:40.135 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:37:40.135 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[13:37:40.135 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:37:40.135 INFO  billow_kernel::engine] message=billow-kernel stopped instance=644c3af9-43a6-418f-b8a3-03a852fde93d sessions=3 active=0 finished=3\n"
         }
       },
       "observed": {
@@ -1018,7 +1018,7 @@
               ]
             }
           ],
-          "stderr": "9-9a74-413c-aee6-de5dfad47cea pid=65474 version=\"0.1.0\" listen=127.0.0.1:59494\n[12:18:05.266 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59519 code=\"closed\"\n[12:18:05.560 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:58483 chain=steady config=sha256:ca9d88a8c0c95a916c6a641d4df9985392bd8e526f73426801df2735b58ca902\n[12:18:05.581 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:15.762 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:58484 chain=changing config=sha256:ca9d88a8c0c95a916c6a641d4df9985392bd8e526f73426801df2735b58ca902\n[12:18:15.763 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:16.284 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:18:16.284 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[12:18:16.284 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:16.285 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1fb909e9-9a74-413c-aee6-de5dfad47cea sessions=3 active=0 finished=3\n"
+          "stderr": "d-f413-458d-b708-29b6c6fb466a pid=48240 version=\"0.1.0\" listen=127.0.0.1:64628\n[13:37:51.498 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64653 code=\"closed\"\n[13:37:51.801 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:64328 chain=steady config=sha256:b29653d88ee4c8cd312268549e3550fcaf0dd6d4defc973f5bbf4e7946c6ef75\n[13:37:51.821 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:02.002 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:64329 chain=changing config=sha256:b29653d88ee4c8cd312268549e3550fcaf0dd6d4defc973f5bbf4e7946c6ef75\n[13:38:02.021 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:02.541 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:02.541 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[13:38:02.541 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:02.541 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9e2b15ad-f413-458d-b708-29b6c6fb466a sessions=3 active=0 finished=3\n"
         }
       },
       "observed": {
@@ -1091,7 +1091,7 @@
               ]
             }
           ],
-          "stderr": "1:58483 chain=steady config=sha256:789af282848ee259ca451980619413c7ea9a0ff8dcf2f970d4a04f96a5f38f1a\n[12:18:30.626 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:38.705 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:58483 chain=steady config=sha256:789af282848ee259ca451980619413c7ea9a0ff8dcf2f970d4a04f96a5f38f1a\n[12:18:38.727 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:42.205 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:58484 chain=changing config=sha256:789af282848ee259ca451980619413c7ea9a0ff8dcf2f970d4a04f96a5f38f1a\n[12:18:42.225 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:42.745 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:18:42.745 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=4\n[12:18:42.745 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:42.745 INFO  billow_kernel::engine] message=billow-kernel stopped instance=af5b19d3-5e92-47d5-bbe6-788e8ef4de5e sessions=4 active=0 finished=4\n"
+          "stderr": "1:64328 chain=steady config=sha256:d4958a504a9d844f46fd4e5796a0cab173c9ad4a9df0b1e2030697ef80586d0d\n[13:38:16.813 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:24.894 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=steady type=http server=127.0.0.1:64328 chain=steady config=sha256:d4958a504a9d844f46fd4e5796a0cab173c9ad4a9df0b1e2030697ef80586d0d\n[13:38:24.915 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:28.394 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=changing type=http server=127.0.0.1:64329 chain=changing config=sha256:d4958a504a9d844f46fd4e5796a0cab173c9ad4a9df0b1e2030697ef80586d0d\n[13:38:28.415 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:28.936 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:28.936 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=4\n[13:38:28.936 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:28.936 INFO  billow_kernel::engine] message=billow-kernel stopped instance=5d38a962-4036-486d-b06d-20b2bdba9dd1 sessions=4 active=0 finished=4\n"
         }
       },
       "observed": {
@@ -1134,7 +1134,7 @@
               }
             ]
           },
-          "stderr": "[12:18:42.959 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=73553295-2773-4c9e-bc6c-fac34948e040 pid=65738 version=\"0.1.0\" listen=127.0.0.1:59595\n[12:18:46.164 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:18:46.164 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:46.165 INFO  billow_kernel::engine] message=billow-kernel stopped instance=73553295-2773-4c9e-bc6c-fac34948e040 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:29.066 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=4308fe3c-75e0-4480-bebc-1940ab490979 pid=48262 version=\"0.1.0\" listen=127.0.0.1:64728\n[13:38:32.272 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:32.272 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:32.272 INFO  billow_kernel::engine] message=billow-kernel stopped instance=4308fe3c-75e0-4480-bebc-1940ab490979 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1196,7 +1196,7 @@
               ]
             }
           ],
-          "stderr": "[12:18:50.212 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=d78a32f5-d60a-4da8-8317-3a810a427ed2 pid=65781 version=\"0.1.0\" listen=127.0.0.1:59634\n[12:18:50.305 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59660 code=\"closed\"\n[12:18:53.506 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=backup type=http server=127.0.0.1:58481 chain=backup config=sha256:291b216c812aaaf6f07cad413942e55ae37e27b2bf0188e99343f502b36c330b\n[12:18:53.528 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:18:54.047 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:18:54.047 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[12:18:54.048 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:54.048 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d78a32f5-d60a-4da8-8317-3a810a427ed2 sessions=2 active=0 finished=2\n"
+          "stderr": "[13:38:36.229 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=2; sub-rules=0; outbounds=DIRECT,REJECT; protocols=dead=http,backup=http; hosts=0; dns=off instance=c2d17abf-7df1-4043-b7c8-28a681e54736 pid=48265 version=\"0.1.0\" listen=127.0.0.1:64750\n[13:38:36.308 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64767 code=\"closed\"\n[13:38:39.512 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=backup type=http server=127.0.0.1:64326 chain=backup config=sha256:bb7315af60986e29204266fd4feda6d6702051e4e886b150d2a043ad693b6424\n[13:38:39.533 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:40.053 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:40.053 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[13:38:40.053 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:40.053 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c2d17abf-7df1-4043-b7c8-28a681e54736 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
@@ -1239,7 +1239,7 @@
               }
             ]
           },
-          "stderr": "[12:18:54.282 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=c72e78a7-2eca-4f15-a9b8-25cb142ad8fb pid=65794 version=\"0.1.0\" listen=127.0.0.1:59677\n[12:18:54.587 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:18:54.587 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:54.587 INFO  billow_kernel::engine] message=billow-kernel stopped instance=c72e78a7-2eca-4f15-a9b8-25cb142ad8fb sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:40.179 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=66a3e4d9-0799-44f2-8cb8-8136bf92b1a4 pid=48267 version=\"0.1.0\" listen=127.0.0.1:64781\n[13:38:40.484 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:40.485 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:40.485 INFO  billow_kernel::engine] message=billow-kernel stopped instance=66a3e4d9-0799-44f2-8cb8-8136bf92b1a4 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1303,7 +1303,7 @@
               }
             ]
           },
-          "stderr": "[12:18:54.801 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=b2c55e2e-4dee-48df-9ee5-4700434e1f3f pid=65796 version=\"0.1.0\" listen=127.0.0.1:59690\n[12:18:55.103 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:18:55.103 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:55.104 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b2c55e2e-4dee-48df-9ee5-4700434e1f3f sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:40.605 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=eb6eca41-d3ed-4cc9-81c7-d02bc29dbf20 pid=48268 version=\"0.1.0\" listen=127.0.0.1:64788\n[13:38:40.908 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:40.908 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:40.909 INFO  billow_kernel::engine] message=billow-kernel stopped instance=eb6eca41-d3ed-4cc9-81c7-d02bc29dbf20 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1367,7 +1367,7 @@
               }
             ]
           },
-          "stderr": "[12:18:55.339 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=51253b70-f525-4a97-b1ab-e6b7823de542 pid=65801 version=\"0.1.0\" listen=127.0.0.1:59697\n[12:18:55.643 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:18:55.643 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:18:55.643 INFO  billow_kernel::engine] message=billow-kernel stopped instance=51253b70-f525-4a97-b1ab-e6b7823de542 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:41.032 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=45791c41-d744-4b38-89dd-c38f6cf05905 pid=48271 version=\"0.1.0\" listen=127.0.0.1:64796\n[13:38:41.333 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:41.333 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:41.333 INFO  billow_kernel::engine] message=billow-kernel stopped instance=45791c41-d744-4b38-89dd-c38f6cf05905 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1419,17 +1419,18 @@
           "ready": true,
           "attempts": [
             {
-              "category": "blocked",
-              "connectStatus": 403,
+              "category": "closed",
+              "connectStatus": 0,
+              "error": "connection closed before the response head",
               "served": []
             }
           ],
-          "stderr": "[12:19:00.766 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9d856ffb-f130-410c-b948-5315d7eee876 pid=65819 version=\"0.1.0\" listen=127.0.0.1:59704\n[12:19:00.865 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59713 code=\"closed\"\n[12:19:01.168 INFO  billow_kernel::engine] message=REJECT (group member) session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP\n[12:19:01.168 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:19:01.168 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[12:19:01.168 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:01.169 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9d856ffb-f130-410c-b948-5315d7eee876 sessions=2 active=0 finished=2\n"
+          "stderr": "[13:38:46.381 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=9f8ccc65-cc54-493e-9b5a-df423afb0e18 pid=48273 version=\"0.1.0\" listen=127.0.0.1:64803\n[13:38:46.464 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64814 code=\"closed\"\n[13:38:46.766 INFO  billow_kernel::engine] message=REJECT (group member) session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP\n[13:38:46.766 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:46.766 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[13:38:46.767 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:46.767 INFO  billow_kernel::engine] message=billow-kernel stopped instance=9f8ccc65-cc54-493e-9b5a-df423afb0e18 sessions=2 active=0 finished=2\n"
         }
       },
       "observed": {
         "mihomo": "timeout",
-        "rust": "blocked"
+        "rust": "closed"
       },
       "status": "pass"
     },
@@ -1474,7 +1475,7 @@
               }
             ]
           },
-          "stderr": "[12:19:01.376 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=6fd8c595-64d0-4fff-a5fe-336aca442219 pid=65820 version=\"0.1.0\" listen=127.0.0.1:59718\n[12:19:01.683 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:19:01.683 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:01.683 INFO  billow_kernel::engine] message=billow-kernel stopped instance=6fd8c595-64d0-4fff-a5fe-336aca442219 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:46.891 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=Zebra=http,Alpha=http; hosts=0; dns=off instance=f6f4f8f8-a4d2-4273-9c8a-e1ed01a2ec57 pid=48274 version=\"0.1.0\" listen=127.0.0.1:64819\n[13:38:47.196 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:47.197 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:47.197 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f6f4f8f8-a4d2-4273-9c8a-e1ed01a2ec57 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1545,7 +1546,7 @@
               }
             ]
           },
-          "stderr": "[12:19:01.902 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,S=socks5; hosts=0; dns=off instance=43e1774d-9b84-4bc2-a307-8e7df19b99e7 pid=65823 version=\"0.1.0\" listen=127.0.0.1:59725\n[12:19:02.202 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:19:02.202 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:02.202 INFO  billow_kernel::engine] message=billow-kernel stopped instance=43e1774d-9b84-4bc2-a307-8e7df19b99e7 sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:47.319 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=A=http,S=socks5; hosts=0; dns=off instance=0388b4bb-02ce-45ac-bf10-3e3e2708987b pid=48277 version=\"0.1.0\" listen=127.0.0.1:64827\n[13:38:47.625 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:47.625 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:47.625 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0388b4bb-02ce-45ac-bf10-3e3e2708987b sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1609,7 +1610,7 @@
               }
             ]
           },
-          "stderr": "[12:19:02.439 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=f0ab8a5e-741b-4a92-a35a-4cb33e45081d pid=65825 version=\"0.1.0\" listen=127.0.0.1:59735\n[12:19:02.747 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[12:19:02.747 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:02.747 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f0ab8a5e-741b-4a92-a35a-4cb33e45081d sessions=0 active=0 finished=0\n"
+          "stderr": "[13:38:47.749 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=1; proxy-groups=1; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=8906e4b4-e802-4fdd-9daf-6da415c5ee57 pid=48279 version=\"0.1.0\" listen=127.0.0.1:64834\n[13:38:48.049 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[13:38:48.050 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:48.050 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8906e4b4-e802-4fdd-9daf-6da415c5ee57 sessions=0 active=0 finished=0\n"
         }
       },
       "observed": {
@@ -1719,7 +1720,7 @@
               ]
             }
           ],
-          "stderr": "y=B type=http server=127.0.0.1:58480 chain=B config=sha256:63b700051409fa8d13a973797de9ef97433f7912a1ee4d0ce17acdf1e338d775\n[12:19:05.890 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:19:06.413 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:58481 chain=A config=sha256:63b700051409fa8d13a973797de9ef97433f7912a1ee4d0ce17acdf1e338d775\n[12:19:06.434 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:19:06.956 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=B type=http server=127.0.0.1:58480 chain=B config=sha256:63b700051409fa8d13a973797de9ef97433f7912a1ee4d0ce17acdf1e338d775\n[12:19:06.978 INFO  billow_kernel::engine] message=session closed session=5 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:19:07.497 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:19:07.497 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=5\n[12:19:07.497 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:07.497 INFO  billow_kernel::engine] message=billow-kernel stopped instance=05c973af-c438-4d6f-99f6-b4d7566be9fc sessions=5 active=0 finished=5\n"
+          "stderr": "y=B type=http server=127.0.0.1:64325 chain=B config=sha256:ee988840cd2d48ee3f51e659d0d1cde2a6738e00522f5a3fd7f3b8e0d11a206b\n[13:38:51.038 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:51.559 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:64326 chain=A config=sha256:ee988840cd2d48ee3f51e659d0d1cde2a6738e00522f5a3fd7f3b8e0d11a206b\n[13:38:51.581 INFO  billow_kernel::engine] message=session closed session=4 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:52.102 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=B type=http server=127.0.0.1:64325 chain=B config=sha256:ee988840cd2d48ee3f51e659d0d1cde2a6738e00522f5a3fd7f3b8e0d11a206b\n[13:38:52.123 INFO  billow_kernel::engine] message=session closed session=5 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:52.643 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:52.643 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=5\n[13:38:52.643 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:52.643 INFO  billow_kernel::engine] message=billow-kernel stopped instance=418d4cad-062d-448a-8d96-1440c48dc889 sessions=5 active=0 finished=5\n"
         }
       },
       "observed": {
@@ -1776,7 +1777,7 @@
               ]
             }
           ],
-          "stderr": "dns=off instance=d3446714-d3bf-444f-aaaf-30049c0f18a8 pid=65833 version=\"0.1.0\" listen=127.0.0.1:59803\n[12:19:09.000 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:59815 code=\"closed\"\n[12:19:09.001 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:58481 chain=A config=sha256:6a427dfffcac73e9b8019ced177cfbe2b1e6c95007700ac6d48eb16e16f60ebc\n[12:19:09.022 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:19:09.546 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:58479 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:58481 chain=A config=sha256:6a427dfffcac73e9b8019ced177cfbe2b1e6c95007700ac6d48eb16e16f60ebc\n[12:19:09.568 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:58479 bytes_up=94 bytes_down=127\n[12:19:10.091 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[12:19:10.092 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[12:19:10.092 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[12:19:10.101 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d3446714-d3bf-444f-aaaf-30049c0f18a8 sessions=3 active=0 finished=3\n"
+          "stderr": "dns=off instance=04b28bde-340c-4791-a880-426cd1c659a2 pid=48286 version=\"0.1.0\" listen=127.0.0.1:64892\n[13:38:54.048 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:64907 code=\"closed\"\n[13:38:54.048 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:64326 chain=A config=sha256:013bf065df41e7bd91bbd8a011bccab15ca026700100daa9b21308024c9ebabd\n[13:38:54.049 INFO  billow_kernel::engine] message=session closed session=2 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:54.551 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=0.0.0.0:64324 protocol=\"http-connect\" rule=MATCH -> GROUP outbound=proxy=A type=http server=127.0.0.1:64326 chain=A config=sha256:013bf065df41e7bd91bbd8a011bccab15ca026700100daa9b21308024c9ebabd\n[13:38:54.572 INFO  billow_kernel::engine] message=session closed session=3 target=0.0.0.0:64324 bytes_up=94 bytes_down=127\n[13:38:55.093 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[13:38:55.093 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=3\n[13:38:55.093 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[13:38:55.094 INFO  billow_kernel::engine] message=billow-kernel stopped instance=04b28bde-340c-4791-a880-426cd1c659a2 sessions=3 active=0 finished=3\n"
         }
       },
       "observed": {
@@ -1794,11 +1795,11 @@
             "code": 1,
             "signal": null
           },
-          "stderr": "time=\"2026-11-25T20:19:10.155968000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T20:19:10.156096000+08:00\" level=fatal msg=\"Parse config error: proxy group[0]: unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\"\n"
+          "stderr": "time=\"2026-11-25T21:38:55.115125000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T21:38:55.115247000+08:00\" level=fatal msg=\"Parse config error: proxy group[0]: unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\"\n"
         },
         "rust": {
           "exit": 1,
-          "stderr": "error: [unsupported] unsupported configuration: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t23-diff-unaJVZ/relay-rejected-rust/config.yaml: proxy group[0] (G): unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\n"
+          "stderr": "error: [unsupported] unsupported configuration: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t23-diff-cQhVt6/relay-rejected-rust/config.yaml: proxy group[0] (G): unsupported type: The group [G] with relay type was removed, please using dialer-proxy instead\n"
         }
       },
       "observed": {

@@ -1199,6 +1199,12 @@ pub struct TuicOutbound {
     /// `max-udp-relay-packet-size` after the pinned derivation (the v5 form is
     /// additionally clamped to `MaxFragSizeV5`).
     pub max_udp_relay_packet_size: usize,
+    /// `reduce-rtt`: the pinned client passes `DialEarly` to quic-go. That only
+    /// sends 0-RTT data after a session ticket was cached, and the pinned TUIC
+    /// adapter never configures a `ClientSessionCache` (contrast shadowquic,
+    /// which does), so with the pinned engine this always falls back to a full
+    /// handshake. Kept as parsed configuration for parity and evidence.
+    pub reduce_rtt: bool,
     /// `fast-open`: the v4 client returns the stream before the connect
     /// response arrives (the v5 client has no early response; the flag only
     /// reaches the TCP-style dialer there, which a QUIC socket never uses).
@@ -1449,9 +1455,10 @@ impl Proxy {
             // (`UDP: true`); the option has no `udp` field, so a config's
             // `udp: true` is a tolerated no-op and `udp: false` is ignored.
             Protocol::Hysteria2(_) => true,
-            // TUIC sets `UDP: true` in the pinned outbound. Hysteria v1's UDP
-            // session is a separate datagram protocol this kernel has not
-            // implemented, so its datagrams keep the recorded drop path.
+            // Hysteria v1 also sets `UDP: true` in the pinned outbound
+            // (`ProxyInfo.UDP`); its `udp=1` QUIC datagram session is
+            // implemented in `outbound::udp::HysteriaUdp`.
+            Protocol::Hysteria(_) => true,
             Protocol::Tuic(_) => true,
             Protocol::ShadowQuic(_) => true,
             Protocol::Tailscale(p) => p.udp,
@@ -5047,8 +5054,9 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
 /// TUIC (`adapter/outbound/tuic.go`). A non-empty `token` selects the legacy
 /// v4 protocol (BLAKE3 TKN); otherwise `uuid`/`password` select v5. The UDP
 /// relay (`native` datagrams or `quic` uni streams), UoT, datagram sizing,
-/// congestion tuning, `fast-open` and `reduce-rtt` (a named residual: quinn
-/// has no session-ticket cache here) are parsed per the pinned derivation.
+/// congestion tuning, `fast-open` and `reduce-rtt` (parsed; the pinned adapter
+/// also has no TLS session cache, so both fall back to a full handshake) are
+/// parsed per the pinned derivation.
 fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
@@ -5112,17 +5120,14 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         None => None,
         Some(value) => match value.as_str() {
             // `bbr_meta_v2` falls through to the same sender as `bbr` in the
-            // pinned `common.SetCongestionController`; only the old meta BBR
-            // v1 controller has no quinn equivalent.
-            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
-            "bbr_meta_v1" => {
-                return Err(entry.unsupported(
-                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
-                ))
-            }
+            // pinned `common.SetCongestionController`. `bbr_meta_v1` is the
+            // legacy meta BBR sender; quinn exposes one BBR controller
+            // (v2-shaped), so selecting it is the closest available
+            // approximation and is recorded as such.
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v1" | "bbr_meta_v2" => Some(value),
             other => {
                 return Err(entry.unsupported(format!(
-                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v1, bbr_meta_v2)"
                 )))
             }
         },
@@ -5146,11 +5151,12 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     let stream_receive_window = receive_window(entry, "recv-window-conn", "")?;
     let connection_receive_window = receive_window(entry, "recv-window", "")?;
     let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
-    if entry.bool("reduce-rtt")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'reduce-rtt' is not implemented: quinn needs a TLS session-ticket cache and a pooled connection to send 0-RTT data, and this kernel dials a fresh endpoint per session",
-        ));
-    }
+    // Parity: the pinned TUIC adapter passes `reduce-rtt` as quic-go's
+    // `DialEarly` but never sets `tls.Config.ClientSessionCache`, so it has no
+    // ticket to resume from and the call falls back to a full handshake (the
+    // shadowquic adapter sets the cache explicitly). Parsing the flag is
+    // therefore the matching behaviour; it is not a hidden rejection.
+    let reduce_rtt = entry.bool("reduce-rtt")?.unwrap_or(false);
     let fast_open = entry.bool("fast-open")?.unwrap_or(false);
     let udp_over_stream = entry.bool("udp-over-stream")?.unwrap_or(false);
     let udp_over_stream_version = match entry.int("udp-over-stream-version")? {
@@ -5255,6 +5261,7 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         udp_over_stream_version,
         max_datagram_frame_size,
         max_udp_relay_packet_size,
+        reduce_rtt,
         fast_open,
         congestion_controller,
         cwnd,
@@ -6367,15 +6374,14 @@ fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigE
     {
         None => None,
         Some(value) => match value.as_str() {
-            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
-            "bbr_meta_v1" => {
-                return Err(entry.unsupported(
-                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
-                ))
-            }
+            // `bbr_meta_v1` is the pinned legacy meta BBR sender; quinn 0.11
+            // ships one BBR controller (v2-shaped), so the v1 name maps to it
+            // as the closest approximation instead of rejecting a valid
+            // pinned value at load.
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v1" | "bbr_meta_v2" => Some(value),
             other => {
                 return Err(entry.unsupported(format!(
-                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v1, bbr_meta_v2)"
                 )))
             }
         },

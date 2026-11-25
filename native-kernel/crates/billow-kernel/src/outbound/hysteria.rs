@@ -11,12 +11,13 @@
 //!   answered by `ok (u8) || udp session id (u32) || message length (u16) ||
 //!   message`, then the raw byte stream.
 //!
-//! Implemented: TCP, `auth`/`auth-str`, `sni`/`skip-cert-verify`/`alpn`,
-//! `up`/`down` validation. Not implemented and rejected by name: port hopping
-//! (`ports`/`hop-interval`), the XPlus obfuscator (`obfs`), the `faketcp` and
-//! `wechat` transports, UDP datagrams, and the receive-window/MTU/0-RTT tuning.
-//! The pinned client pools one connection; this client dials one connection per
-//! session (same wire format, no pooling).
+//! Implemented: TCP, the `udp=1` datagram session (one stream for the
+//! server-assigned session id, `session|host|port|msg/frag|data` datagrams),
+//! `auth`/`auth-str`, `sni`/`skip-cert-verify`/`alpn`, `up`/`down` validation,
+//! port hopping (`ports`/`hop-interval`), the XPlus obfuscator (`obfs`), the
+//! `wechat[-video]` transport and `fast-open`. `faketcp` is refused by name at
+//! dial time (raw-socket TCP stack). The pinned client pools one connection;
+//! this client dials one connection per session (same wire format, no pooling).
 
 use std::io;
 use std::pin::Pin;
@@ -132,13 +133,8 @@ fn write_u16(out: &mut Vec<u8>, value: usize) -> Result<(), DialError> {
     Ok(())
 }
 
-/// Dial `target` through a Hysteria v1 server.
-pub async fn dial(
-    option: &HysteriaOutbound,
-    target: &Target,
-    tls: &ClientTls,
-    timeout: Duration,
-) -> Result<Dialed, DialError> {
+/// Build the QUIC transport options shared by the TCP and UDP sessions.
+fn transport_options(option: &HysteriaOutbound) -> Result<QuicOptions, DialError> {
     let alpn = if option.alpn.is_empty() {
         vec!["hysteria".to_string()]
     } else {
@@ -160,11 +156,17 @@ pub async fn dial(
         // `obfs` it uses the dummy (identity) obfuscator under the header.
         HysteriaProtocol::WeChat => Some(Obfs::WeChat(WeChat { key: obfs_key })),
         HysteriaProtocol::FakeTcp => {
+            // The pinned Linux build implements this as a userspace TCP stack
+            // over raw `IPConn` handles plus iptables (`conns/faketcp/tcp_linux.go`,
+            // build tags `linux && !no_fake_tcp`); every other platform returns
+            // "faketcp is not supported on this platform" (`tcp_stub.go`).
+            // Reproducing it needs CAP_NET_RAW, an iptables rule and a TCP
+            // state machine, none of which a sandboxed proxy kernel can assume.
             return Err(DialError::Handshake {
                 protocol: "hysteria",
                 source: io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "protocol 'faketcp' needs a raw-socket TCP stack; the pinned engine is also unsupported off Linux (its faketcp build uses a Linux-only TCP implementation)",
+                    "protocol 'faketcp' needs a raw-socket TCP stack (CAP_NET_RAW + iptables + a gopacket-based TCP implementation); the pinned engine implements it on Linux only and returns 'faketcp is not supported on this platform' elsewhere",
                 ),
             })
         }
@@ -180,6 +182,16 @@ pub async fn dial(
             interval_max: interval,
         });
     }
+    Ok(quic_options)
+}
+
+/// Open the QUIC connection and complete the binary control hello.
+async fn connect_control(
+    option: &HysteriaOutbound,
+    tls: &ClientTls,
+    timeout: Duration,
+) -> Result<(quinn::Connection, quinn::Endpoint), DialError> {
+    let quic_options = transport_options(option)?;
     let (connection, endpoint) = quic::connect(
         &option.server,
         &option.server,
@@ -239,6 +251,17 @@ pub async fn dial(
     // The control stream is not used after the hello.
     let _ = control_send.finish();
     drop(control_recv);
+    Ok((connection, endpoint))
+}
+
+/// Dial `target` through a Hysteria v1 server.
+pub async fn dial(
+    option: &HysteriaOutbound,
+    target: &Target,
+    tls: &ClientTls,
+    timeout: Duration,
+) -> Result<Dialed, DialError> {
+    let (connection, endpoint) = connect_control(option, tls, timeout).await?;
 
     // One bidirectional stream per TCP session.
     let (mut send, recv) = tokio::time::timeout(timeout, connection.open_bi())
@@ -271,18 +294,60 @@ pub async fn dial(
         });
     }
     let mut stream = stream;
-    read_response(&mut stream).await?;
+    let _ = read_response(&mut stream).await?;
     Ok(Dialed {
         stream: Box::new(stream),
         server,
     })
 }
 
-/// Read the 7-byte session response and, on failure, its message. Both the
-/// eager and the `fast-open` lazy path use this.
+/// A Hysteria v1 UDP session: the control connection, the UDP request stream
+/// (kept open for the session lifetime) and the server-assigned session id.
+pub struct HysteriaUdpSession {
+    pub connection: quinn::Connection,
+    pub endpoint: quinn::Endpoint,
+    pub stream: QuicStream,
+    pub session_id: u32,
+}
+
+/// Open a Hysteria v1 UDP session (`core.Client.DialUDP`): `udp=1` request on a
+/// bidirectional stream, then a 7-byte response carrying the session id. The
+/// stream is held open; datagrams flow on the connection.
+pub async fn dial_udp(
+    option: &HysteriaOutbound,
+    tls: &ClientTls,
+    timeout: Duration,
+) -> Result<HysteriaUdpSession, DialError> {
+    let (connection, endpoint) = connect_control(option, tls, timeout).await?;
+    let (mut send, recv) = tokio::time::timeout(timeout, connection.open_bi())
+        .await
+        .map_err(|_| timeout_error(timeout))?
+        .map_err(|e| DialError::Handshake {
+            protocol: "hysteria",
+            source: io::Error::other(format!("open UDP stream: {e}")),
+        })?;
+    // `WriteClientRequest{UDP: true}`: flag, empty host, port 0.
+    send.write_all(&[1, 0, 0, 0, 0])
+        .await
+        .map_err(|e| DialError::Handshake {
+            protocol: "hysteria",
+            source: io::Error::other(format!("UDP request: {e}")),
+        })?;
+    let mut stream = QuicStream::new(send, recv, connection.clone(), endpoint.clone());
+    let session_id = read_response(&mut stream).await?;
+    Ok(HysteriaUdpSession {
+        connection,
+        endpoint,
+        stream,
+        session_id,
+    })
+}
+
+/// Read the 7-byte session response and, on failure, its message. Returns the
+/// server-assigned UDP session id (0 for TCP sessions).
 pub(crate) async fn read_response<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
-) -> Result<(), DialError> {
+) -> Result<u32, DialError> {
     let mut response = [0u8; 7];
     stream
         .read_exact(&mut response)
@@ -303,7 +368,12 @@ pub(crate) async fn read_response<S: tokio::io::AsyncRead + Unpin>(
             ),
         });
     }
-    Ok(())
+    Ok(u32::from_be_bytes([
+        response[1],
+        response[2],
+        response[3],
+        response[4],
+    ]))
 }
 
 /// A stream whose 7-byte session response is read lazily (`fast-open`).

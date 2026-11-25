@@ -9,11 +9,14 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use billow_kernel::outbound::ipstack;
+use quinn::crypto::rustls::QuicServerConfig;
+use rustls::pki_types::CertificateDer;
 use billow_kernel::outbound::tcp::{
     parse_segment, TcpSegment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_SYN,
 };
@@ -457,6 +460,442 @@ async fn socks5_udp_peer() -> u16 {
         }
     });
     port
+}
+
+// ---------------------------------------------------------------------------
+// TUIC `udp-over-stream` peer: proves the TUN data plane opens one UoT stream
+// per destination instead of refusing the family.
+// ---------------------------------------------------------------------------
+
+struct PeerCert {
+    der: Vec<u8>,
+    key: PathBuf,
+    dir: PathBuf,
+}
+
+impl Drop for PeerCert {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn make_peer_cert() -> PeerCert {
+    let dir = std::env::temp_dir().join(format!(
+        "billow-tun-tuic-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = dir.join("key.pem");
+    let cert = dir.join("cert.pem");
+    let status = Command::new("openssl")
+        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes"])
+        .arg("-keyout")
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .args([
+            "-days",
+            "1",
+            "-subj",
+            "/CN=billow-tun-tuic",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1,DNS:localhost",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("openssl is required for the TUIC UoT peer");
+    assert!(status.success(), "openssl failed to mint the peer certificate");
+    let pem = std::fs::read_to_string(&cert).unwrap();
+    let der = rustls_pemfile::certs(&mut pem.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap()
+        .as_ref()
+        .to_vec();
+    PeerCert { der, key, dir }
+}
+
+fn peer_server_config(cert: &PeerCert, alpn: &[u8]) -> quinn::ServerConfig {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(cert.der.clone())],
+            rustls_pemfile::private_key(&mut std::io::BufReader::new(
+                std::fs::File::open(&cert.key).unwrap(),
+            ))
+            .unwrap()
+            .unwrap(),
+        )
+        .unwrap();
+    config.alpn_protocols = vec![alpn.to_vec()];
+    let crypto = QuicServerConfig::try_from(config).unwrap();
+    let mut server = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.datagram_receive_buffer_size(Some(64 * 1024));
+    transport.datagram_send_buffer_size(64 * 1024);
+    server.transport_config(Arc::new(transport));
+    server
+}
+
+/// TUIC address (`type` 0 = domain, 1 = IPv4, 2 = IPv6, then port).
+async fn peer_read_address(recv: &mut quinn::RecvStream) -> std::io::Result<(String, u16)> {
+    let mut kind = [0u8; 1];
+    recv.read_exact(&mut kind)
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let host = match kind[0] {
+        0 => {
+            let mut len = [0u8; 1];
+            recv.read_exact(&mut len)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut name = vec![0u8; len[0] as usize];
+            recv.read_exact(&mut name)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            String::from_utf8(name).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "domain")
+            })?
+        }
+        1 => {
+            let mut addr = [0u8; 4];
+            recv.read_exact(&mut addr)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ipv4Addr::from(addr).to_string()
+        }
+        2 => {
+            let mut addr = [0u8; 16];
+            recv.read_exact(&mut addr)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            std::net::Ipv6Addr::from(addr).to_string()
+        }
+        other => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad TUIC address type {other}"),
+            ))
+        }
+    };
+    let mut port = [0u8; 2];
+    recv.read_exact(&mut port)
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok((host, u16::from_be_bytes(port)))
+}
+
+/// UoT address (`sing/common/uot`): 0 = IPv4, 1 = IPv6, 2 = FQDN, then port.
+async fn peer_read_uot_address(recv: &mut quinn::RecvStream) -> std::io::Result<(String, u16)> {
+    let mut kind = [0u8; 1];
+    recv.read_exact(&mut kind)
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let host = match kind[0] {
+        0 => {
+            let mut addr = [0u8; 4];
+            recv.read_exact(&mut addr)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ipv4Addr::from(addr).to_string()
+        }
+        1 => {
+            let mut addr = [0u8; 16];
+            recv.read_exact(&mut addr)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            std::net::Ipv6Addr::from(addr).to_string()
+        }
+        2 => {
+            let mut len = [0u8; 1];
+            recv.read_exact(&mut len)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let mut name = vec![0u8; len[0] as usize];
+            recv.read_exact(&mut name)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            String::from_utf8(name)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "domain"))?
+        }
+        other => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad UoT address type {other}"),
+            ))
+        }
+    };
+    let mut port = [0u8; 2];
+    recv.read_exact(&mut port)
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok((host, u16::from_be_bytes(port)))
+}
+
+/// Minimal TUIC v5 + `sp.v2.udp-over-tcp.arpa` server: authenticate with the
+/// exporter token, accept a UoT stream, read the v2 connect request and echo
+/// every `u16 length || payload` frame back.
+async fn tuic_uot_peer() -> (u16, Arc<Mutex<Vec<String>>>) {
+    const PASSWORD: &[u8] = b"tun-tuic-secret";
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    drop(socket);
+    let cert = make_peer_cert();
+    let endpoint = quinn::Endpoint::server(
+        peer_server_config(&cert, b"h3"),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+    .expect("TUIC UoT endpoint");
+    let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_task = log.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let log = log_task.clone();
+            tokio::spawn(async move {
+                let Ok(connection) = incoming.await else {
+                    return;
+                };
+                let mut auth = match connection.accept_uni().await {
+                    Ok(stream) => stream,
+                    Err(_) => return,
+                };
+                let mut header = [0u8; 50];
+                if auth.read_exact(&mut header).await.is_err()
+                    || header[0] != 0x05
+                    || header[1] != 0x00
+                {
+                    connection.close(quinn::VarInt::from_u32(0xffff_fff1), b"auth");
+                    return;
+                }
+                let mut expected = [0u8; 32];
+                if connection
+                    .export_keying_material(&mut expected, &header[2..18], PASSWORD)
+                    .is_err()
+                    || expected != header[18..50]
+                {
+                    connection.close(quinn::VarInt::from_u32(0xffff_fff1), b"auth");
+                    return;
+                }
+                log.lock().unwrap().push("auth-ok".to_string());
+                let (mut send, mut recv) = match connection.accept_bi().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut head = [0u8; 2];
+                if recv.read_exact(&mut head).await.is_err() || head != [0x05, 0x01] {
+                    return;
+                }
+                let Ok((magic, _)) = peer_read_address(&mut recv).await else {
+                    return;
+                };
+                log.lock().unwrap().push(format!("magic={magic}"));
+                let mut connect = [0u8; 1];
+                if recv.read_exact(&mut connect).await.is_err() || connect[0] != 1 {
+                    return;
+                }
+                let Ok((target, target_port)) = peer_read_uot_address(&mut recv).await else {
+                    return;
+                };
+                log.lock()
+                    .unwrap()
+                    .push(format!("target={target}:{target_port}"));
+                loop {
+                    let mut length = [0u8; 2];
+                    if recv.read_exact(&mut length).await.is_err() {
+                        return;
+                    }
+                    let length = u16::from_be_bytes(length) as usize;
+                    let mut payload = vec![0u8; length];
+                    if recv.read_exact(&mut payload).await.is_err() {
+                        return;
+                    }
+                    if send.write_all(&(length as u16).to_be_bytes()).await.is_err()
+                        || send.write_all(&payload).await.is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, log)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tuic_udp_over_stream_datagrams_cross_the_tunnel() {
+    let (peer, log) = tuic_uot_peer().await;
+    let config = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer}, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: tun-tuic-secret, skip-cert-verify: true, udp-over-stream: true, udp-over-stream-version: 2}}\nrules:\n  - 'MATCH,t1'\n",
+        free_port()
+    );
+    let device = Device::start(&config, TunnelOptions::default());
+    let target = SocketAddr::from(([127, 0, 0, 1], 5353));
+    let port = device.next_port();
+    let query = ipstack::build_udp_packet(
+        DEVICE_IP,
+        target.ip(),
+        port,
+        target.port(),
+        b"tun-tuic-uot",
+        64,
+    )
+    .unwrap();
+    device.send(&query);
+    let packets = device
+        .sink
+        .wait_for(|packets| {
+            packets.iter().any(|packet| {
+                ipstack::parse_ip_packet(packet).map(|p| p.protocol) == Ok(ipstack::IPPROTO_UDP)
+            })
+        })
+        .await;
+    let reply = packets
+        .iter()
+        .find_map(|packet| ipstack::parse_ip_packet(packet).ok())
+        .expect("UDP reply");
+    assert_eq!(reply.protocol, ipstack::IPPROTO_UDP);
+    assert_eq!(reply.src, target.ip());
+    assert_eq!(reply.dst, DEVICE_IP);
+    let udp = ipstack::parse_udp(&reply).expect("UDP datagram");
+    assert_eq!(udp.payload, b"tun-tuic-uot");
+    assert_eq!(udp.dst_port, port);
+    assert_eq!(udp.src_port, target.port());
+    let entries = log.lock().unwrap().clone();
+    assert!(entries.iter().any(|entry| entry == "auth-ok"), "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry == "magic=sp.v2.udp-over-tcp.arpa"),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry == "target=127.0.0.1:5353"),
+        "{entries:?}"
+    );
+    let stats = device.tunnel.stats();
+    assert_eq!(stats.udp_replies, 1, "{stats:?}");
+    assert_eq!(stats.unsupported_protocols, 0, "{stats:?}");
+    device.tunnel.stop();
+}
+
+/// Minimal Hysteria v1 peer: control hello, then the `udp=1` stream and QUIC
+/// datagram echo (proves the TUN data plane uses the v1 UDP session).
+async fn hysteria_udp_peer() -> u16 {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    drop(socket);
+    let cert = make_peer_cert();
+    let endpoint = quinn::Endpoint::server(
+        peer_server_config(&cert, b"hysteria"),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+    .expect("hysteria endpoint");
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            tokio::spawn(async move {
+                let Ok(connection) = incoming.await else {
+                    return;
+                };
+                let Ok((mut control_send, mut control_recv)) = connection.accept_bi().await else {
+                    return;
+                };
+                let mut head = [0u8; 19];
+                if control_recv.read_exact(&mut head).await.is_err() {
+                    return;
+                }
+                let send_bps = u64::from_be_bytes(head[1..9].try_into().unwrap());
+                let recv_bps = u64::from_be_bytes(head[9..17].try_into().unwrap());
+                let auth_len = u16::from_be_bytes([head[17], head[18]]) as usize;
+                let mut auth = vec![0u8; auth_len];
+                if control_recv.read_exact(&mut auth).await.is_err() {
+                    return;
+                }
+                let mut hello = vec![1u8];
+                hello.extend_from_slice(&send_bps.to_be_bytes());
+                hello.extend_from_slice(&recv_bps.to_be_bytes());
+                hello.extend_from_slice(&0u16.to_be_bytes());
+                let _ = control_send.write_all(&hello).await;
+                let _ = control_send.finish();
+                let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+                    return;
+                };
+                let mut request = [0u8; 5];
+                if recv.read_exact(&mut request).await.is_err() || request[0] != 1 {
+                    return;
+                }
+                let mut response = vec![1u8];
+                response.extend_from_slice(&7u32.to_be_bytes());
+                response.extend_from_slice(&0u16.to_be_bytes());
+                let _ = send.write_all(&response).await;
+                let echo = connection.clone();
+                tokio::spawn(async move {
+                    while let Ok(datagram) = echo.read_datagram().await {
+                        if echo.send_datagram(datagram).is_err() {
+                            break;
+                        }
+                    }
+                });
+                let mut buffer = [0u8; 64];
+                while let Ok(Some(_)) = recv.read(&mut buffer).await {}
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hysteria_udp_session_crosses_the_tunnel() {
+    let peer = hysteria_udp_peer().await;
+    let config = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: {peer}, up: 50 Mbps, down: 50 Mbps, auth-str: hysteria-secret, skip-cert-verify: true}}\nrules:\n  - 'MATCH,h1'\n",
+        free_port()
+    );
+    let device = Device::start(&config, TunnelOptions::default());
+    let target = SocketAddr::from(([127, 0, 0, 1], 5353));
+    let port = device.next_port();
+    let query = ipstack::build_udp_packet(
+        DEVICE_IP,
+        target.ip(),
+        port,
+        target.port(),
+        b"tun-hysteria-udp",
+        64,
+    )
+    .unwrap();
+    device.send(&query);
+    let packets = device
+        .sink
+        .wait_for(|packets| {
+            packets.iter().any(|packet| {
+                ipstack::parse_ip_packet(packet).map(|p| p.protocol) == Ok(ipstack::IPPROTO_UDP)
+            })
+        })
+        .await;
+    let reply = packets
+        .iter()
+        .find_map(|packet| ipstack::parse_ip_packet(packet).ok())
+        .expect("UDP reply");
+    assert_eq!(reply.protocol, ipstack::IPPROTO_UDP);
+    assert_eq!(reply.src, target.ip());
+    assert_eq!(reply.dst, DEVICE_IP);
+    let udp = ipstack::parse_udp(&reply).expect("UDP datagram");
+    assert_eq!(udp.payload, b"tun-hysteria-udp");
+    assert_eq!(udp.dst_port, port);
+    assert_eq!(udp.src_port, target.port());
+    let stats = device.tunnel.stats();
+    assert_eq!(stats.udp_replies, 1, "{stats:?}");
+    assert_eq!(stats.unsupported_protocols, 0, "{stats:?}");
+    device.tunnel.stop();
 }
 
 #[tokio::test(flavor = "multi_thread")]
