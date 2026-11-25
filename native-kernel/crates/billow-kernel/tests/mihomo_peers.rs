@@ -2322,6 +2322,152 @@ fn tuic_v5_wrong_password_never_reaches_the_sink() {
     });
 }
 
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_v4_token_reaches_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    // The pinned listener selects v4 when a `token` list is configured; the
+    // kernel derives BLAKE3(token) for its authenticate command.
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, token: ['legacy-tuic-token']}}
+"
+    );
+    with_quic_peer("tuic-v4", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {port}, token: legacy-tuic-token, skip-cert-verify: true}}
+"
+        ));
+        let marker = "marker-tuic-v4-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("tuic-v4", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_v4_wrong_token_never_reaches_the_sink() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, token: ['legacy-tuic-token']}}
+"
+    );
+    with_quic_peer("tuic-v4-wrong", &listeners, |sink, _mihomo| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {port}, token: wrong-token, skip-cert-verify: true}}\n"
+        ));
+        let (status, _) = connect(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            b"must-not-arrive",
+        );
+        // The v4 server closes the QUIC connection on a bad token before it
+        // answers the Connect stream, so the dial fails instead of relaying.
+        assert_eq!(status, "HTTP/1.1 502 Bad Gateway");
+        expect_not_reached("tuic-v4-wrong", sink);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_udp_native_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("tuic-udp", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {}, uuid: {TUIC_UUID}, password: \"{TUIC_PASSWORD}\", skip-cert-verify: true, udp-relay-mode: native}}\n",
+            ports[0]
+        ));
+        let echo = UdpEcho::start();
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let (_control, relay) = udp_associate(running.proxy);
+        let payload = b"marker-tuic-udp-native";
+        let reply = udp_exchange_retry(relay, target, payload);
+        assert_eq!(reply, payload);
+        assert!(echo.received().iter().any(|seen| seen == payload));
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_udp_fragments_a_large_datagram_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("tuic-udp-fragments", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {}, uuid: {TUIC_UUID}, password: \"{TUIC_PASSWORD}\", skip-cert-verify: true, udp-relay-mode: native, max-datagram-frame-size: 1400}}\n",
+            ports[0]
+        ));
+        let echo = UdpEcho::start();
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let (_control, relay) = udp_associate(running.proxy);
+        let reply = udp_exchange_retry(relay, target, &payload);
+        assert_eq!(reply, payload, "3000 bytes must be reassembled from v5 fragments");
+        assert!(echo.received().iter().any(|seen| seen == &payload));
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_udp_quic_mode_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("tuic-udp-quic", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {}, uuid: {TUIC_UUID}, password: \"{TUIC_PASSWORD}\", skip-cert-verify: true, udp-relay-mode: quic}}\n",
+            ports[0]
+        ));
+        let echo = UdpEcho::start();
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let (_control, relay) = udp_associate(running.proxy);
+        let payload = b"marker-tuic-udp-quic";
+        let reply = udp_exchange_retry(relay, target, payload);
+        assert_eq!(reply, payload);
+        assert!(echo.received().iter().any(|seen| seen == payload));
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn tuic_udp_over_stream_reaches_the_echo_through_mihomo() {
+    let port = free_port();
+    let listeners = format!(
+        "  - {{name: in-tuic, type: tuic, listen: 127.0.0.1, port: {port}, certificate: CERT, private-key: KEY, users: {{{TUIC_UUID}: \"{TUIC_PASSWORD}\"}}}}\n"
+    );
+    with_udp_quic_peer("tuic-uot", &listeners, |_mihomo, ports| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: tuic, server: 127.0.0.1, port: {}, uuid: {TUIC_UUID}, password: \"{TUIC_PASSWORD}\", skip-cert-verify: true, udp-over-stream: true}}\n",
+            ports[0]
+        ));
+        let first = UdpEcho::start();
+        let second = UdpEcho::start();
+        let (control, relay) = udp_associate(running.proxy);
+        let first_target = SocketAddr::from(([127, 0, 0, 1], first.port));
+        let second_target = SocketAddr::from(([127, 0, 0, 1], second.port));
+        let first_payload = b"marker-tuic-uot-one";
+        let second_payload = b"marker-tuic-uot-two";
+        send_two_targets(
+            relay,
+            (first_target, first_payload),
+            (second_target, second_payload),
+        );
+        assert!(first.received().iter().any(|payload| payload == first_payload));
+        assert!(second.received().iter().any(|payload| payload == second_payload));
+        drop(control);
+    });
+}
+
 const HYSTERIA2_PASSWORD: &str = "hysteria2-listener-secret";
 
 #[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
@@ -2921,6 +3067,31 @@ fn shadowquic_wrong_password_never_reaches_the_sink() {
             "the unauthenticated handshake is forwarded to the camouflage upstream and fails before the tunnel reply"
         );
         expect_not_reached("shadowquic-wrong-password", sink);
+    });
+    drop(upstream);
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn shadowquic_brutal_and_bbr_profile_reach_the_receiving_side_through_mihomo() {
+    let port = free_port();
+    let upstream = std::net::UdpSocket::bind("127.0.0.1:0").expect("camouflage upstream");
+    let listeners = shadowquic_listener(port, upstream.local_addr().unwrap().port());
+    with_quic_peer("shadowquic-brutal", &listeners, |sink, _mihomo| {
+        // `up`/`down` trigger the private Brutal negotiation; the pinned
+        // listener answers it on its own extension stream. `bbr-profile` and
+        // `cwnd` select the local initial window.
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: shadowquic, server: 127.0.0.1, port: {port}, username: {SHADOWQUIC_USER}, password: \"{SHADOWQUIC_PASSWORD}\", sni: localhost, congestion-controller: bbr, cwnd: 64, bbr-profile: aggressive, up: 50 Mbps, down: 20 Mbps}}\n"
+        ));
+        let marker = "marker-shadowquic-brutal-through-mihomo";
+        let status = connect_while(
+            running.proxy,
+            &format!("127.0.0.1:{}", sink.port),
+            marker.as_bytes(),
+            || expect_marker("shadowquic-brutal", sink, marker),
+        );
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
     });
     drop(upstream);
 }

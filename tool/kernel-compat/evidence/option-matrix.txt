@@ -1,7 +1,7 @@
 # Proxy option matrix: no-op forms must load, enabled forms must be rejected.
-# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t31-a6-target/release/billow-kernel
+# rust: /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/opencode/t32-target/release/billow-kernel
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
-# no-op cases: 291, implemented cases: 88, enabled cases: 119, problems: 0
+# no-op cases: 291, implemented cases: 107, enabled cases: 100, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
@@ -378,6 +378,25 @@ impl    hysteria2 bbr-profile                  rust=accept mihomo=accept
 impl    vmess   mkcp-opts                    rust=accept mihomo=accept
 impl    vmess   mekya-opts                   rust=accept mihomo=accept
 impl    vmess   tlsmirror-opts               rust=accept mihomo=accept
+impl    tuic    token                        rust=accept mihomo=accept
+impl    tuic    udp-relay-mode               rust=accept mihomo=accept
+impl    tuic    fast-open                    rust=accept mihomo=accept
+impl    tuic    udp-over-stream              rust=accept mihomo=accept
+impl    tuic    bbr-profile                  rust=accept mihomo=accept
+impl    tuic    max-datagram-frame-size      rust=accept mihomo=accept
+impl    tuic    max-udp-relay-packet-size    rust=accept mihomo=accept
+impl    tuic    client-fingerprint           rust=accept mihomo=accept
+impl    hysteria ports                        rust=accept mihomo=accept
+impl    hysteria hop-interval                 rust=accept mihomo=accept
+impl    hysteria obfs                         rust=accept mihomo=accept
+impl    hysteria protocol                     rust=accept mihomo=accept
+impl    hysteria fast-open                    rust=accept mihomo=accept
+impl    hysteria client-fingerprint           rust=accept mihomo=accept
+impl    shadowquic congestion-controller        rust=accept mihomo=accept
+impl    shadowquic bbr-profile                  rust=accept mihomo=accept
+impl    shadowquic cwnd                         rust=accept mihomo=accept
+impl    shadowquic up                           rust=accept mihomo=accept
+impl    shadowquic down                         rust=accept mihomo=accept
 impl    hysteria2 dialer-proxy                 rust=accept mihomo=accept
 impl    mieru   basic-options                rust=accept mihomo=accept
 impl    sudoku  basic-options                rust=accept mihomo=accept
@@ -423,23 +442,9 @@ enabled gost-relay client-fingerprint           rust=reject mihomo=accept
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   traffic-pattern              rust=reject mihomo=reject
 enabled sudoku  udp                          rust=reject mihomo=accept
-enabled tuic    token                        rust=reject mihomo=accept
-enabled tuic    udp-relay-mode               rust=reject mihomo=accept
 enabled tuic    reduce-rtt                   rust=reject mihomo=accept
-enabled tuic    fast-open                    rust=reject mihomo=accept
-enabled tuic    udp-over-stream              rust=reject mihomo=accept
-enabled tuic    bbr-profile                  rust=reject mihomo=accept
-enabled tuic    max-datagram-frame-size      rust=reject mihomo=accept
-enabled tuic    max-udp-relay-packet-size    rust=reject mihomo=accept
 enabled tuic    ech-opts                     rust=reject mihomo=reject
-enabled tuic    client-fingerprint           rust=reject mihomo=accept
-enabled hysteria ports                        rust=reject mihomo=accept
-enabled hysteria hop-interval                 rust=reject mihomo=accept
-enabled hysteria obfs                         rust=reject mihomo=accept
-enabled hysteria protocol                     rust=reject mihomo=accept
-enabled hysteria fast-open                    rust=reject mihomo=accept
 enabled hysteria ech-opts                     rust=reject mihomo=reject
-enabled hysteria client-fingerprint           rust=reject mihomo=accept
 enabled hysteria2 ech-opts                     rust=reject mihomo=reject
 enabled mieru   udp                          rust=reject mihomo=accept
 enabled mieru   multiplexing                 rust=reject mihomo=accept
@@ -448,11 +453,6 @@ enabled sudoku  udp                          rust=reject mihomo=accept
 enabled sudoku  http-mask-mode               rust=reject mihomo=accept
 enabled shadowquic zero-rtt                     rust=reject mihomo=accept
 enabled shadowquic quic-versions                rust=reject mihomo=accept
-enabled shadowquic congestion-controller        rust=reject mihomo=accept
-enabled shadowquic bbr-profile                  rust=reject mihomo=accept
-enabled shadowquic cwnd                         rust=reject mihomo=accept
-enabled shadowquic up                           rust=reject mihomo=accept
-enabled shadowquic down                         rust=reject mihomo=accept
 enabled wireguard amnezia-wg-option            rust=reject mihomo=accept
 enabled wireguard ip-stack.mode                rust=reject mihomo=accept
 enabled wireguard ip-stack.congestion-controller rust=reject mihomo=accept

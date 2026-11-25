@@ -16,7 +16,15 @@ SSR plugin layers and the gost-relay UDP association and smux session. T10
 added the QUIC families `tuic` (v5 `uuid`/`password`), `hysteria` (v1) and
 `hysteria2` (HTTP/3 auth + TCP/UDP), all over `quinn` 0.11. T27 implemented the
 per-outbound `BasicOption` dialer knobs, the TLS certificate-identity options,
-the QUIC congestion/window tuning and socks5 `UDP ASSOCIATE`. T13 added `mieru`
+the QUIC congestion/window tuning and socks5 `UDP ASSOCIATE`. T32 closed the
+remaining TUIC/ShadowQUIC/Hysteria-v1 options: TUIC v4 (`token`/BLAKE3), both
+UDP relay carriers, `udp-over-stream`, datagram sizing, `fast-open` and
+`bbr-profile`; ShadowQUIC's private Brutal negotiation plus its
+`congestion-controller`/`cwnd`/`bbr-profile`; and Hysteria v1 port hopping, the
+XPlus obfuscator, the `wechat` transport and `fast-open`. The residuals are
+`tuic reduce-rtt`, `shadowquic zero-rtt`/QUIC v2, Hysteria v1 `faketcp` at dial
+time and its UDP session (see `tool/kernel-compat/evidence/t32-option-closure.md`).
+T13 added `mieru`
 (single-session TCP, an independent implementation of the published protocol).
 T17 added `sudoku` as a translation of the pinned GPL-3.0 `transport/sudoku`
 (TCP with the legacy HTTP mask, the pure and packed downlink codecs, the three
@@ -947,17 +955,26 @@ implements the carrier/hidden TLS record layer), snell
 `congestion-controller`/`cwnd`/`bbr-profile`, gost-relay
 `client-fingerprint`, ssh private-key file paths, and `udp: true` on
 `snell`/`trusttunnel` (no UDP association for those two families; vless, anytls,
-vmess and socks5 UDP are implemented). T10's families reject the options
-they do not implement by name: `tuic` `token` (v4/BLAKE3), `udp-relay-mode:
-quic`, `udp-over-stream`, `reduce-rtt`, `fast-open`, the meta BBR v1 controller and the
-UDP datagram sizing; the cubic/new_reno/bbr/bbr_meta_v2 controller (v2 is the pinned alias of bbr), `cwnd`, receive
-windows and `disable-mtu-discovery` are applied to quinn; `cwnd` becomes a BBR initial window of
-`cwnd × 1280` for TUIC (quic-go's default `InitialPacketSize`) and `cwnd × 1242` for masque (the pinned
-masque `quic.Config` value); `bbr_meta_v1` and
-`bbr-profile` are named. `hysteria`
-`ports`/`hop-interval` (port hopping), `obfs` (XPlus), `protocol:
-faketcp|wechat`, `fast-open`; `recv-window*` and `disable-mtu-discovery` are
-applied. `hysteria2` `ports`/`hop-interval` (a wrapped `quinn::AsyncUdpSocket` rewrites
+vmess and socks5 UDP are implemented). T10's families implemented their remaining options in T31/T32 and now reject
+only the named residuals: `tuic` implements the v4 `token` (BLAKE3 TKN and the
+v4 connect response), `udp-relay-mode` (`native` QUIC datagrams with v5
+fragmentation, `quic` one packet per uni stream), `udp-over-stream` (the pinned
+`sp[.v2].udp-over-tcp.arpa` UoT framing), `fast-open` (lazy v4 response),
+`bbr-profile` (BBR initial-window approximation), `max-datagram-frame-size`/
+`max-udp-relay-packet-size` (the pinned derivation, v5 clamped to 1168) and
+`client-fingerprint` (rustls approximation); the cubic/new_reno/bbr/bbr_meta_v2
+controller (v2 is the pinned alias of bbr), `cwnd`, receive windows and
+`disable-mtu-discovery` are applied to quinn; `cwnd` becomes a BBR initial
+window of `cwnd × 1280` for TUIC and `cwnd × 1242` for masque. `reduce-rtt`
+(0-RTT needs a session-ticket cache and a pooled connection), `bbr_meta_v1` and
+`ech-opts` are named. `hysteria` implements `ports`/`hop-interval` (comma/range
+expansion, pinned 10 s default, destination-port rewriting with reply mapping),
+`obfs` (XPlus: 16-byte salt + SHA-256(key‖salt) XOR), `protocol: wechat[-video]`
+(the 13-byte header with XPlus or identity inside), `fast-open` (the response is
+replayed on the first read) and `client-fingerprint`; `recv-window*` and
+`disable-mtu-discovery` are applied. `protocol: faketcp` loads like the pinned
+decoder and is refused at dial time (a raw-socket TCP stack; the pinned
+non-Linux build is unsupported too), and UDP sessions are still a named gap. `hysteria2` `ports`/`hop-interval` (a wrapped `quinn::AsyncUdpSocket` rewrites
 the destination port and maps replies back), `obfs: salamander` (BLAKE2b-256
 salt/XOR), `obfs: gecko` (Salamander plus the pinned long-header fragmentation,
 padding and reassembly), `realm-opts` (the control HTTP `/connect`, STUN
@@ -986,12 +1003,15 @@ validation (TCP-stack only), `bbr_meta_v1`/`bbr-profile` (quinn has one BBR
 controller but no v1/profile selector) and `dialer-proxy` (a QUIC endpoint is
 dialled locally), DNS name servers that are not `udp://` IP
 literals, and URI templates (IP flow forwarding); its `udp: false` form loads
-and refuses UDP dials while TCP still uses the tunnel. `shadowquic` rejects `zero-rtt` (JLS 0-RTT needs the pinned
-authenticated session ticket), `quic-versions: v2` (quinn 0.11 implements v1
-only), `congestion-controller`/`bbr-profile`/a non-default `cwnd`/`up`/`down`
-(the private Brutal controller is not in quinn) and `dialer-proxy`; its
-`skip-cert-verify`/`udp`/`tls` keys are not declared by the pinned type, so
-they load and are ignored exactly as Mihomo ignores them. `wireguard` rejects
+and refuses UDP dials while TCP still uses the tunnel. `shadowquic` implements the private mihomo Brutal
+negotiation (`up`/`down` write the extension frame on its own stream and parse
+the reply; the controller is selected before the handshake because quinn cannot
+swap a live transport), `congestion-controller` (cubic/new_reno/bbr, with
+`bbr_meta_v2` as the pinned alias), `cwnd` and `bbr-profile` (initial-window
+approximation). It rejects `zero-rtt` (JLS 0-RTT needs the pinned authenticated
+session ticket), `quic-versions: v2` (quinn 0.11 implements v1 only) and
+`dialer-proxy`; its `skip-cert-verify`/`udp`/`tls` keys are not declared by the
+pinned type, so they load and are ignored exactly as Mihomo ignores them. `wireguard` rejects
 `amnezia-wg-option` (AmneziaWG's header obfuscation is a different device,
 implemented by the pinned `amneziawg-go`), an explicit `ip-stack` mode /
 congestion controller, `remote-dns-resolve`/`dns` (the stack resolver),

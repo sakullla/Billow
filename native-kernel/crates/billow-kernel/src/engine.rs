@@ -1829,6 +1829,7 @@ async fn serve_udp_associate_inner(
     let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
     let mut hysteria2: Option<outbound::udp::Hysteria2Udp> = None;
+    let mut tuic: Option<outbound::tuic::TuicUdp> = None;
     // Destination-bound UoT / plain-UDP associations (anytls, ss UoT v2/v1,
     // vmess plain). The pinned outbound opens one packet conn per destination
     // and reads every one of them concurrently; the relay mirrors that with a
@@ -1852,6 +1853,7 @@ async fn serve_udp_associate_inner(
     let mut masque_buf: Option<Vec<u8>> = None;
     let mut shadowquic_buf: Option<Vec<u8>> = None;
     let mut hysteria2_buf: Option<Vec<u8>> = None;
+    let mut tuic_buf: Option<Vec<u8>> = None;
     let mut control_probe = [0u8; 1];
     let mut failed = false;
     let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
@@ -1869,6 +1871,7 @@ async fn serve_udp_associate_inner(
     let mut masque_eof = false;
     let mut shadowquic_eof = false;
     let mut hysteria2_eof = false;
+    let mut tuic_eof = false;
 
     'associate: loop {
         if direct_eof {
@@ -1926,6 +1929,11 @@ async fn serve_udp_associate_inner(
             hysteria2 = None;
             hysteria2_buf = None;
             hysteria2_eof = false;
+        }
+        if tuic_eof {
+            tuic = None;
+            tuic_buf = None;
+            tuic_eof = false;
         }
         tokio::select! {
             biased;
@@ -2507,6 +2515,76 @@ async fn serve_udp_associate_inner(
                                 .send(&outgoing, payload)
                                 .await
                         }
+                        crate::proxies::Protocol::Tuic(option) => {
+                            if option.udp_over_stream {
+                                let key = outbound::udp::UotKey {
+                                    proxy: proxy.name.clone(),
+                                    target: outgoing.clone(),
+                                };
+                                if !uot_map.contains_key(&key) {
+                                    match outbound::with_dialer(
+                                        proxy.dialer.clone(),
+                                        outbound::udp::TuicUot::connect(
+                                            option,
+                                            &outgoing,
+                                            &chain_for(config, &proxy),
+                                            limits.dial_timeout,
+                                            &context.runtime.tls,
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(association) => {
+                                            let (reader, writer) = association.into_halves();
+                                            install_uot(
+                                                &mut uot_map,
+                                                &mut uot_next_id,
+                                                &uot_tx,
+                                                key.clone(),
+                                                outbound::udp::UotReader::Tuic(reader),
+                                                outbound::udp::UotWriter::Tuic(writer),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "tuic UoT association failed: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                send_on_uot(&mut uot_map, &key, payload).await
+                            } else {
+                                if tuic.is_none() {
+                                    let hops = chain_for(config, &proxy);
+                                    match outbound::with_dialer(
+                                        proxy.dialer.clone(),
+                                        outbound::tuic::TuicUdp::connect(
+                                            option,
+                                            &hops,
+                                            &context.runtime.tls,
+                                            limits.dial_timeout,
+                                        ),
+                                    )
+                                    .await
+                                    {
+                                        Ok(association) => {
+                                            tuic = Some(association);
+                                            tuic_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "tuic UDP association failed: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                tuic
+                                    .as_mut()
+                                    .expect("connected above")
+                                    .send(&outgoing, payload)
+                                    .await
+                            }
+                        }
                         other => {
                             // The pinned outbound has no UDP association this
                             // kernel implements for this family; dropping is a
@@ -2779,6 +2857,27 @@ async fn serve_udp_associate_inner(
                     failed = true;
                 }
                 if let (Ok(Some((from, read))), Some(buffer)) = (received, hysteria2_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let mut reply = outbound::udp::reply_header(&from);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
+                match (tuic.as_mut(), tuic_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if tuic.is_some() && !tuic_eof => {
+                if matches!(&received, Ok(None) | Err(_)) {
+                    tuic_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, tuic_buf.as_ref()) {
                     if let Some(client_udp) = client_udp {
                         let mut reply = outbound::udp::reply_header(&from);
                         reply.extend_from_slice(&buffer[..read]);

@@ -41,7 +41,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use super::jls::JlsCredentials;
-use super::quic::{self, QuicOptions, QuicStream};
+use super::quic::{self, CongestionController, QuicOptions, QuicStream};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, SocksAddr, Target};
 use crate::proxies::ShadowQuicOutbound;
@@ -49,6 +49,13 @@ use crate::proxies::ShadowQuicOutbound;
 pub const COMMAND_CONNECT: u8 = 0x01;
 pub const COMMAND_ASSOCIATE_DATAGRAM: u8 = 0x03;
 pub const COMMAND_ASSOCIATE_STREAM: u8 = 0x04;
+pub const COMMAND_EXTENSION: u8 = 0xff;
+
+/// Private mihomo Brutal extension opcode: ASCII "mihomo" + extension id 1.
+const BRUTAL_OPCODE: u64 = 0x6d69_686f_6d6f_0001;
+const BRUTAL_VERSION: u8 = 1;
+const BRUTAL_FLAG_RX_AUTO: u8 = 1 << 0;
+const BRUTAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 const MAX_UDP_PACKET: usize = 0xffff;
 const PENDING_PER_ID: usize = 32;
@@ -60,6 +67,87 @@ fn handshake(kind: io::ErrorKind, message: impl Into<String>) -> DialError {
         protocol: "shadowquic",
         source: io::Error::new(kind, message.into()),
     }
+}
+
+/// Apply the congestion/flow options shared by the TCP and UDP paths.
+///
+/// `up` selects Brutal before the handshake: the pinned client starts with the
+/// selected controller and swaps to Brutal after the private negotiation, but
+/// quinn's transport factory cannot be replaced on a live connection, so the
+/// final controller is chosen up front. `down` alone ends in BBR in the pinned
+/// fallback (the negotiated TX rate is 0), which is mirrored here.
+fn apply_transport_options(option: &ShadowQuicOutbound, quic_options: &mut QuicOptions) {
+    let tune = option.congestion_controller.is_some()
+        || option.cwnd != 0
+        || option.bbr_profile.is_some();
+    if tune {
+        let (controller, initial) = super::tuic::congestion_tuning_profile(
+            option.congestion_controller.as_deref(),
+            option.cwnd,
+            option.bbr_profile.as_deref(),
+            1280,
+        );
+        quic_options.congestion_controller = controller;
+        quic_options.initial_congestion_window = initial;
+    }
+    if option.send_bps > 0 {
+        quic_options.brutal_bps = Some(option.send_bps);
+    } else if option.receive_bps > 0 {
+        // Pinned fallback after a successful negotiation with no TX rate.
+        quic_options.congestion_controller = CongestionController::Bbr;
+    }
+}
+
+/// Write the private mihomo Brutal negotiation request and read the reply.
+///
+/// ```text
+/// request:  0xff | opcode (u64 BE) | 1 | flags (u8) | len (u16 BE) | rx (u64 BE)
+/// response:                       1 | flags (u8) | len (u16 BE) | rx (u64 BE)
+/// ```
+///
+/// `rx` is the desired receive bandwidth (0 = auto). The reply's `rx` is the
+/// peer's transmit rate and `RX_AUTO` means the server keeps its own sender.
+async fn negotiate_brutal(
+    connection: &Connection,
+    receive_bps: u64,
+) -> io::Result<(u64, bool)> {
+    let (mut send, mut recv) = tokio::time::timeout(BRUTAL_TIMEOUT, connection.open_bi())
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "brutal: open stream timed out"))?
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut request = Vec::with_capacity(1 + 8 + 12);
+    request.push(COMMAND_EXTENSION);
+    request.extend_from_slice(&BRUTAL_OPCODE.to_be_bytes());
+    request.push(BRUTAL_VERSION);
+    request.push(0);
+    request.extend_from_slice(&8u16.to_be_bytes());
+    request.extend_from_slice(&receive_bps.to_be_bytes());
+    send.write_all(&request)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let mut header = [0u8; 4];
+    recv.read_exact(&mut header)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    if header[0] != BRUTAL_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "brutal: unsupported negotiation version",
+        ));
+    }
+    let length = u16::from_be_bytes([header[2], header[3]]) as usize;
+    if !(8..=64).contains(&length) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "brutal: invalid frame length",
+        ));
+    }
+    let mut payload = vec![0u8; length];
+    recv.read_exact(&mut payload)
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let rx = u64::from_be_bytes(payload[..8].try_into().expect("rate slice"));
+    Ok((rx, header[1] & BRUTAL_FLAG_RX_AUTO != 0))
 }
 
 fn alloc_id(used: &HashMap<Target, u16>, next_id: &mut u16) -> io::Result<u16> {
@@ -138,6 +226,7 @@ pub async fn dial(
     quic_options.mtu_discovery = !option.disable_mtu_discovery;
     quic_options.datagram_receive_buffer = Some(option.max_datagram_frame_size);
     quic_options.datagram_send_buffer = Some(option.max_datagram_frame_size);
+    apply_transport_options(option, &mut quic_options);
 
     let settings = crate::proxies::TlsSettings {
         sni: option.sni.clone(),
@@ -160,6 +249,12 @@ pub async fn dial(
         &credentials,
     )
     .await?;
+    // The pinned client negotiates Brutal as an optional upgrade and keeps
+    // using the connection when it fails; the selected controller is already
+    // installed above.
+    if option.send_bps > 0 || option.receive_bps > 0 {
+        let _ = negotiate_brutal(&connection, option.receive_bps).await;
+    }
     let server = connection.remote_address();
     let (mut send, recv) = match tokio::time::timeout(timeout, connection.open_bi()).await {
         Ok(Ok(pair)) => pair,
@@ -292,6 +387,7 @@ impl ShadowQuicUdp {
         quic_options.mtu_discovery = !option.disable_mtu_discovery;
         quic_options.datagram_receive_buffer = Some(option.max_datagram_frame_size);
         quic_options.datagram_send_buffer = Some(option.max_datagram_frame_size);
+        apply_transport_options(option, &mut quic_options);
 
         let settings = crate::proxies::TlsSettings {
             sni: option.sni.clone(),
@@ -314,6 +410,9 @@ impl ShadowQuicUdp {
             &credentials,
         )
         .await?;
+        if option.send_bps > 0 || option.receive_bps > 0 {
+            let _ = negotiate_brutal(&connection, option.receive_bps).await;
+        }
         let command = if option.udp_over_stream {
             COMMAND_ASSOCIATE_STREAM
         } else {

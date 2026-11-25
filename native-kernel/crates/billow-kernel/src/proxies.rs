@@ -548,9 +548,11 @@ pub struct SnellObfs {
 /// ShadowQUIC (`adapter/outbound/shadowquic.go` + `transport/shadowquic`):
 /// QUIC with JLS authentication. The pinned client has no `tls` or
 /// `skip-cert-verify` option (JLS replaces certificate verification) and no
-/// `udp` option (the base outbound advertises UDP unconditionally). Options
-/// that only select the private mihomo Brutal congestion controller are
-/// rejected by name because quinn has no Brutal controller.
+/// `udp` option (the base outbound advertises UDP unconditionally). The
+/// private mihomo Brutal negotiation is implemented: `up`/`down` are the
+/// Brutal rates, `cwnd`/`bbr-profile` tune the initial window and
+/// `congestion-controller` selects quinn's controller. `zero-rtt` and QUIC v2
+/// are named residuals (no session-ticket cache / no v2 in quinn 0.11).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShadowQuicOutbound {
     pub server: String,
@@ -566,6 +568,16 @@ pub struct ShadowQuicOutbound {
     pub udp_over_stream: bool,
     /// `keep-alive-interval` in milliseconds; 0 disables keep-alive.
     pub keep_alive_interval: u64,
+    /// `congestion-controller`: cubic/new_reno/bbr/bbr_meta_v2.
+    pub congestion_controller: Option<String>,
+    /// `up`/`down`: the Brutal TX/RX rate hints (bytes/second).
+    pub send_bps: u64,
+    pub receive_bps: u64,
+    /// Initial congestion window in packets (pinned default 32).
+    pub cwnd: u32,
+    /// `bbr-profile`: conservative/standard/aggressive (initial-window
+    /// approximation, as quinn's BBR has no profile selector).
+    pub bbr_profile: Option<String>,
     /// `recv-window-conn`; the kernel's budget default when the option is 0.
     pub recv_window_conn: u32,
     /// `recv-window`; the kernel's budget default when the option is 0.
@@ -1115,8 +1127,11 @@ pub struct Hysteria2Realm {
 
 /// Hysteria v1 (`adapter/outbound/hysteria.go`, `transport/hysteria/core`):
 /// QUIC with a binary control hello and one bidirectional stream per TCP
-/// session. Port hopping, the XPlus obfuscator, the `faketcp`/`wechat`
-/// transports and UDP datagrams are rejected by name.
+/// session. Port hopping, the XPlus obfuscator and the `wechat` transport are
+/// implemented at the UDP socket boundary; `faketcp` needs a raw-socket TCP
+/// stack that neither this kernel nor the pinned non-Linux build provides and
+/// is refused at dial time. `fast-open` defers the server response to the
+/// first read, as the pinned `NewEarlyConn` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HysteriaOutbound {
     pub server: String,
@@ -1126,21 +1141,40 @@ pub struct HysteriaOutbound {
     pub alpn: Vec<String>,
     pub send_bps: u64,
     pub receive_bps: u64,
+    /// `ports` (expanded) and `hop-interval` in seconds (pinned default 10).
+    pub ports: Vec<u16>,
+    pub hop_interval: u64,
+    /// `obfs`: the XPlus key (`None` disables the obfuscator).
+    pub obfs: Option<String>,
+    /// `protocol`/`obfs-protocol`: udp (default), wechat or faketcp.
+    pub protocol: HysteriaProtocol,
+    pub fast_open: bool,
     pub stream_receive_window: Option<u32>,
     pub connection_receive_window: Option<u32>,
     pub disable_mtu_discovery: bool,
     pub dialer_proxy: Option<String>,
 }
 
-/// TUIC v5 (`adapter/outbound/tuic.go`, `transport/tuic/v5`). One QUIC
-/// connection carries a unidirectional authentication stream (`uuid` +
-/// TLS-exporter token) and one bidirectional stream per TCP session. Only the
-/// v5 `uuid`/`password` form is implemented; the legacy v4 `token` form needs
-/// BLAKE3 and is rejected by name.
+/// Hysteria v1 packet transport (`HysteriaOption.Protocol`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HysteriaProtocol {
+    Udp,
+    WeChat,
+    FakeTcp,
+}
+
+/// TUIC (`adapter/outbound/tuic.go`). One QUIC connection carries a
+/// unidirectional authentication stream and one bidirectional stream per TCP
+/// session. Two authentication shapes exist: v5 `uuid` + TLS-exporter token
+/// (the default) and v4 `token` (BLAKE3 TKN), selected exactly like the pinned
+/// `NewTuic`: a non-empty `token` means v4.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuicOutbound {
     pub server: String,
     pub port: u16,
+    /// `token`: the legacy v4 shared secret. When set, `uuid`/`password` are
+    /// ignored and the v4 framing is used.
+    pub token: Option<Secret>,
     pub uuid: [u8; 16],
     pub password: Secret,
     /// `ip`: dial this address while the certificate name stays `server`/`sni`.
@@ -1150,15 +1184,55 @@ pub struct TuicOutbound {
     pub disable_sni: bool,
     pub heartbeat_interval: u64,
     pub request_timeout: u64,
+    /// `udp-relay-mode`: `quic` sends each packet on its own uni stream, the
+    /// default `native` sends QUIC datagrams.
+    pub udp_relay_mode: TuicRelayMode,
+    /// `udp-over-stream`: UDP carried inside a TCP-style stream to the pinned
+    /// `sp[.v2].udp-over-tcp.arpa` destination.
+    pub udp_over_stream: bool,
+    /// `udp-over-stream-version`: 1 (legacy, per-packet destination) or 2
+    /// (initial request; the pinned default is 1).
+    pub udp_over_stream_version: u8,
+    /// `max-datagram-frame-size` after the pinned derivation/clamp (default
+    /// `max-udp-relay-packet-size + packet overhead`, capped at 1400).
+    pub max_datagram_frame_size: usize,
+    /// `max-udp-relay-packet-size` after the pinned derivation (the v5 form is
+    /// additionally clamped to `MaxFragSizeV5`).
+    pub max_udp_relay_packet_size: usize,
+    /// `fast-open`: the v4 client returns the stream before the connect
+    /// response arrives (the v5 client has no early response; the flag only
+    /// reaches the TCP-style dialer there, which a QUIC socket never uses).
+    pub fast_open: bool,
     /// `congestion-controller`: cubic, new_reno or bbr (the pinned default is
     /// quic-go's cubic).
     pub congestion_controller: Option<String>,
     /// Initial congestion window in packets (pinned default 32).
     pub cwnd: u32,
+    /// `bbr-profile`: conservative/standard/aggressive. quinn's BBR has no
+    /// profile selector; the profile maps to the initial window.
+    pub bbr_profile: Option<String>,
     pub stream_receive_window: Option<u32>,
     pub connection_receive_window: Option<u32>,
     pub disable_mtu_discovery: bool,
     pub dialer_proxy: Option<String>,
+}
+
+/// TUIC UDP relay carrier (`udp-relay-mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuicRelayMode {
+    /// Each packet is its own QUIC uni stream (`udp-relay-mode: quic`).
+    Quic,
+    /// QUIC datagrams (the pinned default when `udp-relay-mode` is unset).
+    Native,
+}
+
+impl TuicRelayMode {
+    fn parse(value: Option<&str>) -> TuicRelayMode {
+        match value {
+            Some("quic") => TuicRelayMode::Quic,
+            _ => TuicRelayMode::Native,
+        }
+    }
 }
 
 /// One enabled proxy entry. `DIRECT` and `REJECT` are built in and cannot be
@@ -1375,6 +1449,10 @@ impl Proxy {
             // (`UDP: true`); the option has no `udp` field, so a config's
             // `udp: true` is a tolerated no-op and `udp: false` is ignored.
             Protocol::Hysteria2(_) => true,
+            // TUIC sets `UDP: true` in the pinned outbound. Hysteria v1's UDP
+            // session is a separate datagram protocol this kernel has not
+            // implemented, so its datagrams keep the recorded drop path.
+            Protocol::Tuic(_) => true,
             Protocol::ShadowQuic(_) => true,
             Protocol::Tailscale(p) => p.udp,
             Protocol::Zerotier(p) => p.udp,
@@ -4873,37 +4951,44 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
             .map(|value| value.into_bytes())
             .unwrap_or_default(),
     };
-    if let Some(protocol) = entry
-        .string("obfs-protocol")?
-        .or(entry.string("protocol")?)
-        .filter(|value| !value.is_empty())
-    {
-        if protocol != "udp" {
-            return Err(entry.unsupported(format!(
-                "option 'protocol' value '{protocol}' is not implemented (udp)"
-            )));
+    let protocol = {
+        let raw = entry
+            .string("obfs-protocol")?
+            .filter(|value| !value.is_empty())
+            .or(entry.string("protocol")?.filter(|value| !value.is_empty()));
+        match raw.as_deref() {
+            None | Some("udp") => HysteriaProtocol::Udp,
+            // The pinned transport spells it `wechat-video`; the adapter
+            // accepts `wechat` as the same shape (`wechat` is what the docs
+            // call it).
+            Some("wechat") | Some("wechat-video") => HysteriaProtocol::WeChat,
+            Some("faketcp") => HysteriaProtocol::FakeTcp,
+            Some(other) => {
+                return Err(entry.unsupported(format!(
+                    "option 'protocol' value '{other}' is not implemented (udp, wechat-video, faketcp)"
+                )))
+            }
         }
-    }
-    if let Some(obfs) = entry.string("obfs")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'obfs' value '{obfs}' is not implemented (XPlus obfuscator)"
-        )));
-    }
-    if let Some(ports) = entry.string("ports")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'ports' value '{ports}' is not implemented (port hopping)"
-        )));
-    }
-    if entry.int("hop-interval")?.unwrap_or(0) != 0 {
-        return Err(entry.unsupported("option 'hop-interval' is not implemented (port hopping)"));
-    }
+    };
+    let obfs = entry.string("obfs")?.filter(|value| !value.is_empty());
+    let ports = match entry.string("ports")?.filter(|value| !value.trim().is_empty()) {
+        Some(value) => parse_port_ranges(&value, "ports").map_err(|error| entry.invalid(error))?,
+        None => Vec::new(),
+    };
+    let hop_interval = match entry.int("hop-interval")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'hop-interval' must not be negative"))
+        }
+        Some(0) | None => 10,
+        Some(value) => value as u64,
+    };
     let stream_receive_window = receive_window(entry, "recv-window-conn", "")?;
     let connection_receive_window = receive_window(entry, "recv-window", "")?;
     let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
-    if entry.bool("fast-open")?.unwrap_or(false) {
-        return Err(entry.unsupported("option 'fast-open' is not implemented (QUIC 0-RTT)"));
-    }
+    let fast_open = entry.bool("fast-open")?.unwrap_or(false);
     let tls_settings = entry.tls_settings(true, true, true)?;
+    let mut tls_settings = tls_settings;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let alpn = entry.string_list("alpn")?;
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
@@ -4947,6 +5032,11 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
         alpn,
         send_bps,
         receive_bps,
+        ports,
+        hop_interval,
+        obfs,
+        protocol,
+        fast_open,
         stream_receive_window,
         connection_receive_window,
         disable_mtu_discovery,
@@ -4954,29 +5044,33 @@ fn parse_hysteria(entry: &mut Entry<'_>) -> Result<HysteriaOutbound, ConfigError
     })
 }
 
-/// TUIC (`adapter/outbound/tuic.go`, `transport/tuic/v5`). `uuid`/`password`
-/// select the v5 protocol; the legacy v4 `token` (BLAKE3 TKN) is rejected.
-/// Options that only tune a pooled client (congestion controller, receive
-/// windows, MTU discovery, 0-RTT) or the UDP relay are rejected by name when
-/// they ask for something, instead of being silently ignored.
+/// TUIC (`adapter/outbound/tuic.go`). A non-empty `token` selects the legacy
+/// v4 protocol (BLAKE3 TKN); otherwise `uuid`/`password` select v5. The UDP
+/// relay (`native` datagrams or `quic` uni streams), UoT, datagram sizing,
+/// congestion tuning, `fast-open` and `reduce-rtt` (a named residual: quinn
+/// has no session-ticket cache here) are parsed per the pinned derivation.
 fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     let server = entry.server()?;
     let port = entry.port()?;
-    if let Some(token) = entry.string("token")?.filter(|value| !value.is_empty()) {
-        let _ = token;
-        return Err(entry.unsupported(
-            "option 'token' selects the legacy TUIC v4 protocol (BLAKE3 TKN), which is not implemented; use 'uuid' and 'password' (v5)",
-        ));
-    }
+    let token = entry
+        .string("token")?
+        .filter(|value| !value.is_empty())
+        .map(Secret::new);
     let uuid_raw = entry.string("uuid")?.unwrap_or_default();
     let uuid = if uuid_raw.is_empty() {
         [0u8; 16]
     } else {
         parse_uuid(&uuid_raw).map_err(|e| entry.invalid(format!("option 'uuid': {e}")))?
     };
+    if token.is_none() && uuid_raw.is_empty() {
+        return Err(entry.invalid(
+            "missing authentication: set 'uuid' and 'password' (v5) or 'token' (v4)",
+        ));
+    }
     let password = Secret::new(entry.string("password")?.unwrap_or_default());
     let ip = entry.string("ip")?.filter(|value| !value.is_empty());
     let mut tls_settings = entry.tls_settings(true, true, true)?;
+    tls_settings.client_fingerprint = entry.client_fingerprint()?;
     let disable_sni = entry.bool("disable-sni")?.unwrap_or(false);
     // The pinned client sets both `ServerName = ""` and
     // `InsecureSkipVerify = true` for `disable-sni` (TLS needs one of them).
@@ -4997,13 +5091,17 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         Some(0) | None => 8_000,
         Some(value) => value as u64,
     };
-    if let Some(mode) = entry.string("udp-relay-mode")?.filter(|value| !value.is_empty()) {
-        if mode == "quic" {
-            return Err(entry.unsupported(
-                "option 'udp-relay-mode' value 'quic' is not implemented (TUIC UDP datagram relay)",
-            ));
+    let udp_relay_mode = {
+        let raw = entry.string("udp-relay-mode")?.filter(|value| !value.is_empty());
+        if let Some(mode) = raw.as_deref() {
+            if mode != "quic" && mode != "native" {
+                return Err(entry.invalid(format!(
+                    "option 'udp-relay-mode' value '{mode}' is unknown (quic, native)"
+                )));
+            }
         }
-    }
+        TuicRelayMode::parse(raw.as_deref())
+    };
     // Congestion tuning maps onto quinn's transport config. cubic/new_reno/bbr
     // exist in quinn; the pinned meta BBR v2 is an alias of bbr, while the old
     // meta BBR v1 controller has no quinn equivalent and is named.
@@ -5029,13 +5127,13 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
             }
         },
     };
-    if entry
-        .string("bbr-profile")?
-        .is_some_and(|value| !value.is_empty())
-    {
-        return Err(entry.unsupported(
-            "option 'bbr-profile' is not implemented: quinn's BBR controller has no profile selector",
-        ));
+    let bbr_profile = entry.string("bbr-profile")?.filter(|value| !value.is_empty());
+    if let Some(profile) = &bbr_profile {
+        if !matches!(profile.as_str(), "conservative" | "standard" | "aggressive") {
+            return Err(entry.invalid(format!(
+                "option 'bbr-profile' value '{profile}' is unknown (conservative, standard, aggressive)"
+            )));
+        }
     }
     let cwnd = match entry.int("cwnd")? {
         Some(value) if value < 0 => {
@@ -5048,31 +5146,54 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     let stream_receive_window = receive_window(entry, "recv-window-conn", "")?;
     let connection_receive_window = receive_window(entry, "recv-window", "")?;
     let disable_mtu_discovery = entry.bool("disable-mtu-discovery")?.unwrap_or(false);
-    if entry
-        .int("max-udp-relay-packet-size")?
-        .unwrap_or(0)
-        != 0
-    {
+    if entry.bool("reduce-rtt")?.unwrap_or(false) {
         return Err(entry.unsupported(
-            "option 'max-udp-relay-packet-size' is not implemented (TUIC UDP relay)",
+            "option 'reduce-rtt' is not implemented: quinn needs a TLS session-ticket cache and a pooled connection to send 0-RTT data, and this kernel dials a fresh endpoint per session",
         ));
     }
-    if entry.int("max-datagram-frame-size")?.unwrap_or(0) != 0 {
-        return Err(entry.unsupported(
-            "option 'max-datagram-frame-size' is not implemented (TUIC UDP datagrams)",
-        ));
-    }
-    if entry.int("udp-over-stream-version")?.unwrap_or(0) != 0 {
-        return Err(entry.unsupported(
-            "option 'udp-over-stream-version' is not implemented (UoT over TUIC)",
-        ));
-    }
-    for key in ["reduce-rtt", "fast-open", "udp-over-stream"] {
-        if entry.bool(key)?.unwrap_or(false) {
-            return Err(entry.unsupported(format!(
-                "option '{key}' is not implemented (TUIC 0-RTT / UDP relay)"
-            )));
+    let fast_open = entry.bool("fast-open")?.unwrap_or(false);
+    let udp_over_stream = entry.bool("udp-over-stream")?.unwrap_or(false);
+    let udp_over_stream_version = match entry.int("udp-over-stream-version")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'udp-over-stream-version' must be positive"))
         }
+        Some(0) | None => 1u8,
+        Some(1) => 1,
+        Some(2) => 2,
+        Some(value) => {
+            return Err(entry.invalid(format!(
+                "option 'udp-over-stream-version' value {value} is unknown (1, 2)"
+            )))
+        }
+    };
+    // The pinned `NewTuic` derives the datagram/frame bounds:
+    //   overhead = v4 PacketOverHead (27) or v5 (29, an IPv6 address)
+    //   max-datagram-frame-size default = max-udp-relay-packet-size + overhead
+    //   max-datagram-frame-size is capped at 1400
+    //   max-udp-relay-packet-size = max-datagram-frame-size - overhead
+    // and clamps the v5 relay packet to `MaxFragSizeV5` (1200 - 29 - 3 =
+    // 1168). v4 has no fragment clamp.
+    let overhead = if token.is_some() { 27usize } else { 29usize };
+    let requested_packet = match entry.int("max-udp-relay-packet-size")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'max-udp-relay-packet-size' must not be negative"))
+        }
+        Some(0) | None => 1252usize,
+        Some(value) => usize::try_from(value)
+            .map_err(|_| entry.invalid("option 'max-udp-relay-packet-size' is out of range"))?,
+    };
+    let requested_frame = match entry.int("max-datagram-frame-size")? {
+        Some(value) if value < 0 => {
+            return Err(entry.invalid("option 'max-datagram-frame-size' must not be negative"))
+        }
+        Some(0) | None => requested_packet + overhead,
+        Some(value) => usize::try_from(value)
+            .map_err(|_| entry.invalid("option 'max-datagram-frame-size' is out of range"))?,
+    };
+    let max_datagram_frame_size = requested_frame.min(1400);
+    let mut max_udp_relay_packet_size = max_datagram_frame_size.saturating_sub(overhead);
+    if token.is_none() {
+        max_udp_relay_packet_size = max_udp_relay_packet_size.min(1168);
     }
     // A per-connection stream cap is trivially honoured: this client opens at
     // most one bidirectional stream per dial, so any positive limit holds.
@@ -5120,6 +5241,7 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
     Ok(TuicOutbound {
         server,
         port,
+        token,
         uuid,
         password,
         ip,
@@ -5128,14 +5250,22 @@ fn parse_tuic(entry: &mut Entry<'_>) -> Result<TuicOutbound, ConfigError> {
         disable_sni,
         heartbeat_interval,
         request_timeout,
+        udp_relay_mode,
+        udp_over_stream,
+        udp_over_stream_version,
+        max_datagram_frame_size,
+        max_udp_relay_packet_size,
+        fast_open,
         congestion_controller,
         cwnd,
+        bbr_profile,
         stream_receive_window,
         connection_receive_window,
         disable_mtu_discovery,
         dialer_proxy,
     })
 }
+
 
 /// MASQUE (`adapter/outbound/masque.go` + `transport/masque`). Two shapes:
 ///
@@ -6231,44 +6361,51 @@ fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigE
         }
     }
 
-    if entry
+    let congestion_controller = match entry
         .string("congestion-controller")?
         .filter(|value| !value.is_empty())
-        .is_some()
     {
-        return Err(entry.unsupported(
-            "option 'congestion-controller' is not implemented: the pinned client selects quic-go's BBR/cubic with a custom initial window; this kernel uses quinn's default controller",
-        ));
+        None => None,
+        Some(value) => match value.as_str() {
+            "cubic" | "new_reno" | "bbr" | "bbr_meta_v2" => Some(value),
+            "bbr_meta_v1" => {
+                return Err(entry.unsupported(
+                    "option 'congestion-controller' value 'bbr_meta_v1' is not implemented (quinn has only its BBR v2-style controller; the pinned meta BBR v1 sender is absent)",
+                ))
+            }
+            other => {
+                return Err(entry.unsupported(format!(
+                    "option 'congestion-controller' value '{other}' is not implemented (cubic, new_reno, bbr, bbr_meta_v2)"
+                )))
+            }
+        },
+    };
+    let bbr_profile = entry.string("bbr-profile")?.filter(|value| !value.is_empty());
+    if let Some(profile) = &bbr_profile {
+        if !matches!(profile.as_str(), "conservative" | "standard" | "aggressive") {
+            return Err(entry.invalid(format!(
+                "option 'bbr-profile' value '{profile}' is unknown (conservative, standard, aggressive)"
+            )));
+        }
     }
-    if entry
-        .string("bbr-profile")?
-        .filter(|value| !value.is_empty())
-        .is_some()
-    {
-        return Err(entry.unsupported(
-            "option 'bbr-profile' is not implemented: it selects a mihomo BBR profile and quinn has no BBR controller",
-        ));
-    }
-    match entry.int("cwnd")? {
+    let cwnd = match entry.int("cwnd")? {
         Some(value) if value < 0 => {
             return Err(entry.invalid("option 'cwnd' must not be negative"))
         }
-        Some(value) if value != 0 && value != 32 => {
-            return Err(entry.unsupported(
-                "option 'cwnd' is not implemented: it changes the Brutal/BBR initial congestion window (the pinned default is 32) and quinn does not expose that controller",
-            ))
-        }
-        _ => {}
-    }
-    for key in ["up", "down"] {
-        if let Some(value) = entry.string(key)? {
-            if stream_rate_nonzero(&value) {
-                return Err(entry.unsupported(format!(
-                    "option '{key}' is not implemented: it enables mihomo's private Brutal bandwidth negotiation; quinn has no Brutal congestion controller, so the option could not be honoured"
-                )));
-            }
-        }
-    }
+        Some(0) | None => 0,
+        Some(value) => u32::try_from(value)
+            .map_err(|_| entry.invalid("option 'cwnd' is out of range"))?,
+    };
+    // The pinned `utils.StringToBps` maps an unparsable string to 0, which
+    // keeps Brutal disabled for that side; it never fails the configuration.
+    let send_bps = entry
+        .string("up")?
+        .map(|value| crate::outbound::hysteria::string_to_bps(&value))
+        .unwrap_or(0);
+    let receive_bps = entry
+        .string("down")?
+        .map(|value| crate::outbound::hysteria::string_to_bps(&value))
+        .unwrap_or(0);
 
     let recv_window_conn = match entry.int("recv-window-conn")? {
         Some(value) if value < 0 => {
@@ -6351,37 +6488,17 @@ fn parse_shadowquic(entry: &mut Entry<'_>) -> Result<ShadowQuicOutbound, ConfigE
         alpn,
         udp_over_stream,
         keep_alive_interval,
+        congestion_controller,
+        send_bps,
+        receive_bps,
+        cwnd,
+        bbr_profile,
         recv_window_conn,
         recv_window,
         disable_mtu_discovery,
         max_datagram_frame_size,
         max_open_streams,
     })
-}
-
-/// `utils.StringToBps` treats an unparsable string as 0, so only a non-zero
-/// parse is a behaviour-changing Brutal request. Parse the common `N`, `N bps`,
-/// `N Kbps/Mbps/Gbps` forms; an unknown suffix is 0 like the pinned helper.
-fn stream_rate_nonzero(value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() {
-        return false;
-    }
-    let split = value
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(value.len());
-    let (number, suffix) = value.split_at(split);
-    let Ok(number) = number.parse::<u64>() else {
-        return false;
-    };
-    let suffix = suffix.trim();
-    if number == 0 {
-        return false;
-    }
-    matches!(
-        suffix,
-        "" | "bps" | "kbps" | "mbps" | "gbps" | "tbps" | "k" | "m" | "g" | "t"
-    )
 }
 
 fn display(raw: &str) -> String {

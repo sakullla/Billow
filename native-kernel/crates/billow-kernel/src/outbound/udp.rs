@@ -1493,6 +1493,134 @@ pub struct UotKey {
     pub target: Target,
 }
 
+/// TUIC `udp-over-stream` association: a TUIC Connect stream to the pinned
+/// `sp[.v2].udp-over-tcp.arpa` destination. Version 1 carries the destination
+/// in every frame; version 2 sends one UoT request and then bare
+/// `u16 length || payload` frames.
+pub struct TuicUot {
+    stream: super::tuic::QuicStream,
+    bound: Target,
+    version: u8,
+}
+
+impl TuicUot {
+    pub async fn connect(
+        option: &crate::proxies::TuicOutbound,
+        target: &Target,
+        _via: &[&crate::proxies::Proxy],
+        timeout: std::time::Duration,
+        tls: &ClientTls,
+    ) -> Result<TuicUot, DialError> {
+        debug_assert!(option.udp_over_stream);
+        let (stream, _server, version) =
+            super::tuic::dial_uot(option, target, tls, timeout).await?;
+        Ok(TuicUot {
+            stream,
+            bound: target.clone(),
+            version,
+        })
+    }
+
+    pub fn into_halves(self) -> (TuicUotReader, TuicUotWriter) {
+        let (read, write) = tokio::io::split(self.stream);
+        (
+            TuicUotReader {
+                read,
+                bound: self.bound.clone(),
+                version: self.version,
+            },
+            TuicUotWriter {
+                write,
+                bound: self.bound,
+                version: self.version,
+            },
+        )
+    }
+}
+
+pub struct TuicUotReader {
+    read: tokio::io::ReadHalf<super::tuic::QuicStream>,
+    bound: Target,
+    version: u8,
+}
+
+impl TuicUotReader {
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        let mut target = self.bound.clone();
+        if self.version == 1 {
+            let address = match read_uot_address(&mut self.read).await {
+                Ok(address) => address,
+                Err(_) => return Ok(None),
+            };
+            target = address;
+        }
+        let mut length = [0u8; 2];
+        if self.read.read_exact(&mut length).await.is_err() {
+            return Ok(None);
+        }
+        let length = u16::from_be_bytes(length) as usize;
+        if length > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tuic UoT datagram larger than the buffer",
+            ));
+        }
+        if self.read.read_exact(&mut buffer[..length]).await.is_err() {
+            return Ok(None);
+        }
+        Ok(Some((target, length)))
+    }
+}
+
+pub struct TuicUotWriter {
+    write: tokio::io::WriteHalf<super::tuic::QuicStream>,
+    bound: Target,
+    version: u8,
+}
+
+impl TuicUotWriter {
+    pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
+        let mut frame = Vec::with_capacity(self.bound.host.len() + 4 + payload.len());
+        if self.version == 1 {
+            frame.extend_from_slice(&super::tuic::uot_address(&self.bound));
+        }
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(payload);
+        self.write.write_all(&frame).await?;
+        self.write.flush().await
+    }
+}
+
+async fn read_uot_address<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> io::Result<Target> {
+    let family = reader.read_u8().await?;
+    let host = match family {
+        0 => {
+            let mut raw = [0u8; 4];
+            reader.read_exact(&mut raw).await?;
+            std::net::Ipv4Addr::from(raw).to_string()
+        }
+        1 => {
+            let mut raw = [0u8; 16];
+            reader.read_exact(&mut raw).await?;
+            std::net::Ipv6Addr::from(raw).to_string()
+        }
+        2 => {
+            let len = reader.read_u8().await? as usize;
+            let mut name = vec![0u8; len];
+            reader.read_exact(&mut name).await?;
+            String::from_utf8_lossy(&name).to_string()
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tuic UoT address family {other} is invalid"),
+            ))
+        }
+    };
+    let port = reader.read_u16().await?;
+    Ok(Target { host, port })
+}
+
 /// Events from a per-target association reader task back to the relay.
 pub enum UotEvent {
     Datagram { from: Target, payload: Vec<u8> },
@@ -1504,6 +1632,7 @@ pub enum UotEvent {
 pub enum UotWriter {
     Anytls(AnyUotWriter),
     SsUot(SsUotWriter),
+    Tuic(TuicUotWriter),
     Vmess(super::vmess::VmessPacketWriter),
 }
 
@@ -1512,6 +1641,7 @@ impl UotWriter {
         match self {
             UotWriter::Anytls(writer) => writer.send(payload).await,
             UotWriter::SsUot(writer) => writer.send(payload).await,
+            UotWriter::Tuic(writer) => writer.send(payload).await,
             UotWriter::Vmess(writer) => writer.send(payload).await,
         }
     }
@@ -1521,6 +1651,7 @@ impl UotWriter {
 pub enum UotReader {
     Anytls(AnyUotReader),
     SsUot(SsUotReader),
+    Tuic(TuicUotReader),
     Vmess {
         reader: super::vmess::VmessPacketReader,
         /// Plain `command 2` carries no source address on replies; the pinned
@@ -1535,6 +1666,7 @@ impl UotReader {
         match self {
             UotReader::Anytls(reader) => reader.recv(buffer).await,
             UotReader::SsUot(reader) => reader.recv(buffer).await,
+            UotReader::Tuic(reader) => reader.recv(buffer).await,
             UotReader::Vmess { reader, bound } => reader
                 .recv(buffer)
                 .await

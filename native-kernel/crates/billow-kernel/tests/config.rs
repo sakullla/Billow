@@ -1503,11 +1503,6 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
 
     for (extra, field) in [
         ("zero-rtt: true", "zero-rtt"),
-        ("congestion-controller: bbr", "congestion-controller"),
-        ("bbr-profile: aggressive", "bbr-profile"),
-        ("cwnd: 64", "cwnd"),
-        ("up: 50 Mbps", "up"),
-        ("down: 50 Mbps", "down"),
         ("quic-versions: [v2]", "quic-versions"),
         ("dialer-proxy: p2", "dialer-proxy"),
     ] {
@@ -1517,6 +1512,21 @@ fn shadowquic_transport_options_are_parsed_and_jls_gaps_named() {
         let error = proxy_err(&yaml);
         assert!(error.contains(field), "{extra}: {error}");
         assert!(error.contains("not implemented"), "{extra}: {error}");
+    }
+
+    // T32: the Brutal/BBR knobs reach the transport config instead of being
+    // rejected.
+    let tuned = "proxies:\n  - {name: sq, type: shadowquic, server: 127.0.0.1, port: 443, username: alice, password: secret, congestion-controller: bbr, cwnd: 64, bbr-profile: aggressive, up: 50 Mbps, down: 20 Mbps}\nrules: ['MATCH,sq']\n";
+    let loaded = load_config(tuned, "t").expect("shadowquic Brutal options load");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::ShadowQuic(option) => {
+            assert_eq!(option.congestion_controller.as_deref(), Some("bbr"));
+            assert_eq!(option.cwnd, 64);
+            assert_eq!(option.bbr_profile.as_deref(), Some("aggressive"));
+            assert_eq!(option.send_bps, 50_000_000 / 8);
+            assert_eq!(option.receive_bps, 20_000_000 / 8);
+        }
+        other => panic!("expected shadowquic, got {other:?}"),
     }
 
     // T28: the QUIC endpoint applies the UDP-relevant BasicOption knobs;

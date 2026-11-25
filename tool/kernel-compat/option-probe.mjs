@@ -213,23 +213,13 @@ const uniqueEnabled = [...new Map(enabled.map((entry) => [`${entry.type}/${entry
 // T10 QUIC families: explicit forms because their bases/values differ from the
 // generic shapes (`protocol` is a transport name, `ports` is a range, ...).
 const t10Enabled = [
-  ['tuic', 'token', 'token: legacy'],
-  ['tuic', 'udp-relay-mode', 'udp-relay-mode: quic'],
+  // T32 implemented token/udp-relay-mode/fast-open/udp-over-stream/bbr-profile/
+  // datagram sizing/client-fingerprint and the hysteria v1 transport options;
+  // their `impl` rows below keep the load contract. `reduce-rtt` (0-RTT) stays
+  // a named residual.
   ['tuic', 'reduce-rtt', 'reduce-rtt: true'],
-  ['tuic', 'fast-open', 'fast-open: true'],
-  ['tuic', 'udp-over-stream', 'udp-over-stream: true'],
-  ['tuic', 'bbr-profile', 'bbr-profile: standard'],
-  ['tuic', 'max-datagram-frame-size', 'max-datagram-frame-size: 1400'],
-  ['tuic', 'max-udp-relay-packet-size', 'max-udp-relay-packet-size: 1252'],
   ['tuic', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['tuic', 'client-fingerprint', 'client-fingerprint: chrome'],
-  ['hysteria', 'ports', 'ports: 443,8443'],
-  ['hysteria', 'hop-interval', 'hop-interval: 10'],
-  ['hysteria', 'obfs', 'obfs: xplus'],
-  ['hysteria', 'protocol', 'protocol: faketcp'],
-  ['hysteria', 'fast-open', 'fast-open: true'],
   ['hysteria', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
-  ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
   ['hysteria2', 'ech-opts', 'ech-opts: {enable: true, config: x}'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].on, option }))
 // T13/T17 families: explicit forms, because some rejected values are not
@@ -247,13 +237,10 @@ const t13Enabled = [
 // T15 shadowquic: explicit enabled forms (a list for `quic-versions` and rate
 // strings for `up`/`down`).
 const t15Enabled = [
+  // T32 implemented the Brutal/BBR knobs; `zero-rtt` and QUIC v2 remain
+  // named residuals.
   ['shadowquic', 'zero-rtt', 'zero-rtt: true'],
   ['shadowquic', 'quic-versions', 'quic-versions: [v2]'],
-  ['shadowquic', 'congestion-controller', 'congestion-controller: bbr'],
-  ['shadowquic', 'bbr-profile', 'bbr-profile: aggressive'],
-  ['shadowquic', 'cwnd', 'cwnd: 64'],
-  ['shadowquic', 'up', 'up: 50 Mbps'],
-  ['shadowquic', 'down', 'down: 50 Mbps'],
 ].map(([type, key, option]) => ({ type, key, base: bases[type].off, option }))
 // T16 families: explicit forms, because the generic `{enabled: true}` shape is
 // not valid for `amnezia-wg-option`, `ip-stack`, `dns` or `dialer-proxy`.
@@ -634,6 +621,33 @@ for (const [type, key, base, option] of [
   ['vmess', 'mekya-opts', bases.vmess.on, 'network: mekya, mekya-opts: {url: "https://127.0.0.1:443/"}'],
   ['vmess', 'tlsmirror-opts', bases.vmess.on, 'tlsmirror-opts: {primary-key: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="}'],
 ]) {
+  implemented.push({ type, key, base, option })
+}
+
+// T32: TUIC v4/UDP/UoT and the hysteria v1 transport options. Each form must
+// load in both engines (behaviour is covered by the peer/unit tests).
+for (const [type, key, option] of [
+  ['tuic', 'token', 'token: legacy'],
+  ['tuic', 'udp-relay-mode', 'udp-relay-mode: quic'],
+  ['tuic', 'fast-open', 'fast-open: true'],
+  ['tuic', 'udp-over-stream', 'udp-over-stream: true, udp-over-stream-version: 2'],
+  ['tuic', 'bbr-profile', 'bbr-profile: standard'],
+  ['tuic', 'max-datagram-frame-size', 'max-datagram-frame-size: 1400'],
+  ['tuic', 'max-udp-relay-packet-size', 'max-udp-relay-packet-size: 1252'],
+  ['tuic', 'client-fingerprint', 'client-fingerprint: chrome'],
+  ['hysteria', 'ports', 'ports: "443,8443"'],
+  ['hysteria', 'hop-interval', 'hop-interval: 10'],
+  ['hysteria', 'obfs', 'obfs: xplus'],
+  ['hysteria', 'protocol', 'protocol: wechat'],
+  ['hysteria', 'fast-open', 'fast-open: true'],
+  ['hysteria', 'client-fingerprint', 'client-fingerprint: chrome'],
+  ['shadowquic', 'congestion-controller', 'congestion-controller: bbr'],
+  ['shadowquic', 'bbr-profile', 'bbr-profile: aggressive'],
+  ['shadowquic', 'cwnd', 'cwnd: 64'],
+  ['shadowquic', 'up', 'up: 50 Mbps'],
+  ['shadowquic', 'down', 'down: 50 Mbps'],
+]) {
+  const base = type === 'shadowquic' ? bases.shadowquic.off : bases[type].on
   implemented.push({ type, key, base, option })
 }
 

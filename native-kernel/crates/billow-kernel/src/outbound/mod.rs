@@ -11,6 +11,7 @@
 //!   session; the client sees the inbound failure reply.
 
 pub mod anytls;
+pub mod blake3;
 pub mod easytier;
 pub mod gost_relay;
 pub mod h3;

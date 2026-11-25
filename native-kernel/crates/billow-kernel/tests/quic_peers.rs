@@ -491,32 +491,53 @@ async fn tuic_v5_wrong_password_fails_without_forwarding() {
 }
 
 #[tokio::test]
-async fn tuic_v5_legacy_token_is_rejected_at_load() {
-    let yaml = format!(
-        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, token: legacy}}\nrules:\n  - MATCH,t1\n"
-    );
-    let error = billow_kernel::load_config(&yaml, "tuic-token.yaml").unwrap_err();
-    assert_eq!(error.tag(), "unsupported");
-    assert!(
-        error.to_string().contains("v4") && error.to_string().contains("token"),
-        "{error}"
-    );
+async fn tuic_v4_token_loads_and_selects_v4() {
+    let yaml = "mixed-port: 17890\nproxies:\n  - {name: t1, type: tuic, server: 127.0.0.1, port: 443, token: legacy}\nrules:\n  - MATCH,t1\n";
+    let loaded = billow_kernel::load_config(yaml, "tuic-token.yaml").expect("v4 token loads");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Tuic(option) => {
+            assert_eq!(option.token.as_ref().map(|token| token.expose()), Some("legacy"));
+        }
+        other => panic!("expected tuic, got {other:?}"),
+    }
+    // A token wins over uuid/password, exactly like the pinned `NewTuic`.
+    let both = "mixed-port: 17890\nproxies:\n  - {name: t1, type: tuic, server: 127.0.0.1, port: 443, token: legacy, uuid: 9d0cb9d0-964f-4ef6-897d-6c6b3ccf9e68, password: p}\nrules:\n  - MATCH,t1\n";
+    let loaded = billow_kernel::load_config(both, "tuic-both.yaml").expect("token wins and loads");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Tuic(option) => {
+            assert!(option.token.is_some());
+        }
+        other => panic!("expected tuic, got {other:?}"),
+    }
 }
 
 #[tokio::test]
-async fn tuic_v5_unimplemented_options_are_named() {
-    for (option, value) in [
-        ("reduce-rtt", "true"),
-        ("fast-open", "true"),
-        ("udp-over-stream", "true"),
-    ] {
-        let yaml = format!(
-            "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, {option}: {value}}}\nrules:\n  - MATCH,t1\n"
-        );
-        let error = billow_kernel::load_config(&yaml, "tuic-option.yaml").unwrap_err();
-        assert_eq!(error.tag(), "unsupported", "{option}: {error}");
-        assert!(error.to_string().contains(option), "{option}: {error}");
+async fn tuic_udp_options_load_and_reduce_rtt_is_named() {
+    // T32: the UDP relay/UoT/datagram/fast-open options are implemented; only
+    // `reduce-rtt` remains a named residual (no session-ticket cache).
+    let yaml = format!(
+        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, udp-relay-mode: quic, udp-over-stream: true, udp-over-stream-version: 2, fast-open: true, bbr-profile: aggressive, max-datagram-frame-size: 1400, max-udp-relay-packet-size: 1252}}\nrules:\n  - MATCH,t1\n"
+    );
+    let loaded = billow_kernel::load_config(&yaml, "tuic-udp.yaml").expect("TUIC UDP options load");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Tuic(option) => {
+            assert_eq!(option.udp_relay_mode, billow_kernel::proxies::TuicRelayMode::Quic);
+            assert!(option.udp_over_stream);
+            assert_eq!(option.udp_over_stream_version, 2);
+            assert!(option.fast_open);
+            assert_eq!(option.bbr_profile.as_deref(), Some("aggressive"));
+            // v5: 1400 - 29 = 1371, clamped to MaxFragSizeV5 (1168).
+            assert_eq!(option.max_datagram_frame_size, 1400);
+            assert_eq!(option.max_udp_relay_packet_size, 1168);
+        }
+        other => panic!("expected tuic, got {other:?}"),
     }
+    let reduced = format!(
+        "mixed-port: 17890\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: 443, uuid: {UUID}, password: x, reduce-rtt: true}}\nrules:\n  - MATCH,t1\n"
+    );
+    let error = billow_kernel::load_config(&reduced, "tuic-rtt.yaml").unwrap_err();
+    assert_eq!(error.tag(), "unsupported", "{error}");
+    assert!(error.to_string().contains("reduce-rtt"), "{error}");
 }
 
 // ---------------------------------------------------------------------------
@@ -747,20 +768,57 @@ async fn hysteria_v1_base64_auth_roundtrip() {
 }
 
 #[tokio::test]
-async fn hysteria_v1_unsupported_options_are_named() {
+async fn hysteria_v1_fast_open_defers_the_response() {
+    let cert = make_cert("hysteria-fast-open");
+    let (peer_port, log) = spawn_hysteria_peer(b"hysteria-secret".to_vec(), cert).await;
+    let yaml = format!(
+        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: {peer_port}, up: 50 Mbps, down: 50 Mbps, auth-str: hysteria-secret, skip-cert-verify: true, fast-open: true}}\nrules:\n  - MATCH,h1\n",
+        free_port()
+    );
+    let (mut kernel, _) = Kernel::start_from_yaml(&yaml, None, limits()).expect("kernel starts");
+    let echoed = roundtrip(&kernel, "127.0.0.1", 80, b"fast-open-payload")
+        .await
+        .expect("fast-open roundtrip");
+    assert_eq!(echoed, b"fast-open-payload");
+    assert!(wait_for_detail(&log, "auth-ok").await, "{:?}", detail(&log));
+    kernel.stop().unwrap();
+}
+
+#[tokio::test]
+async fn hysteria_v1_transport_options_load() {
+    // T32: ports/hop-interval, the XPlus obfs, the wechat transport, fast-open
+    // and client-fingerprint are implemented and must load.
     for (option, value) in [
         ("obfs", "xplus"),
-        ("ports", "443,8443"),
-        ("protocol", "faketcp"),
+        ("ports", "443,8443-8444"),
+        ("protocol", "wechat"),
         ("fast-open", "true"),
     ] {
         let yaml = format!(
             "mixed-port: 17890\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, {option}: {value}}}\nrules:\n  - MATCH,h1\n"
         );
-        let error = billow_kernel::load_config(&yaml, "hysteria-option.yaml").unwrap_err();
-        assert_eq!(error.tag(), "unsupported", "{option}: {error}");
-        assert!(error.to_string().contains(option), "{option}: {error}");
+        let loaded = billow_kernel::load_config(&yaml, "hysteria-option.yaml")
+            .unwrap_or_else(|error| panic!("{option}: {error}"));
+        assert_eq!(loaded.config.proxies[0].type_name(), "hysteria", "{option}");
     }
+    let yaml = "mixed-port: 17890\nproxies:\n  - {name: h1, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, obfs: key, ports: '443,8443-8444', hop-interval: 7, protocol: faketcp, fast-open: true, client-fingerprint: chrome}\nrules:\n  - MATCH,h1\n";
+    let loaded = billow_kernel::load_config(yaml, "hysteria-tuned.yaml").expect("tuned v1 loads");
+    match &loaded.config.proxies[0].protocol {
+        billow_kernel::proxies::Protocol::Hysteria(option) => {
+            assert_eq!(option.obfs.as_deref(), Some("key"));
+            assert_eq!(option.ports, vec![443, 8443, 8444]);
+            assert_eq!(option.hop_interval, 7);
+            assert_eq!(option.protocol, billow_kernel::proxies::HysteriaProtocol::FakeTcp);
+            assert!(option.fast_open);
+            assert_eq!(option.tls_settings.client_fingerprint.as_deref(), Some("chrome"));
+        }
+        other => panic!("expected hysteria, got {other:?}"),
+    }
+    // An unknown transport is still a named load rejection.
+    let bad = "mixed-port: 17890\nproxies:\n  - {name: h1, type: hysteria, server: 127.0.0.1, port: 443, up: 50 Mbps, down: 50 Mbps, protocol: tcp}\nrules:\n  - MATCH,h1\n";
+    let error = billow_kernel::load_config(bad, "hysteria-bad.yaml").unwrap_err();
+    assert_eq!(error.tag(), "unsupported", "{error}");
+    assert!(error.to_string().contains("protocol"), "{error}");
 }
 
 #[tokio::test]

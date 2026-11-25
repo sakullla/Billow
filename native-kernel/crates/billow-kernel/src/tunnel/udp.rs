@@ -68,6 +68,7 @@ enum Transport {
     Masque(MasqueUdpAssociation),
     ShadowQuic(ShadowQuicUdp),
     Hysteria2(Hysteria2Udp),
+    Tuic(crate::outbound::tuic::TuicUdp),
 }
 
 impl Transport {
@@ -80,6 +81,7 @@ impl Transport {
             Transport::Masque(transport) => transport.send(target, payload).await,
             Transport::ShadowQuic(transport) => transport.send(target, payload).await,
             Transport::Hysteria2(transport) => transport.send(target, payload).await,
+            Transport::Tuic(transport) => transport.send(target, payload).await,
         }
     }
 
@@ -102,6 +104,7 @@ impl Transport {
             Transport::Masque(transport) => transport.recv(buffer).await,
             Transport::ShadowQuic(transport) => transport.recv(buffer).await,
             Transport::Hysteria2(transport) => transport.recv(buffer).await,
+            Transport::Tuic(transport) => transport.recv(buffer).await,
         };
         match result? {
             Some((target, read)) => match target.host.parse::<IpAddr>() {
@@ -148,8 +151,13 @@ pub(crate) async fn association_task(
         Protocol::Ssr(option) => option.udp,
         Protocol::Masque(option) => option.udp,
         Protocol::ShadowQuic(_) => true,
-        // Hysteria2 always enables UDP in the pinned outbound.
+        // Hysteria2 and TUIC always enable UDP in the pinned outbound.
         Protocol::Hysteria2(_) => true,
+        // TUIC's `udp-over-stream` needs one stream per destination, which the
+        // device association (one transport per flow) cannot express here; it
+        // is reported as unsupported instead of silently sending plain
+        // datagrams.
+        Protocol::Tuic(option) => !option.udp_over_stream,
         _ => false,
     };
     if !supported {
@@ -189,6 +197,11 @@ pub(crate) async fn association_task(
             Protocol::Hysteria2(option) => Hysteria2Udp::connect(option, &hops, timeout, &tls)
                 .await
                 .map(Transport::Hysteria2),
+            Protocol::Tuic(option) => crate::outbound::tuic::TuicUdp::connect(
+                option, &hops, &tls, timeout,
+            )
+            .await
+            .map(Transport::Tuic),
             _ => unreachable!("supported was checked above"),
         }
     });

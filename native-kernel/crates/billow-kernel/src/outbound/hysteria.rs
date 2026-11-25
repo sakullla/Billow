@@ -19,13 +19,17 @@
 //! session (same wire format, no pooling).
 
 use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use super::quic::{self, QuicOptions, QuicStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+
+use super::quic::{self, HopConfig, Obfs, QuicOptions, QuicStream, WeChat, XPlus};
 use super::tls::ClientTls;
 use super::{DialError, Dialed, Target};
 
-use crate::proxies::HysteriaOutbound;
+use crate::proxies::{HysteriaOutbound, HysteriaProtocol};
 
 const PROTOCOL_VERSION: u8 = 3;
 
@@ -150,6 +154,32 @@ pub async fn dial(
     if let Some(window) = option.connection_receive_window {
         quic_options.connection_receive_window = window;
     }
+    let obfs_key = option.obfs.as_ref().map(|key| key.as_bytes().to_vec());
+    quic_options.obfs = match option.protocol {
+        // The pinned `wechat` transport always wraps the socket: with no
+        // `obfs` it uses the dummy (identity) obfuscator under the header.
+        HysteriaProtocol::WeChat => Some(Obfs::WeChat(WeChat { key: obfs_key })),
+        HysteriaProtocol::FakeTcp => {
+            return Err(DialError::Handshake {
+                protocol: "hysteria",
+                source: io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "protocol 'faketcp' needs a raw-socket TCP stack; the pinned engine is also unsupported off Linux (its faketcp build uses a Linux-only TCP implementation)",
+                ),
+            })
+        }
+        HysteriaProtocol::Udp => obfs_key.map(|key| Obfs::XPlus(XPlus { key })),
+    };
+    // The pinned client only hops on the plain UDP transport; `wechat` and
+    // `faketcp` ignore `ports` (the transport selects its own socket).
+    if option.protocol == HysteriaProtocol::Udp && !option.ports.is_empty() {
+        let interval = Duration::from_secs(option.hop_interval.max(1));
+        quic_options.hop = Some(HopConfig {
+            ports: option.ports.clone(),
+            interval,
+            interval_max: interval,
+        });
+    }
     let (connection, endpoint) = quic::connect(
         &option.server,
         &option.server,
@@ -230,9 +260,32 @@ pub async fn dial(
             source: io::Error::other(format!("client request: {e}")),
         })?;
 
+    let server = connection.remote_address();
+    let stream = QuicStream::new(send, recv, connection, endpoint);
+    if option.fast_open {
+        // The pinned `DialTCP` returns the stream before reading the server
+        // response and replays the verdict on the first read.
+        return Ok(Dialed {
+            stream: Box::new(EarlyResponse::new(stream)),
+            server,
+        });
+    }
+    let mut stream = stream;
+    read_response(&mut stream).await?;
+    Ok(Dialed {
+        stream: Box::new(stream),
+        server,
+    })
+}
+
+/// Read the 7-byte session response and, on failure, its message. Both the
+/// eager and the `fast-open` lazy path use this.
+pub(crate) async fn read_response<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> Result<(), DialError> {
     let mut response = [0u8; 7];
-    let mut recv = recv;
-    recv.read_exact(&mut response)
+    stream
+        .read_exact(&mut response)
         .await
         .map_err(|e| DialError::Handshake {
             protocol: "hysteria",
@@ -241,7 +294,7 @@ pub async fn dial(
     if response[0] != 1 {
         let message_len = u16::from_be_bytes([response[5], response[6]]) as usize;
         let mut message = vec![0u8; message_len.min(2048)];
-        let _ = recv.read_exact(&mut message).await;
+        let _ = stream.read_exact(&mut message).await;
         return Err(DialError::Handshake {
             protocol: "hysteria",
             source: io::Error::new(
@@ -250,13 +303,88 @@ pub async fn dial(
             ),
         });
     }
+    Ok(())
+}
 
-    let server = connection.remote_address();
-    let stream = QuicStream::new(send, recv, connection, endpoint);
-    Ok(Dialed {
-        stream: Box::new(stream),
-        server,
-    })
+/// A stream whose 7-byte session response is read lazily (`fast-open`).
+struct EarlyResponse<S> {
+    inner: S,
+    pending: Option<[u8; 7]>,
+    filled: usize,
+}
+
+impl<S> EarlyResponse<S> {
+    fn new(inner: S) -> EarlyResponse<S> {
+        EarlyResponse {
+            inner,
+            pending: Some([0u8; 7]),
+            filled: 0,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for EarlyResponse<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if let Some(pending) = &mut this.pending {
+            while this.filled < pending.len() {
+                let mut slot = [0u8; 7];
+                let available = pending.len() - this.filled;
+                let mut read = ReadBuf::new(&mut slot[..available]);
+                match Pin::new(&mut this.inner).poll_read(cx, &mut read) {
+                    Poll::Ready(Ok(())) => {
+                        let count = read.filled().len();
+                        if count == 0 {
+                            this.pending = None;
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "hysteria: the connection closed before the server response",
+                            )));
+                        }
+                        pending[this.filled..this.filled + count]
+                            .copy_from_slice(&read.filled()[..count]);
+                        this.filled += count;
+                    }
+                    Poll::Ready(Err(error)) => {
+                        this.pending = None;
+                        return Poll::Ready(Err(error));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            if pending[0] != 1 {
+                this.pending = None;
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "hysteria: the server rejected the TCP request",
+                )));
+            }
+            this.pending = None;
+        }
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for EarlyResponse<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
 }
 
 #[cfg(test)]

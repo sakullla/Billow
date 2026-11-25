@@ -18,13 +18,14 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
+use sha2::Sha256;
 use quinn::congestion::{Controller, ControllerFactory};
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::udp::{RecvMeta, Transmit};
@@ -293,12 +294,43 @@ impl std::fmt::Debug for Salamander {
     }
 }
 
+/// Hysteria v1 XPlus obfuscation (`transport/hysteria/obfs/xplus.go`):
+/// `salt[16] || payload XOR SHA-256(key || salt)`, with the 32-byte digest
+/// repeated across the payload.
+#[derive(Clone)]
+pub struct XPlus {
+    pub key: Vec<u8>,
+}
+
+impl std::fmt::Debug for XPlus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XPlus").finish_non_exhaustive()
+    }
+}
+
+/// Hysteria v1 `protocol: wechat` (`transport/hysteria/conns/wechat`): a
+/// 13-byte Wenxin-style header per datagram, then the XPlus (or identity)
+/// payload.
+#[derive(Clone)]
+pub struct WeChat {
+    /// `obfs` key; `None` is the pinned dummy (identity) obfuscator.
+    pub key: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for WeChat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WeChat").finish_non_exhaustive()
+    }
+}
+
 /// The Hysteria2 packet obfuscators. Gecko is Salamander plus fragmentation of
 /// every long-header packet (pinned `NewGeckoConn` wraps `NewSalamanderConn`).
 #[derive(Clone)]
 pub enum Obfs {
     Salamander(Salamander),
     Gecko(Gecko),
+    XPlus(XPlus),
+    WeChat(WeChat),
 }
 
 impl std::fmt::Debug for Obfs {
@@ -306,6 +338,8 @@ impl std::fmt::Debug for Obfs {
         match self {
             Obfs::Salamander(salamander) => f.debug_tuple("Salamander").field(salamander).finish(),
             Obfs::Gecko(gecko) => f.debug_tuple("Gecko").field(gecko).finish(),
+            Obfs::XPlus(xplus) => f.debug_tuple("XPlus").field(xplus).finish(),
+            Obfs::WeChat(wechat) => f.debug_tuple("WeChat").field(wechat).finish(),
         }
     }
 }
@@ -587,6 +621,63 @@ fn salamander_unframe(password: &[u8], buffer: &mut [u8]) -> usize {
     len
 }
 
+const XPLUS_SALT_LEN: usize = 16;
+const WECHAT_HEADER_LEN: usize = 13;
+const WECHAT_HEADER: [u8; WECHAT_HEADER_LEN] = [
+    0xa1, 0x08, 0, 0, 0, 0, 0x00, 0x10, 0x11, 0x18, 0x30, 0x22, 0x30,
+];
+
+/// `XPlusObfuscator.Obfuscate`: a fresh 16-byte salt followed by the payload
+/// XORed with `SHA-256(key || salt)`.
+fn xplus_frame(key: &[u8], salt: &[u8; XPLUS_SALT_LEN], plain: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update(salt);
+    let digest = hasher.finalize();
+    let mut out = Vec::with_capacity(XPLUS_SALT_LEN + plain.len());
+    out.extend_from_slice(salt);
+    for (index, byte) in plain.iter().enumerate() {
+        out.push(byte ^ digest[index % digest.len()]);
+    }
+    out
+}
+
+/// In-place `XPlusObfuscator.Deobfuscate`; returns the plaintext length
+/// (0 for a frame too short to carry the salt, which the pinned client drops).
+fn xplus_unframe(key: &[u8], buffer: &mut [u8]) -> usize {
+    if buffer.len() <= XPLUS_SALT_LEN {
+        return 0;
+    }
+    let salt: [u8; XPLUS_SALT_LEN] = buffer[..XPLUS_SALT_LEN]
+        .try_into()
+        .expect("salt slice");
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update(salt);
+    let digest = hasher.finalize();
+    let len = buffer.len() - XPLUS_SALT_LEN;
+    for index in 0..len {
+        buffer[index] = buffer[XPLUS_SALT_LEN + index] ^ digest[index % digest.len()];
+    }
+    len
+}
+
+/// In-place WeChat header strip plus the optional XPlus deobfuscation.
+fn wechat_unframe(key: Option<&[u8]>, buffer: &mut [u8]) -> usize {
+    if buffer.len() <= WECHAT_HEADER_LEN {
+        return 0;
+    }
+    let payload_len = match key {
+        Some(key) => xplus_unframe(key, &mut buffer[WECHAT_HEADER_LEN..]),
+        None => buffer.len() - WECHAT_HEADER_LEN,
+    };
+    if payload_len == 0 {
+        return 0;
+    }
+    buffer.copy_within(WECHAT_HEADER_LEN..WECHAT_HEADER_LEN + payload_len, 0);
+    payload_len
+}
+
 /// Hysteria2 port hopping: every `interval` the next datagram is sent to a
 /// random port from `ports`. Replies from that port are mapped back to the
 /// configured base address so quinn (which drops packets from an unrecognised
@@ -637,6 +728,8 @@ struct LayeredSocket {
     base: SocketAddr,
     obfs: Option<Obfs>,
     hop: Option<Arc<HopState>>,
+    /// Wenxin-style sequence number for `protocol: wechat`.
+    wechat_sn: AtomicU32,
 }
 
 impl std::fmt::Debug for LayeredSocket {
@@ -657,46 +750,78 @@ impl LayeredSocket {
         }
     }
 
-    fn salamander(&self) -> Option<&Salamander> {
-        match &self.obfs {
-            Some(Obfs::Salamander(salamander)) => Some(salamander),
-            _ => None,
-        }
-    }
-
-    /// One datagram (or each GRO segment) gets an independent salt.
+    /// One datagram (or each GRO segment) gets an independent salt. XPlus and
+    /// WeChat follow the Hysteria v1 framing; Gecko is handled separately
+    /// because it fragments one datagram into several frames.
     fn obfuscate(&self, contents: &[u8], segment_size: Option<usize>) -> (Vec<u8>, Option<usize>) {
-        let Some(obfs) = self.salamander() else {
-            return (contents.to_vec(), segment_size);
-        };
         let stride = segment_size.unwrap_or(contents.len());
         if stride == 0 {
             return (Vec::new(), segment_size);
         }
-        let segments = contents.len().div_ceil(stride);
-        let mut out = Vec::with_capacity(contents.len() + segments * 8);
-        let mut offset = 0;
-        while offset < contents.len() {
-            let end = (offset + stride).min(contents.len());
-            let mut salt = [0u8; 8];
-            rand::thread_rng().fill_bytes(&mut salt);
-            let mut hasher = Blake2b::<U32>::new();
-            hasher.update(&obfs.password);
-            hasher.update(&salt);
-            let key = hasher.finalize();
-            out.extend_from_slice(&salt);
-            for (index, byte) in contents[offset..end].iter().enumerate() {
-                out.push(byte ^ key[index % key.len()]);
+        match &self.obfs {
+            Some(Obfs::Salamander(salamander)) => {
+                let segments = contents.len().div_ceil(stride);
+                let mut out = Vec::with_capacity(contents.len() + segments * 8);
+                let mut offset = 0;
+                while offset < contents.len() {
+                    let end = (offset + stride).min(contents.len());
+                    let mut salt = [0u8; 8];
+                    rand::thread_rng().fill_bytes(&mut salt);
+                    let mut hasher = Blake2b::<U32>::new();
+                    hasher.update(&salamander.password);
+                    hasher.update(&salt);
+                    let key = hasher.finalize();
+                    out.extend_from_slice(&salt);
+                    for (index, byte) in contents[offset..end].iter().enumerate() {
+                        out.push(byte ^ key[index % key.len()]);
+                    }
+                    offset = end;
+                }
+                (out, segment_size.map(|size| size + 8))
             }
-            offset = end;
+            Some(Obfs::XPlus(xplus)) => {
+                let mut out = Vec::with_capacity(contents.len() + XPLUS_SALT_LEN);
+                let mut offset = 0;
+                while offset < contents.len() {
+                    let end = (offset + stride).min(contents.len());
+                    let mut salt = [0u8; XPLUS_SALT_LEN];
+                    rand::thread_rng().fill_bytes(&mut salt);
+                    out.extend_from_slice(&xplus_frame(&xplus.key, &salt, &contents[offset..end]));
+                    offset = end;
+                }
+                (out, segment_size.map(|size| size + XPLUS_SALT_LEN))
+            }
+            Some(Obfs::WeChat(wechat)) => {
+                let mut out = Vec::with_capacity(contents.len() + WECHAT_HEADER_LEN);
+                let mut offset = 0;
+                while offset < contents.len() {
+                    let end = (offset + stride).min(contents.len());
+                    let mut header = WECHAT_HEADER;
+                    let sn = self.wechat_sn.fetch_add(1, Ordering::Relaxed);
+                    header[2..6].copy_from_slice(&sn.to_be_bytes());
+                    out.extend_from_slice(&header);
+                    match &wechat.key {
+                        Some(key) => {
+                            let mut salt = [0u8; XPLUS_SALT_LEN];
+                            rand::thread_rng().fill_bytes(&mut salt);
+                            out.extend_from_slice(&xplus_frame(key, &salt, &contents[offset..end]));
+                        }
+                        None => out.extend_from_slice(&contents[offset..end]),
+                    }
+                    offset = end;
+                }
+                (out, None)
+            }
+            _ => (contents.to_vec(), segment_size),
         }
-        (out, segment_size.map(|size| size + 8))
     }
 
-    /// Remove one salt per GRO segment in place and compact the buffer.
+    /// Remove the framing per GRO segment in place and compact the buffer.
     fn deobfuscate(&self, buffer: &mut [u8], meta: &mut RecvMeta) {
-        let Some(obfs) = self.salamander() else {
-            return;
+        let framed = match &self.obfs {
+            Some(Obfs::Salamander(_)) => 8,
+            Some(Obfs::XPlus(_)) | Some(Obfs::WeChat(_)) => 1,
+            _ => return,
         };
         let stride = if meta.stride == 0 {
             meta.len
@@ -710,21 +835,33 @@ impl LayeredSocket {
         let mut write = 0usize;
         while read < meta.len {
             let end = (read + stride).min(meta.len);
-            if end - read > 8 {
-                let salt: [u8; 8] = buffer[read..read + 8].try_into().expect("salt slice");
-                let mut hasher = Blake2b::<U32>::new();
-                hasher.update(&obfs.password);
-                hasher.update(&salt);
-                let key = hasher.finalize();
-                for index in 0..end - read - 8 {
-                    buffer[write + index] = buffer[read + 8 + index] ^ key[index % key.len()];
+            let plain_len = match &self.obfs {
+                Some(Obfs::Salamander(salamander)) => {
+                    salamander_unframe(&salamander.password, &mut buffer[read..end])
                 }
-                write += end - read - 8;
+                Some(Obfs::XPlus(xplus)) => {
+                    xplus_unframe(&xplus.key, &mut buffer[read..end])
+                }
+                Some(Obfs::WeChat(wechat)) => {
+                    wechat_unframe(wechat.key.as_deref(), &mut buffer[read..end])
+                }
+                _ => end - read,
+            };
+            if plain_len > 0 && write != read {
+                buffer.copy_within(read..read + plain_len, write);
             }
+            write += plain_len;
             read = end;
         }
         meta.len = write;
-        meta.stride = stride.saturating_sub(8).max(1);
+        meta.stride = if framed == 8 {
+            stride.saturating_sub(8).max(1)
+        } else {
+            // The framing length is not fixed for XPlus/WeChat (the salt is
+            // always present, the header may not be), so report the compacted
+            // length as one message.
+            write.max(1)
+        };
     }
 
     /// Gecko reads may consume several fragments before one message is
@@ -1231,6 +1368,7 @@ async fn connect_with_socket(
                 base: target,
                 obfs: options.obfs.clone(),
                 hop: hop_state.clone(),
+                wechat_sn: AtomicU32::new(rand::random()),
             })
         } else {
             abstract_socket
@@ -1406,6 +1544,46 @@ mod tests {
         out
     }
 
+    #[test]
+    fn xplus_unframes_the_pinned_go_frames() {
+        // Frames built with the pinned
+        // `transport/hysteria/obfs.NewXPlusObfuscator([]byte("xplus"))`
+        // (`sha256(key || salt)` XOR, 16-byte salt `00..0f`), then verified
+        // with the pinned `Deobfuscate`; see the T32 evidence generator.
+        for (frame, expected) in [
+            (
+                "000102030405060708090a0b0c0d0e0ffb5156fc05ddbd3b6ab3",
+                "HelloWorld",
+            ),
+            (
+                "000102030405060708090a0b0c0d0e0fe1515de20ffef22075f7b690cb14844abc87e1400f271dcb569e76d7cc9958a5c7145be44afebb2463f7a897d916c147bc9be653096e1ac957cd37d4d1885df5ca5b4fb00cefb7256fb9bbc5d409cf4ebc8cfc530d",
+                "Regret is just a horrible attempt at time travel that ends with you feeling like crap",
+            ),
+        ] {
+            let mut buffer = (0..frame.len())
+                .step_by(2)
+                .map(|index| u8::from_str_radix(&frame[index..index + 2], 16).unwrap())
+                .collect::<Vec<u8>>();
+            let plain = xplus_unframe(b"xplus", &mut buffer);
+            assert_eq!(&buffer[..plain], expected.as_bytes());
+        }
+        // The empty payload frame is just the salt; the pinned deobfuscator
+        // drops it (pLen <= 0).
+        let mut salt_only = (0u8..16).collect::<Vec<u8>>();
+        assert_eq!(xplus_unframe(b"xplus", &mut salt_only), 0);
+    }
+
+    #[test]
+    fn wechat_framing_strips_the_pinned_header() {
+        let mut frame = WECHAT_HEADER.to_vec();
+        frame.extend_from_slice(b"payload");
+        assert_eq!(wechat_unframe(None, &mut frame), 7);
+        assert_eq!(&frame[..7], b"payload");
+        // The 13-byte header alone is not a datagram.
+        let mut header_only = WECHAT_HEADER.to_vec();
+        assert_eq!(wechat_unframe(None, &mut header_only), 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn layered_socket_obfuscates_and_rewrites_the_hop_port() {
         let password = b"hysteria2-obfs-secret".to_vec();
@@ -1428,6 +1606,7 @@ mod tests {
                 password: password.clone(),
             })),
             hop: Some(hop),
+            wechat_sn: AtomicU32::new(rand::random()),
         });
 
         let plain = b"quic-initial";
@@ -1520,6 +1699,7 @@ mod tests {
             base: server_addr,
             obfs: Some(Obfs::Gecko(gecko.clone())),
             hop: None,
+            wechat_sn: AtomicU32::new(rand::random()),
         });
         let mut plain = vec![0u8; 900];
         rand::thread_rng().fill_bytes(&mut plain);
