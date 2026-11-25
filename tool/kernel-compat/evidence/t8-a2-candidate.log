@@ -1,0 +1,21 @@
+== sha256
+ae77c74b16f9844714ec165e1d35ec7925cfb533184912d1f997125ec7fdfa06  /private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/target/release/billow-kernel
+== size
+12164944
+== version
+billow-kernel 0.1.0
+== check (mixed-port 63810)
+[00:47:12.153 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=off instance=d6d6bd1a-a7f5-4b96-b71a-e518124daff8 pid=95997 version="0.1.0" listen=127.0.0.1:63810
+instance=d6d6bd1a-a7f5-4b96-b71a-e518124daff8 pid=95997 version=0.1.0 listen=127.0.0.1:63810 overridden_port=63810 config=sha256:0120dba12809057d70686f3dd239e7c0365f9e2d19437ee1583ef9b5d3dad6aa rules=1 geosite_dir=- state_dir=-
+[00:47:12.153 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0
+[00:47:12.153 INFO  billow_kernel::engine] message=all session tasks joined; listener released
+[00:47:12.153 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d6d6bd1a-a7f5-4b96-b71a-e518124daff8 sessions=0 active=0 finished=0
+configuration accepted
+exit=0
+== packaged rust-kernel.json
+{
+  "version": "0.1.0",
+  "target": "darwin-aarch64",
+  "triple": "aarch64-apple-darwin",
+  "sha256": "ae77c74b16f9844714ec165e1d35ec7925cfb533184912d1f997125ec7fdfa06"
+}

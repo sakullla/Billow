@@ -1,0 +1,2485 @@
+{
+  "format": "t5-integration",
+  "version": 1,
+  "startedAt": "2026-11-25T00:52:19.569Z",
+  "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/target/release/billow-kernel",
+  "peers": {
+    "ss": {
+      "port": 49477,
+      "ready": true
+    },
+    "trojan": {
+      "port": 49481,
+      "ready": true
+    },
+    "ssr": {
+      "binary": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/peers/ssr-server",
+      "port": 49489,
+      "ready": true
+    },
+    "shadowquic": {
+      "port": 49485,
+      "ready": true,
+      "jlsUpstream": 50130
+    },
+    "dns": 59462,
+    "provider": 49476,
+    "echoA": 49471,
+    "echoB": 49472,
+    "echoC": 49473,
+    "echoD": 49474,
+    "health": 49475,
+    "dnsQueries": [
+      "alias-target.test/1",
+      "real.test/1",
+      "absent.test/1",
+      "alias-target.test/1",
+      "real.test/1",
+      "absent.test/1"
+    ]
+  },
+  "engines": {
+    "mihomo": {
+      "engine": "mihomo",
+      "ready": true,
+      "mixed": 49492,
+      "dns": 49493,
+      "controller": 49494,
+      "config": "mixed-port: 49492\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:49494\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:49493\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:59462']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:49476/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:49475/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 49477, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 49481, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 49489, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 49485, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 49477, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:49475/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:49475/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,49471)),REJECT\n  - DST-PORT,49472,trojan-node\n  - DST-PORT,49473,ssr-node\n  - DST-PORT,49474,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
+      "logs": {
+        "stdout": "time=\"2026-11-25T08:52:20.354354000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:52:20.356864000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:52:20.356875000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:52:20.357297000+08:00\" level=info msg=\"Load GeoSite rule: cn\"\ntime=\"2026-11-25T08:52:20.359204000+08:00\" level=info msg=\"Load GeoSite rule: t5site\"\ntime=\"2026-11-25T08:52:20.359695000+08:00\" level=info msg=\"Finished initial GeoSite rule t5site => REJECT, records: 1\"\ntime=\"2026-11-25T08:52:20.359794000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T08:52:20.360254000+08:00\" level=info msg=\"Load GeoIP rule: zz\"\ntime=\"2026-11-25T08:52:20.360645000+08:00\" level=info msg=\"Finished initial GeoIP rule zz => ss-node, records: 1\"\ntime=\"2026-11-25T08:52:20.360785000+08:00\" level=info msg=\"Initial configuration complete, total time: 6ms\"\ntime=\"2026-11-25T08:52:34.788505000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+        "stderr": ""
+      },
+      "dnsAnswers": {
+        "fake.test": {
+          "name": "fake.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "198.18.0.4",
+              "ttl": 1
+            }
+          ],
+          "timeout": false
+        },
+        "host-only.test": {
+          "name": "host-only.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "10.9.8.7",
+              "ttl": 10
+            }
+          ],
+          "timeout": false
+        },
+        "alias.test": {
+          "name": "alias.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "CNAME",
+              "ip": "alias-target.test",
+              "ttl": 10
+            },
+            {
+              "type": "A",
+              "ip": "9.9.9.9",
+              "ttl": 60
+            }
+          ],
+          "timeout": false
+        },
+        "real.test": {
+          "name": "real.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "5.5.5.5",
+              "ttl": 60
+            }
+          ],
+          "timeout": false
+        },
+        "absent.test": {
+          "name": "absent.test",
+          "rcode": 3,
+          "answers": [],
+          "timeout": false
+        }
+      },
+      "groupsInitial": {
+        "PROXY": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "ssr-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "AUTO": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "FALLBACK": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "SUB": {
+          "now": "sub-a",
+          "members": [
+            "sub-a"
+          ],
+          "nowIsMember": true
+        }
+      },
+      "providers": {
+        "providers": {
+          "AUTO": {
+            "name": "AUTO",
+            "type": "Proxy",
+            "vehicleType": "Compatible",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.370668+08:00",
+                        "delay": 7
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371306+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.370668+08:00",
+                    "delay": 7
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371306+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "6eb598c1-9906-452b-a611-bbfa0bd0a8f2",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.371868+08:00",
+                        "delay": 8
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371931+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.371868+08:00",
+                    "delay": 8
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371931+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "39ccbe15-ae4d-4d98-bfb0-1e0cee7d6529",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": true,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "expectedStatus": "*",
+            "updatedAt": "0001-01-01T00:00:00Z"
+          },
+          "BAD": {
+            "name": "BAD",
+            "type": "Proxy",
+            "vehicleType": "Compatible",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "fab92997-f7de-48b6-86ea-0ecc2991a0dd",
+                "interface": "",
+                "mptcp": false,
+                "name": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "https://www.gstatic.com/generate_204",
+            "expectedStatus": "*",
+            "updatedAt": "0001-01-01T00:00:00Z"
+          },
+          "FALLBACK": {
+            "name": "FALLBACK",
+            "type": "Proxy",
+            "vehicleType": "Compatible",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.370668+08:00",
+                        "delay": 7
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371306+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.370668+08:00",
+                    "delay": 7
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371306+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "6eb598c1-9906-452b-a611-bbfa0bd0a8f2",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.371868+08:00",
+                        "delay": 8
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371931+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.371868+08:00",
+                    "delay": 8
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371931+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "39ccbe15-ae4d-4d98-bfb0-1e0cee7d6529",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": true,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "expectedStatus": "*",
+            "updatedAt": "0001-01-01T00:00:00Z"
+          },
+          "PROXY": {
+            "name": "PROXY",
+            "type": "Proxy",
+            "vehicleType": "Compatible",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.370668+08:00",
+                        "delay": 7
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371306+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.370668+08:00",
+                    "delay": 7
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371306+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "6eb598c1-9906-452b-a611-bbfa0bd0a8f2",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.371868+08:00",
+                        "delay": 8
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371931+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.371868+08:00",
+                    "delay": 8
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371931+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "39ccbe15-ae4d-4d98-bfb0-1e0cee7d6529",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": true,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "8dda23e9-acdd-4069-8392-6d30edf9227c",
+                "interface": "",
+                "mptcp": false,
+                "name": "ssr-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowsocksR",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "https://www.gstatic.com/generate_204",
+            "expectedStatus": "*",
+            "updatedAt": "0001-01-01T00:00:00Z"
+          },
+          "default": {
+            "name": "default",
+            "type": "Proxy",
+            "vehicleType": "Compatible",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "4190ed5f-e9fe-4c33-817a-eaa0e9293f75",
+                "interface": "",
+                "mptcp": false,
+                "name": "DIRECT",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Direct",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "c40a9b6e-12aa-4d90-a311-cdceb2b89907",
+                "interface": "",
+                "mptcp": false,
+                "name": "REJECT",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Reject",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.370668+08:00",
+                        "delay": 7
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371306+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.370668+08:00",
+                    "delay": 7
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371306+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "6eb598c1-9906-452b-a611-bbfa0bd0a8f2",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": true,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.371868+08:00",
+                        "delay": 8
+                      },
+                      {
+                        "time": "2026-11-25T08:52:20.371931+08:00",
+                        "delay": 8
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.371868+08:00",
+                    "delay": 8
+                  },
+                  {
+                    "time": "2026-11-25T08:52:20.371931+08:00",
+                    "delay": 8
+                  }
+                ],
+                "id": "39ccbe15-ae4d-4d98-bfb0-1e0cee7d6529",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": true,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "8dda23e9-acdd-4069-8392-6d30edf9227c",
+                "interface": "",
+                "mptcp": false,
+                "name": "ssr-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowsocksR",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "16c9bb36-a1a4-4426-8f11-9487f2ed9b15",
+                "interface": "",
+                "mptcp": false,
+                "name": "squic-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowQuic",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "fab92997-f7de-48b6-86ea-0ecc2991a0dd",
+                "interface": "",
+                "mptcp": false,
+                "name": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node",
+                  "ssr-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "PROXY",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "",
+                "tfo": false,
+                "type": "Selector",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "expectedStatus": "*",
+                "extra": {},
+                "fixed": "",
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "AUTO",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "URLTest",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "expectedStatus": "*",
+                "extra": {},
+                "fixed": "",
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "FALLBACK",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "Fallback",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "bad-ss"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "BAD",
+                "now": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "",
+                "tfo": false,
+                "type": "Selector",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "sub-a"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "SUB",
+                "now": "sub-a",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "Selector",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "",
+            "expectedStatus": "*",
+            "updatedAt": "0001-01-01T00:00:00Z"
+          },
+          "pp-sub": {
+            "name": "pp-sub",
+            "type": "Proxy",
+            "vehicleType": "File",
+            "proxies": [
+              {
+                "alive": false,
+                "dialer-proxy": "",
+                "extra": {
+                  "http://127.0.0.1:49475/generate_204": {
+                    "alive": false,
+                    "history": [
+                      {
+                        "time": "2026-11-25T08:52:20.363964+08:00",
+                        "delay": 0
+                      }
+                    ]
+                  }
+                },
+                "history": [
+                  {
+                    "time": "2026-11-25T08:52:20.363964+08:00",
+                    "delay": 0
+                  }
+                ],
+                "id": "2221b05a-d9ad-4f76-a66f-173f5f53f717",
+                "interface": "",
+                "mptcp": false,
+                "name": "sub-a",
+                "provider-name": "pp-sub",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "expectedStatus": "*",
+            "updatedAt": "2026-11-25T08:52:20.333067292+08:00"
+          }
+        }
+      },
+      "selection": {
+        "set": 204,
+        "now": "trojan-node",
+        "missing": 400
+      },
+      "egress": {
+        "localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-proxy-trojan",
+          "replyBytes": 137
+        },
+        "127.0.0.1": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-ss",
+          "replyBytes": 127
+        },
+        "trojan-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-trojan",
+          "replyBytes": 131
+        },
+        "ssr-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-ssr",
+          "replyBytes": 128
+        },
+        "squic-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-squic",
+          "replyBytes": 130
+        },
+        "bad.localhost": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head"
+        },
+        "bad-ok.localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-bad-ok",
+          "replyBytes": 131
+        },
+        "text-probe.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head"
+        },
+        "www.google.com": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head"
+        },
+        "geo.test": {
+          "category": "timeout",
+          "connectStatus": 200,
+          "error": "no response within 5000 ms"
+        },
+        "http-probe.test": {
+          "category": "timeout",
+          "connectStatus": 200,
+          "error": "no response within 5000 ms"
+        },
+        "and-probe.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head"
+        }
+      },
+      "selectionSwitch": {
+        "set": 204,
+        "now": "ss-node",
+        "localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-proxy-ss",
+          "replyBytes": 133
+        }
+      },
+      "providerUpdate": {
+        "steps": [
+          {
+            "phase": "initial",
+            "localhost": "echoed",
+            "httpProbe": "blocked"
+          },
+          {
+            "phase": "update-ok",
+            "status": 204,
+            "localhost": "blocked"
+          },
+          {
+            "phase": "update-failure",
+            "status": 503,
+            "localhost": "blocked"
+          }
+        ]
+      },
+      "reload": {
+        "successStatus": 204,
+        "localhostAfter": "blocked",
+        "failureStatus": 400,
+        "localhostAfterFailure": "blocked",
+        "mixedPort": 49492,
+        "groups": "ss-node",
+        "dnsAfter": {
+          "name": "fake.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "198.18.0.4",
+              "ttl": 1
+            }
+          ],
+          "timeout": false
+        }
+      }
+    },
+    "rust": {
+      "engine": "rust",
+      "ready": true,
+      "mixed": 49565,
+      "dns": 49566,
+      "controller": 49567,
+      "config": "mixed-port: 49565\nmode: rule\nlog-level: warning\nexternal-controller: 127.0.0.1:49567\nsecret: t5-secret\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\nhosts:\n  host-only.test: '10.9.8.7'\n  alias.test: 'alias-target.test'\n  bad.localhost: '127.0.0.1'\n  bad-ok.localhost: '127.0.0.1'\ndns:\n  enable: true\n  listen: 127.0.0.1:49566\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter: ['+.real.test', 'alias-target.test', 'absent.test']\n  use-hosts: true\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:59462']\nrule-providers:\n  rp-yaml:\n    type: file\n    behavior: domain\n    format: yaml\n    path: providers/rp.yaml\n  rp-text:\n    type: file\n    behavior: domain\n    format: text\n    path: providers/rp.txt\n  rp-mrs:\n    type: file\n    behavior: domain\n    format: mrs\n    path: providers/rp.mrs\n  rp-http:\n    type: http\n    behavior: domain\n    format: yaml\n    url: http://127.0.0.1:49476/rules.yaml\nproxy-providers:\n  pp-sub:\n    type: file\n    path: providers/nodes.yaml\n    health-check:\n      enable: true\n      url: 'http://127.0.0.1:49475/generate_204'\n      interval: 60\nproxies:\n  - {name: ss-node, type: ss, server: 127.0.0.1, port: 49477, cipher: aes-256-gcm, password: t5-ss-pass, udp: true}\n  - {name: trojan-node, type: trojan, server: 127.0.0.1, port: 49481, password: t5-trojan-pass, sni: 'localhost', skip-cert-verify: true}\n  - {name: ssr-node, type: ssr, server: 127.0.0.1, port: 49489, cipher: aes-256-cfb, password: t5-ssr-pass, protocol: origin, obfs: plain}\n  - {name: squic-node, type: shadowquic, server: 127.0.0.1, port: 49485, username: alice, password: t5-squic-pass, sni: localhost}\n  - {name: bad-ss, type: ss, server: 127.0.0.1, port: 49477, cipher: aes-256-gcm, password: wrong-pass}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [ss-node, trojan-node, ssr-node]}\n  - {name: AUTO, type: url-test, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:49475/generate_204', interval: 60, tolerance: 50, lazy: false}\n  - {name: FALLBACK, type: fallback, proxies: [ss-node, trojan-node], url: 'http://127.0.0.1:49475/generate_204', interval: 60, lazy: false}\n  - {name: BAD, type: select, proxies: [bad-ss]}\n  - {name: SUB, type: select, use: [pp-sub]}\nrules:\n  - RULE-SET,rp-http,REJECT\n  - DOMAIN,bad.localhost,BAD\n  - DOMAIN,bad-ok.localhost,ss-node\n  - RULE-SET,rp-yaml,PROXY\n  - GEOSITE,t5site,REJECT\n  - RULE-SET,rp-text,REJECT\n  - RULE-SET,rp-mrs,REJECT\n  - AND,((DOMAIN,and-probe.test),(DST-PORT,49471)),REJECT\n  - DST-PORT,49472,trojan-node\n  - DST-PORT,49473,ssr-node\n  - DST-PORT,49474,squic-node\n  - GEOIP,zz,ss-node\n  - MATCH,DIRECT\n",
+      "logs": {
+        "stdout": "instance=d112face-a03a-4d68-a5f7-757e781a1231 pid=2540 version=0.1.0 listen=127.0.0.1:49565 overridden_port=49565 config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9 rules=13 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/rust state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:49566)\nstopped instance=d112face-a03a-4d68-a5f7-757e781a1231 accepted=20 active=0 completed=9 rejected=10 failed=1 bytes_up=886 bytes_down=1055\n",
+        "stderr": "[00:52:34.916 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(13 entries); rule-providers=4; proxy-providers=1; proxy-groups=5; sub-rules=0; outbounds=DIRECT,REJECT; protocols=ss-node=ss,trojan-node=trojan,ssr-node=ssr,squic-node=shadowquic,bad-ss=ss; hosts=4; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:49566) instance=d112face-a03a-4d68-a5f7-757e781a1231 pid=2540 version=\"0.1.0\" listen=127.0.0.1:49565\n[00:52:34.998 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:49580 code=\"closed\"\n[00:52:35.006 INFO  billow_kernel::engine] message=PROXY tunnel established session=2 target=localhost:49471 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=trojan-node type=trojan server=127.0.0.1:49481 chain=trojan-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:35.026 INFO  billow_kernel::engine] message=session closed session=2 target=localhost:49471 bytes_up=104 bytes_down=137\n[00:52:35.530 INFO  billow_kernel::engine] message=PROXY tunnel established session=3 target=127.0.0.1:49471 protocol=\"http-connect\" rule=GEOIP,zz -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:49477 chain=ss-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:35.553 INFO  billow_kernel::engine] message=session closed session=3 target=127.0.0.1:49471 bytes_up=94 bytes_down=127\n[00:52:36.079 INFO  billow_kernel::engine] message=PROXY tunnel established session=4 target=127.0.0.1:49472 protocol=\"http-connect\" rule=DST-PORT,49472 -> PROXY outbound=proxy=trojan-node type=trojan server=127.0.0.1:49481 chain=trojan-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:36.095 INFO  billow_kernel::engine] message=session closed session=4 target=127.0.0.1:49472 bytes_up=98 bytes_down=131\n[00:52:36.620 INFO  billow_kernel::engine] message=PROXY tunnel established session=5 target=127.0.0.1:49473 protocol=\"http-connect\" rule=DST-PORT,49473 -> PROXY outbound=proxy=ssr-node type=ssr server=127.0.0.1:49489 chain=ssr-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:36.660 INFO  billow_kernel::engine] message=session closed session=5 target=127.0.0.1:49473 bytes_up=95 bytes_down=128\n[00:52:36.670 INFO  billow_kernel::engine] message=PROXY tunnel established session=6 target=127.0.0.1:49474 protocol=\"http-connect\" rule=DST-PORT,49474 -> PROXY outbound=proxy=squic-node type=shadowquic server=127.0.0.1:49485 chain=squic-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:36.681 INFO  billow_kernel::engine] message=session closed session=6 target=127.0.0.1:49474 bytes_up=97 bytes_down=130\n[00:52:37.204 INFO  billow_kernel::engine] message=PROXY tunnel established session=7 target=bad.localhost:49471 protocol=\"http-connect\" rule=DOMAIN,bad.localhost -> GROUP outbound=proxy=bad-ss type=ss server=127.0.0.1:49477 chain=bad-ss config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:37.224 INFO  billow_kernel::engine] message=session closed session=7 target=bad.localhost:49471 bytes_up=95 bytes_down=0\n[00:52:42.732 INFO  billow_kernel::engine] message=PROXY tunnel established session=8 target=bad-ok.localhost:49471 protocol=\"http-connect\" rule=DOMAIN,bad-ok.localhost -> PROXY outbound=proxy=ss-node type=ss server=127.0.0.1:49477 chain=ss-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:42.755 INFO  billow_kernel::engine] message=session closed session=8 target=bad-ok.localhost:49471 bytes_up=98 bytes_down=131\n[00:52:43.276 INFO  billow_kernel::engine] message=REJECT session=9 target=text-probe.test:49471 protocol=\"http-connect\" rule=RULE-SET,rp-text -> REJECT\n[00:52:43.278 INFO  billow_kernel::engine] message=REJECT session=10 target=www.google.com:49471 protocol=\"http-connect\" rule=RULE-SET,rp-mrs -> REJECT\n[00:52:43.278 INFO  billow_kernel::engine] message=REJECT session=11 target=geo.test:49471 protocol=\"http-connect\" rule=GEOSITE,t5site -> REJECT\n[00:52:43.279 INFO  billow_kernel::engine] message=REJECT session=12 target=http-probe.test:49471 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[00:52:43.279 INFO  billow_kernel::engine] message=REJECT session=13 target=and-probe.test:49471 protocol=\"http-connect\" rule=AND,(DOMAIN,and-probe.test,DST-PORT,49471) -> REJECT\n[00:52:43.284 INFO  billow_kernel::engine] message=PROXY tunnel established session=14 target=localhost:49471 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:49477 chain=ss-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:43.284 INFO  billow_kernel::engine] message=session closed session=14 target=localhost:49471 bytes_up=100 bytes_down=133\n[00:52:43.789 INFO  billow_kernel::engine] message=PROXY tunnel established session=15 target=localhost:49471 protocol=\"http-connect\" rule=RULE-SET,rp-yaml -> GROUP outbound=proxy=ss-node type=ss server=127.0.0.1:49477 chain=ss-node config=sha256:6b47acd174a1a01cff7bfbf232bf44a25f02a0d03bed96d1c58ad99218111dc9\n[00:52:43.813 INFO  billow_kernel::engine] message=session closed session=15 target=localhost:49471 bytes_up=105 bytes_down=138\n[00:52:44.334 INFO  billow_kernel::engine] message=REJECT session=16 target=http-probe.test:49471 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[00:52:44.340 INFO  billow_kernel::engine] message=REJECT session=17 target=localhost:49471 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[00:52:44.342 INFO  billow_kernel::engine] message=REJECT session=18 target=localhost:49471 protocol=\"http-connect\" rule=RULE-SET,rp-http -> REJECT\n[00:52:44.456 INFO  billow_kernel::engine] message=REJECT session=19 target=localhost:49471 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[00:52:44.457 INFO  billow_kernel::engine] message=REJECT session=20 target=localhost:49471 protocol=\"http-connect\" rule=DOMAIN,localhost -> REJECT\n[00:52:44.459 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:52:44.459 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=20\n[00:52:44.459 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:52:44.459 INFO  billow_kernel::engine] message=billow-kernel stopped instance=d112face-a03a-4d68-a5f7-757e781a1231 sessions=20 active=0 finished=20\n"
+      },
+      "dnsAnswers": {
+        "fake.test": {
+          "name": "fake.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "198.18.0.4",
+              "ttl": 1
+            }
+          ],
+          "timeout": false
+        },
+        "host-only.test": {
+          "name": "host-only.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "10.9.8.7",
+              "ttl": 10
+            }
+          ],
+          "timeout": false
+        },
+        "alias.test": {
+          "name": "alias.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "CNAME",
+              "ip": "alias-target.test",
+              "ttl": 10
+            },
+            {
+              "type": "A",
+              "ip": "9.9.9.9",
+              "ttl": 60
+            }
+          ],
+          "timeout": false
+        },
+        "real.test": {
+          "name": "real.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "5.5.5.5",
+              "ttl": 60
+            }
+          ],
+          "timeout": false
+        },
+        "absent.test": {
+          "name": "absent.test",
+          "rcode": 3,
+          "answers": [],
+          "timeout": false
+        }
+      },
+      "groupsInitial": {
+        "PROXY": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "ssr-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "AUTO": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "FALLBACK": {
+          "now": "ss-node",
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ],
+          "nowIsMember": true
+        },
+        "SUB": {
+          "now": "sub-a",
+          "members": [
+            "sub-a"
+          ],
+          "nowIsMember": true
+        }
+      },
+      "providers": {
+        "providers": {
+          "AUTO": {
+            "expectedStatus": "*",
+            "name": "AUTO",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "acc68546-6778-4abc-ad9c-29378d55a239",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "98344a6c-05c8-4654-bab1-3db4fe69e76d",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "BAD": {
+            "expectedStatus": "*",
+            "name": "BAD",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "b319b2e1-e3e5-4f90-86fc-ba8dd1dedb8d",
+                "interface": "",
+                "mptcp": false,
+                "name": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "FALLBACK": {
+            "expectedStatus": "*",
+            "name": "FALLBACK",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "acc68546-6778-4abc-ad9c-29378d55a239",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "98344a6c-05c8-4654-bab1-3db4fe69e76d",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "PROXY": {
+            "expectedStatus": "*",
+            "name": "PROXY",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "acc68546-6778-4abc-ad9c-29378d55a239",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "98344a6c-05c8-4654-bab1-3db4fe69e76d",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "96176074-d1cb-4f2c-bc9a-e1e8f61face1",
+                "interface": "",
+                "mptcp": false,
+                "name": "ssr-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowsocksR",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "SUB": {
+            "expectedStatus": "*",
+            "name": "SUB",
+            "proxies": [],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "default": {
+            "expectedStatus": "*",
+            "name": "default",
+            "proxies": [
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "5b196d41-da99-48a6-bf73-aa39ecf3b65f",
+                "interface": "",
+                "mptcp": false,
+                "name": "DIRECT",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Direct",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "ec947170-824a-49f8-b502-f402ac3ef7eb",
+                "interface": "",
+                "mptcp": false,
+                "name": "REJECT",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Reject",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "fdc0b4d5-795a-4ab2-909b-ce2f31bbf1b8",
+                "interface": "",
+                "mptcp": false,
+                "name": "REJECT-DROP",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "RejectDrop",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "acc68546-6778-4abc-ad9c-29378d55a239",
+                "interface": "",
+                "mptcp": false,
+                "name": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "98344a6c-05c8-4654-bab1-3db4fe69e76d",
+                "interface": "",
+                "mptcp": false,
+                "name": "trojan-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Trojan",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "96176074-d1cb-4f2c-bc9a-e1e8f61face1",
+                "interface": "",
+                "mptcp": false,
+                "name": "ssr-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowsocksR",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "d2e1d01f-545c-4372-b310-ba6402afd53e",
+                "interface": "",
+                "mptcp": false,
+                "name": "squic-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "ShadowQuic",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "b319b2e1-e3e5-4f90-86fc-ba8dd1dedb8d",
+                "interface": "",
+                "mptcp": false,
+                "name": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node",
+                  "ssr-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "PROXY",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "",
+                "tfo": false,
+                "type": "Selector",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "expectedStatus": "*",
+                "extra": {},
+                "fixed": "",
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "AUTO",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "URLTest",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "ss-node",
+                  "trojan-node"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "expectedStatus": "*",
+                "extra": {},
+                "fixed": "",
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "FALLBACK",
+                "now": "ss-node",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "Fallback",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "bad-ss"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "BAD",
+                "now": "bad-ss",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "",
+                "tfo": false,
+                "type": "Selector",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              },
+              {
+                "alive": true,
+                "all": [
+                  "sub-a"
+                ],
+                "dialer-proxy": "",
+                "emptyFallback": "COMPATIBLE",
+                "extra": {},
+                "hidden": false,
+                "history": [],
+                "icon": "",
+                "interface": "",
+                "mptcp": false,
+                "name": "SUB",
+                "now": "sub-a",
+                "provider-name": "",
+                "routing-mark": 0,
+                "smux": false,
+                "testUrl": "http://127.0.0.1:49475/generate_204",
+                "tfo": false,
+                "type": "Selector",
+                "udp": true,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "",
+            "type": "Proxy",
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "vehicleType": "Compatible"
+          },
+          "pp-sub": {
+            "expectedStatus": "",
+            "name": "pp-sub",
+            "proxies": [
+              {
+                "alive": false,
+                "dialer-proxy": "",
+                "extra": {},
+                "history": [],
+                "id": "20d780cd-e2a0-488a-a101-197f4c1ab5de",
+                "interface": "",
+                "mptcp": false,
+                "name": "sub-a",
+                "provider-name": "pp-sub",
+                "routing-mark": 0,
+                "smux": false,
+                "tfo": false,
+                "type": "Shadowsocks",
+                "udp": false,
+                "uot": false,
+                "xudp": false
+              }
+            ],
+            "testUrl": "http://127.0.0.1:49475/generate_204",
+            "type": "Proxy",
+            "updatedAt": "2026-11-25T00:52:34.915Z",
+            "vehicleType": "File"
+          }
+        }
+      },
+      "selection": {
+        "set": 204,
+        "now": "trojan-node",
+        "missing": 400
+      },
+      "egress": {
+        "localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-proxy-trojan",
+          "replyBytes": 137,
+          "trace": {
+            "rule": "RULE-SET,rp-yaml",
+            "outbound": "trojan-node"
+          }
+        },
+        "127.0.0.1": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-ss",
+          "replyBytes": 127,
+          "trace": {
+            "rule": "GEOIP,zz",
+            "outbound": "ss-node"
+          }
+        },
+        "trojan-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-trojan",
+          "replyBytes": 131,
+          "trace": {
+            "rule": "DST-PORT,49472",
+            "outbound": "trojan-node"
+          }
+        },
+        "ssr-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-ssr",
+          "replyBytes": 128,
+          "trace": {
+            "rule": "DST-PORT,49473",
+            "outbound": "ssr-node"
+          }
+        },
+        "squic-port": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-squic",
+          "replyBytes": 130,
+          "trace": {
+            "rule": "DST-PORT,49474",
+            "outbound": "squic-node"
+          }
+        },
+        "bad.localhost": {
+          "category": "timeout",
+          "connectStatus": 200,
+          "error": "no response within 5000 ms",
+          "trace": {
+            "rule": "DOMAIN,bad.localhost",
+            "outbound": "bad-ss"
+          }
+        },
+        "bad-ok.localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-bad-ok",
+          "replyBytes": 131,
+          "trace": {
+            "rule": "DOMAIN,bad-ok.localhost",
+            "outbound": "ss-node"
+          }
+        },
+        "text-probe.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
+          "trace": {
+            "rule": "RULE-SET,rp-text",
+            "outbound": "REJECT"
+          }
+        },
+        "www.google.com": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
+          "trace": {
+            "rule": "RULE-SET,rp-mrs",
+            "outbound": "REJECT"
+          }
+        },
+        "geo.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
+          "trace": {
+            "rule": "GEOSITE,t5site",
+            "outbound": "REJECT"
+          }
+        },
+        "http-probe.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
+          "trace": {
+            "rule": "RULE-SET,rp-http",
+            "outbound": "REJECT"
+          }
+        },
+        "and-probe.test": {
+          "category": "closed",
+          "connectStatus": 0,
+          "error": "connection closed before the response head",
+          "trace": {
+            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,49471)",
+            "outbound": "REJECT"
+          }
+        }
+      },
+      "selectionSwitch": {
+        "set": 204,
+        "now": "ss-node",
+        "localhost": {
+          "category": "echoed",
+          "connectStatus": 200,
+          "echoed": "t5-proxy-ss",
+          "replyBytes": 133
+        }
+      },
+      "providerUpdate": {
+        "steps": [
+          {
+            "phase": "initial",
+            "localhost": "echoed",
+            "httpProbe": "blocked"
+          },
+          {
+            "phase": "update-ok",
+            "status": 204,
+            "localhost": "blocked"
+          },
+          {
+            "phase": "update-failure",
+            "status": 503,
+            "localhost": "blocked"
+          }
+        ]
+      },
+      "reload": {
+        "successStatus": 204,
+        "localhostAfter": "blocked",
+        "failureStatus": 400,
+        "localhostAfterFailure": "blocked",
+        "mixedPort": 49565,
+        "groups": "ss-node",
+        "dnsAfter": {
+          "name": "fake.test",
+          "rcode": 0,
+          "answers": [
+            {
+              "type": "A",
+              "ip": "198.18.0.4",
+              "ttl": 1
+            }
+          ],
+          "timeout": false
+        }
+      }
+    }
+  },
+  "configAcceptance": {
+    "outOfRangeProviderPath": {
+      "mihomo": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "",
+        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:52:44.470360000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:52:44.470386000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range/config.yaml test failed\n"
+      },
+      "rust": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
+        "stdout": ""
+      }
+    },
+    "tunEnabled": {
+      "mihomo": {
+        "exit": 0,
+        "accepted": true,
+        "stderr": "",
+        "stdout": "time=\"2026-11-25T08:52:44.582118000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:52:44.582154000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:52:44.582158000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:52:44.582254000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/tun-on/config.yaml test is successful\n"
+      },
+      "rust": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "error: [unsupported] unsupported configuration: top-level key 'tun' with enable: true is not implemented (device/TUN is T6/T7)\n",
+        "stdout": ""
+      }
+    }
+  },
+  "effective": {
+    "artifacts": {
+      "desktop": {
+        "path": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/t5-effective/billow-desktop.yaml",
+        "bytes": 2086,
+        "profileHadTun": false,
+        "hasTun": false,
+        "hasController": false,
+        "ports": {
+          "mixed-port": 7890,
+          "port": null,
+          "socks-port": null,
+          "redir-port": null,
+          "tproxy-port": null
+        },
+        "sniffer": true
+      },
+      "android": {
+        "path": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/t5-effective/billow-android.yaml",
+        "bytes": 2176,
+        "profileHadTun": false,
+        "hasTun": false,
+        "hasController": true,
+        "ports": {
+          "mixed-port": 7890,
+          "port": 0,
+          "socks-port": 0,
+          "redir-port": 0,
+          "tproxy-port": 0
+        },
+        "sniffer": true
+      }
+    },
+    "checks": {
+      "desktop": {
+        "rust": {
+          "exit": 1,
+          "accepted": false,
+          "stderr": "error: [unsupported] unsupported configuration: top-level key 'sniffer' with enable: true is not implemented (sniffing is T7)\n",
+          "stdout": ""
+        },
+        "mihomo": {
+          "exit": 0,
+          "accepted": true,
+          "stderr": "",
+          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T08:52:44.604293000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T08:52:44.604601000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T08:52:44.604662000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T08:52:44.604673000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/effective-desktop/config.yaml test is successful\n"
+        }
+      },
+      "android": {
+        "rust": {
+          "exit": 1,
+          "accepted": false,
+          "stderr": "error: [unsupported] unsupported configuration: top-level key 'sniffer' with enable: true is not implemented (sniffing is T7)\n",
+          "stdout": ""
+        },
+        "mihomo": {
+          "exit": 0,
+          "accepted": true,
+          "stderr": "",
+          "stdout": "e CN => DIRECT, records: 1\"\ntime=\"2026-11-25T08:52:44.828651000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T08:52:44.828971000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => DIRECT, records: 1\"\ntime=\"2026-11-25T08:52:44.829038000+08:00\" level=info msg=\"Finished initial GeoIP rule cn => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T08:52:44.829049000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/effective-android/config.yaml test is successful\n"
+        }
+      }
+    },
+    "reduced": {
+      "desktop": {
+        "path": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/t5-effective/billow-desktop-reduced.yaml",
+        "check": {
+          "exit": 0,
+          "accepted": true,
+          "stderr": "RN  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[00:52:44.610 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[00:52:44.610 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[00:52:44.708 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=515a6efd-945e-4c70-8136-53d66a74c7c4 pid=2547 version=\"0.1.0\" listen=127.0.0.1:49651\n[00:52:44.708 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[00:52:44.708 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:52:44.708 INFO  billow_kernel::engine] message=billow-kernel stopped instance=515a6efd-945e-4c70-8136-53d66a74c7c4 sessions=0 active=0 finished=0\n",
+          "stdout": "instance=515a6efd-945e-4c70-8136-53d66a74c7c4 pid=2547 version=0.1.0 listen=127.0.0.1:49651 overridden_port=49651 config=sha256:5cb8af8a9df29781e4fd0724366ed0e71c79861f0bcde780728c6f4f5c9a28c2 rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/effective-desktop-reduced state_dir=-\nconfiguration accepted\n"
+        },
+        "groups": [
+          {
+            "name": "PROXY",
+            "type": "select",
+            "now": "node-a",
+            "members": 3
+          },
+          {
+            "name": "AUTO",
+            "type": "url-test",
+            "now": "node-a",
+            "members": 2
+          },
+          {
+            "name": "FALLBACK",
+            "type": "fallback",
+            "now": "node-a",
+            "members": 2
+          }
+        ],
+        "stderr": "roxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=f2ceffec-ee5c-4328-a33b-89d4b18384f8 pid=2548 version=\"0.1.0\" listen=127.0.0.1:49652\n[00:52:44.811 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[00:52:44.811 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:52:44.811 INFO  billow_kernel::engine] message=billow-kernel stopped instance=f2ceffec-ee5c-4328-a33b-89d4b18384f8 sessions=0 active=0 finished=0\n"
+      },
+      "android": {
+        "path": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/t5-effective/billow-android-reduced.yaml",
+        "check": {
+          "exit": 0,
+          "accepted": true,
+          "stderr": "RN  billow_kernel] message=disable-keep-alive is recorded but outbounds keep their own keep-alive defaults\n[00:52:44.834 WARN  billow_kernel] message=keep-alive-interval 30s is recorded but each outbound keeps its own default (a global TCP keep-alive default is not threaded yet)\n[00:52:44.834 WARN  billow_kernel] message='sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert\n[00:52:44.932 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(5 entries); rule-providers=1; proxy-providers=1; proxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=83417aa2-86e3-4af4-bbc1-9e9471a51061 pid=2551 version=\"0.1.0\" listen=127.0.0.1:49655\n[00:52:44.932 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[00:52:44.932 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:52:44.932 INFO  billow_kernel::engine] message=billow-kernel stopped instance=83417aa2-86e3-4af4-bbc1-9e9471a51061 sessions=0 active=0 finished=0\n",
+          "stdout": "instance=83417aa2-86e3-4af4-bbc1-9e9471a51061 pid=2551 version=0.1.0 listen=127.0.0.1:49655 overridden_port=49655 config=sha256:98892a4cefd294dc6fcb2ce341a337d937ab6596a05460df9768f917844895be rules=5 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/effective-android-reduced state_dir=-\nconfiguration accepted\n"
+        },
+        "groups": [
+          {
+            "name": "PROXY",
+            "type": "select",
+            "now": "node-a",
+            "members": 3
+          },
+          {
+            "name": "AUTO",
+            "type": "url-test",
+            "now": "node-a",
+            "members": 2
+          },
+          {
+            "name": "FALLBACK",
+            "type": "fallback",
+            "now": "node-a",
+            "members": 2
+          }
+        ],
+        "stderr": "roxy-groups=3; sub-rules=0; outbounds=DIRECT,REJECT; protocols=node-a=ss,node-b=trojan; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=1,policy=0) instance=1f66db4e-0aee-4bbe-a651-35649452c804 pid=2552 version=\"0.1.0\" listen=127.0.0.1:49656\n[00:52:45.035 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=0\n[00:52:45.035 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:52:45.035 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1f66db4e-0aee-4bbe-a651-35649452c804 sessions=0 active=0 finished=0\n"
+      }
+    },
+    "namedRejections": [
+      {
+        "platform": "desktop",
+        "stderr": "error: [unsupported] unsupported configuration: top-level key 'sniffer' with enable: true is not implemented (sniffing is T7)\n"
+      },
+      {
+        "platform": "android",
+        "stderr": "error: [unsupported] unsupported configuration: top-level key 'sniffer' with enable: true is not implemented (sniffing is T7)\n"
+      }
+    ],
+    "conclusion": "sniffer (T7) is the only top-level key rejected by name; removing it makes both desktop and Android artifacts load"
+  },
+  "families": {
+    "shadowquic": {
+      "combination": "in-combination",
+      "detail": "squic-node (type shadowquic, JLS user/password, sni localhost) is an outbound in the same YAML and its probe is selected by DST-PORT; the peer is a pinned Mihomo shadowquic listener with a loopback UDP jls-upstream camouflage socket."
+    },
+    "wireguard": {
+      "combination": "not-combined",
+      "detail": "checked individually (t16-feasibility.json, family-peers.sh wireguard_peer); dial() needs the userspace IP stack/TUN owned by T6/T7, so it cannot serve as a mixed-port CONNECT outbound in this differential."
+    },
+    "openvpn": {
+      "combination": "not-combined",
+      "detail": "checked individually (t16-feasibility.json); the same T6/T7 device-layer split prevents a CONNECT egress probe."
+    },
+    "tailscale": {
+      "combination": "not-combined",
+      "detail": "owned by T19 after the T16 split (t19-mesh.md); the mesh adapter needs the T6/T7 IP stack and is not a CONNECT outbound."
+    },
+    "zerotier": {
+      "combination": "not-combined",
+      "detail": "owned by T19 (t19-mesh.md); device layer is T6/T7."
+    },
+    "easytier": {
+      "combination": "not-combined",
+      "detail": "owned by T19 (t19-mesh.md); device layer is T6/T7."
+    }
+  },
+  "scenarios": [
+    {
+      "id": "startup-mihomo",
+      "equal": true,
+      "status": "pass",
+      "ready": true
+    },
+    {
+      "id": "startup-rust",
+      "equal": true,
+      "status": "pass",
+      "ready": true
+    },
+    {
+      "id": "dns-fake-ip-hosts-alias",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "fake.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:198.18.0.4:1"
+          ]
+        },
+        "host-only.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:10.9.8.7:10"
+          ]
+        },
+        "alias.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "CNAME:alias-target.test:10",
+            "A:9.9.9.9:60"
+          ]
+        },
+        "real.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:5.5.5.5:60"
+          ]
+        },
+        "absent.test": {
+          "rcode": 3,
+          "timeout": false,
+          "answers": []
+        }
+      },
+      "rust": {
+        "fake.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:198.18.0.4:1"
+          ]
+        },
+        "host-only.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:10.9.8.7:10"
+          ]
+        },
+        "alias.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "CNAME:alias-target.test:10",
+            "A:9.9.9.9:60"
+          ]
+        },
+        "real.test": {
+          "rcode": 0,
+          "timeout": false,
+          "answers": [
+            "A:5.5.5.5:60"
+          ]
+        },
+        "absent.test": {
+          "rcode": 3,
+          "timeout": false,
+          "answers": []
+        }
+      }
+    },
+    {
+      "id": "groups-initial",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "PROXY": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "ssr-node",
+            "trojan-node"
+          ]
+        },
+        "AUTO": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ]
+        },
+        "FALLBACK": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ]
+        },
+        "SUB": {
+          "nowIsMember": true,
+          "members": [
+            "sub-a"
+          ]
+        }
+      },
+      "rust": {
+        "PROXY": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "ssr-node",
+            "trojan-node"
+          ]
+        },
+        "AUTO": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ]
+        },
+        "FALLBACK": {
+          "nowIsMember": true,
+          "members": [
+            "ss-node",
+            "trojan-node"
+          ]
+        },
+        "SUB": {
+          "nowIsMember": true,
+          "members": [
+            "sub-a"
+          ]
+        }
+      }
+    },
+    {
+      "id": "proxy-provider-registered",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "type": "File",
+        "proxies": [
+          "sub-a"
+        ]
+      },
+      "rust": {
+        "type": "File",
+        "proxies": [
+          "sub-a"
+        ]
+      }
+    },
+    {
+      "id": "group-select",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "set": 204,
+        "now": "trojan-node",
+        "missing": 400
+      },
+      "rust": {
+        "set": 204,
+        "now": "trojan-node",
+        "missing": 400
+      }
+    },
+    {
+      "id": "group-select-switch",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "set": 204,
+        "now": "ss-node",
+        "localhost": "echoed"
+      },
+      "rust": {
+        "set": 204,
+        "now": "ss-node",
+        "localhost": "echoed"
+      }
+    },
+    {
+      "id": "combined-egress-and-rules",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "localhost": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "127.0.0.1": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "trojan-port": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "ssr-port": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "squic-port": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "bad.localhost": {
+          "reached": false,
+          "category": "closed"
+        },
+        "bad-ok.localhost": {
+          "reached": true,
+          "category": "echoed"
+        },
+        "text-probe.test": {
+          "reached": false,
+          "category": "closed"
+        },
+        "www.google.com": {
+          "reached": false,
+          "category": "closed"
+        },
+        "geo.test": {
+          "reached": false,
+          "category": "timeout"
+        },
+        "http-probe.test": {
+          "reached": false,
+          "category": "timeout"
+        },
+        "and-probe.test": {
+          "reached": false,
+          "category": "closed"
+        }
+      },
+      "rust": {
+        "localhost": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "RULE-SET,rp-yaml",
+            "outbound": "trojan-node"
+          }
+        },
+        "127.0.0.1": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "GEOIP,zz",
+            "outbound": "ss-node"
+          }
+        },
+        "trojan-port": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "DST-PORT,49472",
+            "outbound": "trojan-node"
+          }
+        },
+        "ssr-port": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "DST-PORT,49473",
+            "outbound": "ssr-node"
+          }
+        },
+        "squic-port": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "DST-PORT,49474",
+            "outbound": "squic-node"
+          }
+        },
+        "bad.localhost": {
+          "reached": false,
+          "category": "timeout",
+          "trace": {
+            "rule": "DOMAIN,bad.localhost",
+            "outbound": "bad-ss"
+          }
+        },
+        "bad-ok.localhost": {
+          "reached": true,
+          "category": "echoed",
+          "trace": {
+            "rule": "DOMAIN,bad-ok.localhost",
+            "outbound": "ss-node"
+          }
+        },
+        "text-probe.test": {
+          "reached": false,
+          "category": "closed",
+          "trace": {
+            "rule": "RULE-SET,rp-text",
+            "outbound": "REJECT"
+          }
+        },
+        "www.google.com": {
+          "reached": false,
+          "category": "closed",
+          "trace": {
+            "rule": "RULE-SET,rp-mrs",
+            "outbound": "REJECT"
+          }
+        },
+        "geo.test": {
+          "reached": false,
+          "category": "closed",
+          "trace": {
+            "rule": "GEOSITE,t5site",
+            "outbound": "REJECT"
+          }
+        },
+        "http-probe.test": {
+          "reached": false,
+          "category": "closed",
+          "trace": {
+            "rule": "RULE-SET,rp-http",
+            "outbound": "REJECT"
+          }
+        },
+        "and-probe.test": {
+          "reached": false,
+          "category": "closed",
+          "trace": {
+            "rule": "AND,(DOMAIN,and-probe.test,DST-PORT,49471)",
+            "outbound": "REJECT"
+          }
+        }
+      },
+      "expectations": {
+        "localhost": "echoed",
+        "127.0.0.1": "echoed",
+        "trojan-port": "echoed",
+        "ssr-port": "echoed",
+        "squic-port": "echoed",
+        "bad.localhost": "blocked",
+        "bad-ok.localhost": "echoed",
+        "text-probe.test": "blocked",
+        "www.google.com": "blocked",
+        "geo.test": "blocked",
+        "http-probe.test": "blocked",
+        "and-probe.test": "blocked"
+      },
+      "expectedTraces": {
+        "localhost": {
+          "rule": "RULE-SET,rp-yaml",
+          "outbound": "trojan-node"
+        },
+        "127.0.0.1": {
+          "rule": "GEOIP,zz",
+          "outbound": "ss-node"
+        },
+        "trojan-port": {
+          "rule": "DST-PORT,49472",
+          "outbound": "trojan-node"
+        },
+        "ssr-port": {
+          "rule": "DST-PORT,49473",
+          "outbound": "ssr-node"
+        },
+        "squic-port": {
+          "rule": "DST-PORT,49474",
+          "outbound": "squic-node"
+        },
+        "bad.localhost": {
+          "rule": "DOMAIN,bad.localhost",
+          "outbound": "bad-ss"
+        },
+        "bad-ok.localhost": {
+          "rule": "DOMAIN,bad-ok.localhost",
+          "outbound": "ss-node"
+        },
+        "text-probe.test": {
+          "rule": "RULE-SET,rp-text",
+          "outbound": "REJECT"
+        },
+        "www.google.com": {
+          "rule": "RULE-SET,rp-mrs",
+          "outbound": "REJECT"
+        },
+        "geo.test": {
+          "rule": "GEOSITE,t5site",
+          "outbound": "REJECT"
+        },
+        "http-probe.test": {
+          "rule": "RULE-SET,rp-http",
+          "outbound": "REJECT"
+        },
+        "and-probe.test": {
+          "rule": "AND",
+          "outbound": "REJECT"
+        }
+      },
+      "traceOk": true
+    },
+    {
+      "id": "provider-update-failure-keeps-old",
+      "equal": true,
+      "status": "pass",
+      "mihomo": [
+        {
+          "phase": "initial",
+          "status": null,
+          "localhost": "echoed",
+          "httpProbe": "blocked"
+        },
+        {
+          "phase": "update-ok",
+          "status": 204,
+          "localhost": "blocked",
+          "httpProbe": null
+        },
+        {
+          "phase": "update-failure",
+          "status": 503,
+          "localhost": "blocked",
+          "httpProbe": null
+        }
+      ],
+      "rust": [
+        {
+          "phase": "initial",
+          "status": null,
+          "localhost": "echoed",
+          "httpProbe": "blocked"
+        },
+        {
+          "phase": "update-ok",
+          "status": 204,
+          "localhost": "blocked",
+          "httpProbe": null
+        },
+        {
+          "phase": "update-failure",
+          "status": 503,
+          "localhost": "blocked",
+          "httpProbe": null
+        }
+      ]
+    },
+    {
+      "id": "reload-success-and-failure",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "successStatus": 204,
+        "localhostAfter": "blocked",
+        "failureStatus": 400,
+        "localhostAfterFailure": "blocked",
+        "mixedPort": true,
+        "groups": "ss-node",
+        "dnsAfter": [
+          "A:198.18.0.4"
+        ]
+      },
+      "rust": {
+        "successStatus": 204,
+        "localhostAfter": "blocked",
+        "failureStatus": 400,
+        "localhostAfterFailure": "blocked",
+        "mixedPort": true,
+        "groups": "ss-node",
+        "dnsAfter": [
+          "A:198.18.0.4"
+        ]
+      }
+    },
+    {
+      "id": "reject-out-of-range-provider-path",
+      "equal": true,
+      "status": "pass",
+      "mihomo": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "",
+        "stdout": "l=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:52:44.470360000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:52:44.470386000+08:00\" level=error msg=\"path is not subpath of home directory or SAFE_PATHS: /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/escape.yaml \\n allowed paths: [/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range]\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range/config.yaml test failed\n"
+      },
+      "rust": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "error: [unsupported] configuration error: unsupported configuration: rule-provider 'escape': provider path /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/escape.yaml is not a subpath of the provider root /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/out-of-range or SAFE_PATHS (pinned Mihomo IsSafePath rule)\n",
+        "stdout": ""
+      }
+    },
+    {
+      "id": "reject-unimplemented-option-tun",
+      "equal": true,
+      "status": "pass",
+      "note": "pinned accepts the TUN block at config-test time; the Rust kernel names the TUN gap (T6/T7)",
+      "mihomo": {
+        "exit": 0,
+        "accepted": true,
+        "stderr": "",
+        "stdout": "time=\"2026-11-25T08:52:44.582118000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:52:44.582154000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:52:44.582158000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:52:44.582254000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\nconfiguration file /var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t5-diff-5U2se3/reject/tun-on/config.yaml test is successful\n"
+      },
+      "rust": {
+        "exit": 1,
+        "accepted": false,
+        "stderr": "error: [unsupported] unsupported configuration: top-level key 'tun' with enable: true is not implemented (device/TUN is T6/T7)\n",
+        "stdout": ""
+      }
+    }
+  ],
+  "summary": {
+    "scenarios": 12,
+    "pass": 12,
+    "differ": 0,
+    "startupFailed": 0
+  },
+  "notes": [
+    "Both engines run the same combined YAML (only mixed/dns/controller ports differ); DNS answers are compared as rcode + type/address/TTL.",
+    "Peers: pinned Mihomo `listeners:` processes for ss (aes-256-gcm), trojan (self-signed cert, skip-cert-verify) and shadowquic (JLS user/password, loopback UDP jls-upstream), plus peers/ssr-server (origin/plain, aes-256-cfb) built from the locked source.",
+    "Every probe target is ordered so the intended rule is the first match; the Rust log line (`rule=... outbound=...`) for that exact target is parsed and compared with the expected rule/outbound, so a shadowing earlier rule fails the scenario instead of passing on reachability alone.",
+    "Rule outcome is compared after normalizing `closed` to `blocked` for both and Mihomo 200-then-close (`timeout`) to `blocked`; the Rust inbound answers 403/502 itself (T24 framing note).",
+    "Group comparison uses the member name set and whether `now` is a member; AUTO/FALLBACK `now` itself is url-test ranked, and liveness is not asserted because neither payload exposes a stable health array.",
+    "The effective desktop/Android YAML is generated by t5-effective.mjs (a mirror of profile.rs::kernel_yaml_for for Engine::Rust) and loaded with --check/-t; the remaining named rejection is the enabled sniffer (T7).",
+    "Old provider generations are reclaimed by Arc drop; unique generation stamping under the write lock is covered by tests/resources.rs::concurrent_provider_updates_stamp_unique_generations and the reload/provider-update scenarios here.",
+    "T15 shadowquic is part of this combined config. T16 wireguard/openvpn and the T19 mesh families are not CONNECT-capable without the T6/T7 device layer; their per-family results and that boundary are recorded under `families` and in t5-integration.md.",
+    "R2 compatibility is determined by T8/Delivery on the complete candidate; this report only records the combined differential."
+  ],
+  "exitOk": true
+}

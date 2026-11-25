@@ -1,125 +1,148 @@
-# 交付核验报告：五平台行为与完整基准（T8）
+# 交付核验报告：五平台行为与完整基准（T8 / T8-A2）
 
-- 日期：2026-11-23
-- Workflow：`2026-11-20-native-rust-kernel` / Task T8 / Attempt T8-A1
-- 候选：工作树（含 T7-A3 修改），基线 `2b89bf36658ba1bbb3666e78d1eae7fb9719c292`
-- 环境：macOS arm64；Xcode 27.2 / iOS 27.2 SDK；rustc 1.98.1；Node 26.13.0；Go 1.26.2
-- 对照基准：随包 Mihomo **v1.19.34**（`Mihomo Meta v1.19.34 darwin arm64 with go1.26.11`，二进制 `tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7`，SHA-256 `a55a9073…033f34`）；桌面清单 `src-tauri/desktop-kernel.json`，Android 清单 `src-tauri/android-kernel.json`（commit `0455d0d…`）
-- 候选内核：`billow-kernel 0.1.0`，release 构建 SHA-256 `6e708345…9ea392`
+- 日期：2026-11-25（T8-A2 最终候选核验；T8-A1 复核记录保留在文末）
+- Workflow：`2026-11-20-native-rust-kernel` / Task T8 / Attempt T8-A2 / message `T8-A2-M1`
+- 候选：git HEAD `e1a53f95610d287b3d7db83d3d5192503277b4df`（T31-A6、T7-A4、T26-A6 之后的最终候选；工作树只有 workflow state 变更，无产品代码改动）
+- 候选内核：`billow-kernel 0.1.0`，release 构建（2026-11-25 08:46 CST，`Finished release profile in 3m 01s`），**12,164,944 字节**，SHA-256 `ae77c74b16f9844714ec165e1d35ec7925cfb533184912d1f997125ec7fdfa06`
+- 环境：macOS 27.0 (26A428) arm64；Xcode 27.2 (27B52) / iOS 27.2 SDK；rustc 1.98.1；Node 26.13.0
+- 对照基准：随包 Mihomo **v1.19.34**（`Mihomo Meta v1.19.34 darwin arm64 with go1.26.11`，二进制 `tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7`，SHA-256 `a55a9073f9b7b1fa596a82c034d2dae3407ec34732102b6e42c5513ce3033f34`）
+- 前序平台证据：`tool/kernel-compat/evidence/t29-platform-matrix.{json,md}`（T29-A3，候选 `ec862c2`；macOS 通过，其余平台 blocked）
 
-机器可读汇总：[`tool/kernel-compat/evidence/t8-delivery.json`](../../tool/kernel-compat/evidence/t8-delivery.json)。
+机器可读汇总：[`tool/kernel-compat/evidence/t8-delivery.json`](../../tool/kernel-compat/evidence/t8-delivery.json)。本次新增的原始日志/JSON 均以 `t8-a2-*` 前缀保存在 `tool/kernel-compat/evidence/`。
 
 ## 结论（先给判定）
 
-**当前候选不得出具交付通过结论。**
+**当前候选不得出具交付通过结论。** macOS 在当前候选上实跑通过；其余平台与 R3/R4 缺设备/工具链/真机数据，按 T8 recipe 不得通过。
 
 | 需求 | 结论 | 原因摘要 |
 | --- | --- | --- |
-| **R1** 各平台双向切换 | **未通过（未完成验证）** | 仅 macOS 有 T6 历史实跑；当前候选的打包切换测试在正向标记断言后因负例过时失败。Windows/Linux/Android 未实跑，iOS 无真机双向流量。 |
-| **R2** 完整兼容随附 Mihomo 有效配置 | **未通过（已覆盖子集通过）** | 当前候选在 macOS 上 T22/T23/T24/T25/T5、选项矩阵与 66 个真实对端用例全部通过；但仍存在具名拒绝/降级的有效配置（TUN、sniffer、设备族 dial、masque/shadowquic/mieru/sudoku/QUIC/SS 选项等），且其他平台没有运行证据。 |
-| **R3** iOS 扩展峰值 ≤ 40,000,000 字节 | **未验证** | 物理 iPhone 未连接，没有任何 `phys_footprint` 真机峰值；模拟器 smoke 的 `peakRssBytes=28,475,392` 是 smoke 进程读数，不能作为 R3 依据。 |
-| **R4** 重复使用后资源可回收、基线稳定 | **未验证** | 无真机逐轮建连/重载/断网重连基线与失效对象检查。 |
+| **R1** 各平台双向切换 | **未通过（仅 macOS 当前候选通过）** | macOS：当前候选 `packaged_engines_switch_both_ways_with_a_marked_request` **1 passed / 0 failed**（7.89 s），标记序列 `mihomo-1 → rust-1 → mihomo-2 → mihomo-3` 全部断言；Windows/Linux/Android 无工具链/设备，未实跑；iOS 物理设备 `unavailable`，只有模拟器 smoke 与 unsigned 构建。 |
+| **R2** 完整兼容随附 Mihomo 有效配置 | **未通过（已覆盖子集通过）** | 当前候选：默认套件 452 passed / 0 failed / 123 ignored；T22 22 pass + 1 known difference；T23 28/28；T24 38/38（9 个 framing difference，0 differ）；T25 47/49 equal + 2 recorded divergence；T5 12/12；选项矩阵 **291 no-op / 88 implemented / 119 enabled，problems 0**。但仍有 **76 条 enabled 具名拒绝**（12 个族，见 §3）以及 TUN/sniffer/设备族 `dial()`、`client-fingerprint` 近似等有效配置缺口；其他平台行为未运行。 |
+| **R3** iOS 扩展峰值 ≤ 40,000,000 字节 | **未验证** | 物理 iPhone（`00008130-000E65482883401C`）仍 `unavailable`；没有任何扩展进程 `phys_footprint` 真机峰值。模拟器 smoke 的 `peakRssBytes` 是 smoke 进程读数，不能作为 R3 依据。 |
+| **R4** 重复使用后资源可回收、基线稳定 | **未验证** | 无真机逐轮建连/重载/断网重连基线与失效对象检查。T7-A4 已把 `stats` 透传代码接通（宿主 typecheck + 编解码 smoke 通过），但没有真机采样数字。 |
 
-按 T8 recipe：“缺基准、设备或关键记录不得出具通过结论”。本报告中的“通过”只适用于表内明确写出的已执行子项，不代表 R1–R4 任一需求整体通过。
+按 T8 recipe：“缺基准、设备或关键记录不得出具通过结论”。下文所有“通过”只指明确写出的已执行子项，不代表 R1–R4 任一需求整体通过。模拟器、构建成功、功能子集或单次采样均未写成平台通过。
 
-## 1. 五平台构建与运行可达性
+## 1. 五平台状态总表
 
-| 平台 | 构建/运行核验 | 结果 | 证据 |
+| 平台 | R1 双向切换 | 构建/模拟器证据 | 阻塞条件与补证入口 |
 | --- | --- | --- | --- |
-| macOS arm64 | release 内核构建、前端构建、`src-tauri` 默认测试、打包双引擎切换测试 | 内核/前端/默认测试通过；**打包切换测试失败**（负例过时） | `t8-build.log`、`t8-npm-build.log`、`t8-srctauri-tests.log`、`t8-macos-switch.log` |
-| Windows x86_64 | `cargo check --target x86_64-pc-windows-msvc -p billow-kernel-cli` | **失败**：`ring` 的 C 编译找不到 MSVC 头（`assert.h`），本机没有 `cl.exe`/Windows SDK；未实跑 | `t8-cross-windows.log` |
-| Linux x86_64 | `cargo check --target x86_64-unknown-linux-gnu -p billow-kernel-cli` | **失败**：找不到 `x86_64-linux-gnu-gcc`；未实跑 | `t8-cross-linux.log` |
-| Android arm64 | `cargo check --target aarch64-linux-android -p billow-kernel-cli` | **失败**：找不到 `aarch64-linux-android-clang`（无 `ANDROID_HOME`/NDK）；未实跑；Rust 内核未接入 VpnService TUN 数据面（T6 当时切换被具名拒绝并恢复 Mihomo，当前候选未复验） | `t8-cross-android.log` |
-| iOS（模拟器/设备构建） | 宿主真实源集 typecheck、App Group smoke、`BillowRust`/`BillowMihomo` 模拟器与设备 unsigned 构建、C ABI smoke | 构建与模拟器 smoke **通过**；完整宿主 `billow_iOS` 被 Tauri 预构建阻塞；无签名安装/真机流量 | `t8-ios-*.log` |
+| macOS arm64 | **passed（当前候选 A2 实跑）** | release 内核构建通过；打包切换 1 passed；离线打包启动 1 passed | 无。原始：`t8-a2-build.log`、`t8-a2-candidate.log`、`t8-a2-macos-switch.log` |
+| iOS | **blocked** | 模拟器 C ABI smoke 20/20、宿主/双扩展 typecheck、四个 unsigned 扩展构建（T29-A3，候选 `ec862c2`）；A2 在 HEAD 复核宿主 typecheck + `ProviderStatus` stats 编解码 + App Group manifest | 物理 iPhone/iPad `unavailable`，无 Team/签名；未安装、未建立系统 VPN、无真机流量。补证入口：`tool/ios/verify-device.md`、`docs/testing/2026-11-23-ios-rust-extension-memory.md` |
+| Windows x86_64 | **blocked** | `cargo check --target x86_64-pc-windows-msvc` exit 101（`ring` 的 C 编译找不到 `assert.h`；无 `cl.exe`/Windows SDK），T29-A3 记录 | 无 MSVC 工具链/Windows 主机。补证入口：release.yml 两条切换命令在 Windows runner 执行 |
+| Linux x86_64 | **blocked** | `cargo check --target x86_64-unknown-linux-gnu` exit 101（找不到 `x86_64-linux-gnu-gcc`），T29-A3 记录 | 无 Linux 工具链/运行环境。补证入口：release.yml 在 ubuntu runner 执行 |
+| Android arm64 | **blocked** | `cargo check --target aarch64-linux-android --features android-vpn` exit 101（找不到 `aarch64-linux-android-clang`；无 NDK/SDK/adb/JDK 21），T29-A3 记录；T26-A6 复核 HEAD 的 `--tun-fd` 进程路径仍由宿主单测/进程 smoke 覆盖 | 无 NDK/SDK/adb/设备/签名。补证入口：`tool/engine-switch.md` + `tool/prepare_android_kernel.mjs` |
 
-补充：
+A2 环境复核（`t8-a2-environment.log`）：HEAD 上 `cl.exe`、`x86_64-linux-gnu-gcc`、`aarch64-linux-android-clang`、`adb`、`emulator`、`sdkmanager`、`gradle` 仍全部缺失，`ANDROID_HOME`/`ANDROID_NDK_HOME`/`NDK_HOME` 未设置，`java` 仍为 1.8；物理 iPhone/iPad 仍 `unavailable`。因此 Windows/Linux/Android 的阻塞与 T29-A3 相同，未用其他平台或容器结果冒充。
 
-- `xcrun devicectl list devices` 显示物理 **iPhone 15 Pro Max（00008130-000E65482883401C）为 `unavailable`**；模拟器 iPhone 18 Pro（iOS 27.0）已启动。原始输出：`t8-devicectl.log`。
-- 设备版 `BillowRust` 第一次 `xcodebuild` 失败，是因为上一次模拟器构建把 `build/rust-kernel/linked.xcconfig` 留成 simulator archive；`Resolve Rust kernel` 阶段在本次构建中把它改回 device 路径，重跑后 `BUILD SUCCEEDED`。复现设备构建时应先运行 `tool/ios/build.sh`/resolve 阶段刷新 xcconfig（或连续执行两次），本次记录的是修正后的成功日志。
-- 完整宿主 `billow_iOS` 的 `xcodebuild` 仍在 Tauri 预构建阶段失败：缺少 `src-tauri/gen/apple/.tauri/cli-options-server.json`（只有运行中的 `tauri ios dev/build` 会生成）。
+## 2. 当前候选复跑证据（A2）
 
-## 2. 可复跑证据（本次在同一候选上重跑）
-
-公共参数：`--mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --rust <独立 CARGO_TARGET_DIR>/release/billow-kernel`。所有命令均在仓库根执行；Rust 构建使用独立 `CARGO_TARGET_DIR`，不占用共享 target。
+公共参数：`--mihomo tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7 --rust <T8-A2>/target/release/billow-kernel`；Rust 构建与测试均使用独立临时 `CARGO_TARGET_DIR`，未占用共享 target，未修改仓库内 runtime。
 
 | # | 命令/入口 | 结果 | 原始证据 |
 | --- | --- | --- | --- |
-| 1 | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | **400 passed / 0 failed / 92 ignored**（19 个 test binary） | `t8-default-tests.log` |
-| 2 | `cargo test --manifest-path native-kernel/Cargo.toml --locked -p billow-kernel --features ios-vpn` | **417 passed / 0 failed / 91 ignored**（17 个 test binary） | `t8-ios-tests.log` |
-| 3 | `node tool/kernel-compat/t22-differential.mjs … --mmdb-dir <解压后的 Country.mmdb/ASN.mmdb>` | **23 cases：22 pass + 1 known difference，0 unexpected，exit 0** | `t8-t22-dns.json`、`t8-t22.log` |
-| 4 | `node tool/kernel-compat/t23-differential.mjs …` | **28/28 pass**（27 cases + persistence），0 differ，exit 0 | `t8-t23-differential.json`、`t8-t23.log` |
-| 5 | `node tool/kernel-compat/t24-differential.mjs … --mmdb-dir …` | **38/38 pass**，0 differ，0 skipped，exit 0（4 个 framing difference 已归一化） | `t8-t24-differential.json`、`t8-t24.log` |
-| 6 | `node tool/kernel-compat/t25-differential.mjs …` | **49 cases：47 equal + 2 recorded divergences，0 unexpected，exit 0** | `t8-t25-differential.json`、`t8-t25.log` |
-| 7 | `node tool/kernel-compat/t5-differential.mjs … --effective-dir tool/kernel-compat/evidence/t8-t5-effective` | **12/12 scenarios pass，0 differ，exit 0**；Billow 桌面/Android reduced 产物可加载，仅启用 `sniffer` 被具名拒绝 | `t8-t5-integration.json`、`t8-t5.log`、`t8-t5-effective/` |
-| 8 | `node tool/kernel-compat/option-probe.mjs …` | **287 no-op / 304 enabled，problems 0，exit 0** | `t8-option-matrix.txt`、`t8-option-probe.log` |
-| 9 | `KC_MIHOMO_BIN=<pinned> tool/kernel-compat/peer-tests.sh`（独立 target） | **66/66 pass，exit 0** | `t8-peer-tests.log` |
-| 10 | `node --test tool/kernel-compat/runner.test.mjs` | **10/10 pass，exit 0** | `t8-runner.log` |
-| 11 | `npm test` / `npm run build` | **342 tests / 27 files pass**；type-check + Vite build 通过 | `t8-npm-test.log`、`t8-npm-build.log` |
-| 12 | `tool/ios/verify-host-sources.sh` | **通过**（宿主、BillowMihomo、BillowRust、`main.mm` 全部按各自条件 typecheck） | `t8-ios-host-typecheck.log` |
-| 13 | `tool/ios/verify-app-group.sh` | **通过**（同一版本同时保留 mihomo/rust manifest） | `t8-ios-app-group.log` |
-| 14 | `tool/ios/verify-rust-kernel.sh` | **PASS 20/20**；模拟器 smoke 进程 `peakRssBytes=28475392`（非 R3） | `t8-ios-simulator-smoke.log` |
-| 15 | `xcodebuild`：BillowRust / BillowMihomo，simulator debug + device release，`CODE_SIGNING_ALLOWED=NO` | 全部 **BUILD SUCCEEDED** | `t8-ios-xcodebuild-*.log` |
-| 16 | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | **234 passed / 0 failed / 10 ignored** | `t8-srctauri-tests.log` |
-| 17 | `BILLOW_TEST_RESOURCES=<当前候选 runtime> cargo test … packaged_engines_switch_both_ways_with_a_marked_request -- --ignored` | **PASSED（1 passed）**（交付复审后返修：负例改用仍被具名拒绝的 `sniffer.enable: true`；正向 `mihomo-1/rust-1/mihomo-2` 与拒绝后 `mihomo-3` 均通过） | `t8-macos-switch.log`（原始红）、`t8-macos-switch-rework.log`（返修后绿） |
+| 1 | `cargo build --release --locked -p billow-kernel-cli --manifest-path native-kernel/Cargo.toml` | exit 0，`Finished release profile in 3m 01s`；sha256 `ae77c74b…`，12,164,944 B | `t8-a2-build.log`、`t8-a2-candidate.log` |
+| 2 | `billow-kernel --check --port 63810 <mixed-port/mode:rule/MATCH,DIRECT>` | `configuration accepted`，exit 0；identity 输出版本 0.1.0 | `t8-a2-candidate.log` |
+| 3 | `cargo test --manifest-path native-kernel/Cargo.toml --locked` | **452 passed / 0 failed / 123 ignored**，19 个 test result（含 doc-test） | `t8-a2-default-tests.log` |
+| 4 | `BILLOW_TEST_RESOURCES=<A2 runtime> cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored --nocapture` | **1 passed / 0 failed**（7.89 s）；标记序列与负例见 §4 | `t8-a2-macos-switch.log` |
+| 5 | `BILLOW_TEST_RESOURCES=<A2 runtime> cargo test … desktop_packaged_runtime_starts_offline -- --ignored` | **1 passed / 0 failed**（5.70 s） | `t8-a2-macos-switch.log` |
+| 6 | `node --test tool/kernel-compat/runner.test.mjs` | **10/10 pass**，exit 0 | `t8-a2-runner.log` |
+| 7 | `node tool/kernel-compat/option-probe.mjs …` | **291 no-op / 88 implemented / 119 enabled，problems 0**，exit 0 | `t8-a2-option-matrix.txt`、`t8-a2-option-probe.log` |
+| 8 | `node tool/kernel-compat/t22-differential.mjs … --mmdb-dir <解压 Country/ASN>` | **23 cases：22 pass + 1 known difference，0 unexpected，exit 0** | `t8-a2-t22-dns.json`、`t8-a2-t22.log` |
+| 9 | `node tool/kernel-compat/t23-differential.mjs …` | **28/28 pass**（27 cases + persistence），0 differ，exit 0（耗时约 4 min） | `t8-a2-t23-differential.json`、`t8-a2-t23.log` |
+| 10 | `node tool/kernel-compat/t24-differential.mjs … --mmdb-dir …` | **38/38 pass**，0 differ，0 unexpected，9 个 inbound framing difference（已归一化） | `t8-a2-t24-differential.json`、`t8-a2-t24.log` |
+| 11 | `node tool/kernel-compat/t25-differential.mjs …` | **49 cases：47 equal + 2 recorded divergences，0 unexpected** | `t8-a2-t25-differential.json`、`t8-a2-t25.log` |
+| 12 | `node tool/kernel-compat/t5-differential.mjs … --effective-dir <A2 effective>` | **12/12 scenarios pass，0 differ**；Billow desktop/Android effective 产物只有 `sniffer` 被具名拒绝 | `t8-a2-t5-integration.json`、`t8-a2-t5.log`、`t8-a2-t5-effective/` |
+| 13 | `tool/ios/verify-host-sources.sh` | 通过：host / BillowMihomo / BillowRust + `main.mm`；`ProviderStatus` 对带 `stats` 的 reply 解码/重编码 smoke 通过 | `t8-a2-ios-host-typecheck.log` |
+| 14 | `bash tool/ios/verify-app-group.sh` | 通过：同一版本同时保留 mihomo/rust manifest | `t8-a2-ios-app-group.log` |
 
-注：`t8-*` 文件位于 `tool/kernel-compat/evidence/`。差分脚本的完整命令形式见 `tool/kernel-compat/README.md`；本次实际使用的 pinned 二进制与候选二进制路径记录在对应 JSON 的 `mihomo`/`rust` 字段。T9 记录过 306 passed / 91 ignored；当前树已包含 `controller`/`dns`/`groups`/`resources` 等测试二进制，本次 **400 passed / 92 ignored** 是当前候选的准确计数。
+未在 A2 重跑：iOS kernel archive 重建/模拟器 smoke（引用 T29-A3 在 `ec862c2` 的记录）；真实对端 `peer-tests.sh`（引用 T31-A6 的 97/97）；`npm test`/`npm run build`（引用 T28/T31 的 342 tests + build）。这些引用在下方按“前序候选证据”标注，不与 A2 当前二进制混写。
 
-## 3. 差分覆盖说明（R2 已覆盖子集）
+## 3. R2 覆盖与剩余具名缺口
 
-- **T22 DNS/hosts/fake-ip**：23 例。22 例与 pinned 完全一致；1 例 `fallback-geoip-code-mmdb-negated` 是已登记的 `known-difference`（pinned mmdb 路径对 `!au` 的二次取反导致回退，内核保留取反语义），不是未记录偏差。
-- **T23 策略组/选择/健康检查**：27 例 + selection cache 持久化，28/28 通过；包含 startup/lazy probing、url-test 计算缓存、嵌套组懒重探、provider 快照、空 fallback 阻断、dialer-proxy 探测。
-- **T24 规则/provider/GEO-MRS**：38/38 通过，含全部规则族、五类 rule-provider 载体/格式、GeoSite/GeoIP `.dat`、MRS、MaxMind Country/ASN、`MATCH` 与 uppercase `GEOSITE,CN`。
-- **T25 控制接口**：49 例，47 例与 pinned 相等；2 例已登记差异：重载时监听器迁移、`PATCH /configs {"tun":{"enable":true}}`。另有 `/configs/geo`、`/upgrade/geo`、`/group`、`/cache`、`/storage`、`/dns/query`、`/restart` 为显式 404，`/rules` 无 pinned 的 extra 命中计数，TLS 只提供 HTTP/1.1 ALPN。
-- **T5 组合差分**：12/12 场景通过；同一 YAML 覆盖 fake-ip DNS、hosts、多载体 rule-provider、proxy-provider、select/url-test/fallback 组、controller、ss/trojan/ssr/shadowquic 真实出口，并核对每条请求的 `rule=`/`outbound=`。Billow effective 产物中仅启用 `sniffer` 是剩余具名拒绝；移除后桌面和 Android 产物都能 `--check` 并注册策略组。
-- **选项矩阵**：287 个 no-op 形式双方接受，304 个 enabled 形式由内核具名拒绝，problems 0。
-- **真实对端矩阵**：66/66（覆盖 TCP/UDP、认证失败与边界；含 QUIC、shadowquic、设备/mesh 协议层、sudoku、mieru、ssr 等）。设备族（wireguard/openvpn/tailscale/zerotier/easytier）仍只验证协议层，`dial()` 需要 T6/T7 的用户态 IP 栈/TUN。
+### 3.1 已覆盖子集（当前候选 A2 复跑 + 前序候选）
 
-### R2 仍未达成的有效配置（具名缺口，非静默忽略）
+- **默认 Rust 套件**：452 passed / 0 failed / 123 ignored（19 个 test result；ignored 主要是需 pinned 对端的 peer 用例）。
+- **T22 DNS/hosts/fake-ip**：23 例，22 例与 pinned 完全一致；1 例 `fallback-geoip-code-mmdb-negated` 是已登记 `known-difference`（pinned mmdb 路径对 `!au` 的二次取反），不是未记录偏差。
+- **T23 策略组/选择/健康检查**：27 例 + selection cache 持久化，28/28 通过。
+- **T24 规则/provider/GEO-MRS**：38/38 通过；9 个 framing difference 已归一化，0 unexpected。
+- **T25 控制接口**：49 例，47 例相等；2 例已登记差异（重载时监听器迁移、`PATCH /configs {"tun":{"enable":true}}`）。
+- **T5 组合差分**：12/12 场景通过；同一 YAML 覆盖 fake-ip DNS、hosts、多载体 rule-provider、proxy-provider、select/url-test/fallback 组、controller 与 ss/trojan/ssr/shadowquic 真实出口，并核对每请求 `rule=`/`outbound=`。Billow effective 产物仅启用 `sniffer` 是剩余具名拒绝，移除后桌面/Android 产物都能加载。
+- **前序候选证据**（T31-A6 构建，仅作补充，不替代当前候选）：`peer-tests.sh` 97/97 passed；上述差分当时同样 0 unexpected。
+
+### 3.2 剩余具名拒绝族（来自 A2 `option-matrix.txt`：enabled 且 `rust=reject mihomo=accept`，共 **76** 行）
+
+| 协议族 | 行数 | 说明 |
+| --- | ---: | --- |
+| easytier | 20 | 设备/mesh 路由与 tun 形态；`dial()` 需设备层 |
+| wireguard | 11 | 设备族 `dial()` 需 T6/T7 用户态 IP 栈/TUN |
+| tuic | 9 | TUIC v4/UDP 等未实现形态 |
+| shadowquic | 7 | zero-rtt/QUIC v2/Brutal 等 |
+| openvpn | 7 | 设备族 `dial()` 与选项 |
+| hysteria（v1） | 6 | port hopping/XPlus/faketcp/wechat/UDP 等 |
+| masque | 4 | h2/h3-l4proxy/gVisor 形态 |
+| mieru | 3 | UDP/mux/traffic-pattern |
+| sudoku | 3 | HTTP tunnel/UoT |
+| trojan | 3 | 剩余选项（T28 已重分类） |
+| trusttunnel | 2 | quic 等 |
+| gost-relay | 1 | 剩余选项 |
+| **合计** | **76** | 全部为“显式具名拒绝”，未静默忽略 |
+
+此外仍有不进入选项矩阵的有效配置缺口：
 
 - 桌面启用 `tun`、启用 `sniffer`；iOS staging 会移除 `sniffer.enable: true`（域名规则退化为目标 IP/DNS 结果）。
-- 设备族 `wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier` 的 `dial()` 仍依赖 T6/T7 的设备层。
-- `masque` 的 h2/h3-l4proxy/gVisor 形态；`shadowquic` 的 `zero-rtt`/QUIC v2/Brutal；`mieru` 的 UDP/mux/traffic-pattern；`sudoku` 的 HTTP tunnel/UoT。
-- `vless`/`anytls`/`snell` 的 `udp: true`、`vmess` 的 `alterId>0`/grpc/xhttp、`ss` plugin、`trusttunnel` quic、`hysteria2` up/ports、`hysteria` v1 port hopping/XPlus/faketcp/wechat/UDP、`tuic` v4/UDP。
+- 设备族 `wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier` 的 `dial()` 仍依赖设备层。
+- `client-fingerprint` 的 4 个 impl 行是 **近似**（closest rustls profile，无 uTLS ClientHello），不计为字节级 parity（`t30-option-closure.md`）。
 - DNS 的 DoQ/system/dhcp/overlay DNS、`#proxy`、respect-rules UDP、h3、ECS；`PROCESS-*` 进程查找；LAN auth 注入；UDP SOCKS5 关联不单独出现在 `/connections`。
-- Windows 的 `external-controller-pipe`/`routing-mark` 等平台项为具名拒绝。
+- controller 的 `/configs/geo`、`/upgrade/geo`、`/group`、`/cache`、`/storage`、`/dns/query`、`/restart` 为显式 404；`/rules` 无 pinned 额外计数；TLS ALPN 仅 http/1.1。
+- Windows 的 `external-controller-pipe`/`routing-mark` 等平台项为具名拒绝；平台运行时行为未验证。
 
 完整状态见 [`rust-mapping.json`](../../tool/kernel-compat/evidence/rust-mapping.json) 与 `tool/kernel-compat/README.md`；本次未把“加载通过”等同于兼容通过。
 
-## 4. macOS 双向切换复跑细节
+## 4. macOS 双向切换（当前候选）
 
-T6 的历史实跑（`tool/engine-switch.md`、`task-runs/T6-run.md`）在 macOS 上通过：真实 Mihomo/`billow-kernel` 进程，标记 `mihomo-1 → rust-1 → mihomo-2`，拒绝配置保留 `mihomo-3`。
+`<A2>/runtime-package` 与 `tool/prepare_desktop_runtime.mjs` 输出同布局：复制仓库 runtime 的 `kernel.br`（Mihomo v1.19.34，未变）/`kernel.json`/`geo`/`mihomo-LICENSE`，换成本轮构建的 `billow-kernel`（`ae77c74b…`）与生成的 `rust-kernel.json`；仓库内 `src-tauri/resources/runtime` 未被修改。
 
-本次用**当前候选**的 `billow-kernel` 替换临时 runtime 后复跑同一 ignored 测试：
+测试断言顺序（`src-tauri/src/profile.rs::packaged_engines_switch_both_ways_with_a_marked_request`）：
 
-- 测试执行到 `src-tauri/src/profile.rs:6381` 才 panic，说明此前的 `mihomo-1 → rust-1 → mihomo-2` 三条标记断言均已通过；
-- 失败点在负例：测试仍用含 `proxy-groups` 的配置期望 Rust 拒绝并保留 Mihomo，但 T23 后 Rust 已接受 `proxy-groups`（快照显示切换成功，`engine=rust`、`running_engine=rust`、`engine_identity` 存在）；
-- 因此该测试当前是**红**的，不能作为“当前候选 macOS 双向切换通过”的证据。建议后续任务把负例改为当前仍被具名拒绝的配置（例如启用 `sniffer`）后重跑。归属：T6/后续任务，不在 T8 静默修改。
+1. 启动 Mihomo，标记请求返回 `pong:mihomo-1`；
+2. 切换 Rust，`engine=rust`、`running_engine=rust`、`engine_identity` 存在，标记返回 `pong:rust-1`；
+3. 切回 Mihomo，标记返回 `pong:mihomo-2`；
+4. 负例配置 `sniffer.enable: true` 被具名拒绝（“未接受当前配置”），Mihomo 会话保留，标记仍返回 `pong:mihomo-3`。
 
-## 5. iOS 真机与扩展（R1/R3/R4）
+结果：**1 passed / 0 failed（7.89 s）**；同候选 `desktop_packaged_runtime_starts_offline` **1 passed / 0 failed（5.70 s）**，说明 T28/T31 的组、cipher、cwnd、hy2 等返修未破坏随包离线启动。原始日志：`t8-a2-macos-switch.log`。
 
-已执行（模拟器/构建层）：
+边界：本测试只使用回环端点，不修改系统代理/TUN；未构建完整 `.app`/DMG。macOS 的桌面切换无需再补证。
 
-- 宿主真实源集 typecheck（`BILLOW_ENGINE_HOST`）通过；两个扩展各自类型检查通过；`src-tauri` 的 7 个 `ios_vpn` 桥接测试通过（`t8-ios-vpn-host-tests.log`）。
-- `BillowRust`/`BillowMihomo` 模拟器 debug 与设备 release unsigned 构建均成功；内核 archive 重新从当前源码构建（`t8-ios-build.log`、`t8-ios-build-device.log`）。
-- 模拟器 C ABI smoke 20/20：版本、stats、start/stop/reload、设备 UDP → DIRECT → 宿主 echo → `port->write` 回包。
+## 5. iOS、R3 与 R4
+
+已执行（模拟器/构建/宿主层）：
+
+- T29-A3（候选 `ec862c2`）：两个 kernel archive 重建；`tool/ios/verify-rust-kernel.sh` 模拟器 C ABI smoke **20/20**；宿主/双扩展 typecheck；四个 `BillowRust`/`BillowMihomo` unsigned 构建 `BUILD SUCCEEDED`。证据：`t29-a3-ios-*.log`。
+- A2（HEAD `e1a53f9`）：`tool/ios/verify-host-sources.sh` 通过，其中包含 T7-A4 新增的 `ProviderStatus` stats 编解码 smoke（reply 携带 `stats` 时能解码并重编码为 camelCase 键）；`verify-app-group.sh` 通过。证据：`t8-a2-ios-host-typecheck.log`、`t8-a2-ios-app-group.log`。
+- T7-A4 已把 `stats` 透传到 `ProviderStatus.stats`、`statusDictionary`、`status/<engine>.json` 与 TS `IosVpnStatus.stats`；`ios_vpn_status("rust").stats` 在代码与编解码 smoke 上可取。**这只是 R4 的读取入口，不是真机测量。**
 
 未执行（缺设备/签名）：
 
-- iPhone 真机安装、两个扩展各自建立系统 VPN、从其他应用发起命中代理规则的请求并核对出口（R1 iOS 双向）。
-- 任何扩展进程 `phys_footprint` 峰值与六类 R3 场景；任何 R4 逐轮空闲基线与失效对象检查。
-- 完整 `billow_iOS` 宿主包与真实 `npx tauri ios build`（无 Team；且 Tauri 预构建仍阻塞 plain xcodebuild）。
+- 物理 iPhone/iPad 安装、两个扩展各自建立系统 VPN、从其他应用发起命中代理规则的请求并核对出口（R1 iOS 双向）。
+- 任何扩展进程 `phys_footprint` 峰值与 R3 六类场景；任何 R4 逐轮空闲基线与失效对象检查；jetsam/系统终止检查。
+- 完整 `billow_iOS` 宿主包与真实 `npx tauri ios build`（无 Team；Tauri 预构建仍阻塞 plain xcodebuild）。
+- A2 未重建 iOS kernel archive / 模拟器 smoke；上述 iOS 构建证据是 T29-A3 在 `ec862c2` 上的记录，T7-A4 改动仅涉及宿主 stats 透传与 `src-tauri/src/ios_vpn.rs` 的统计解码层。**不把该构建记录写成当前二进制真机验证。**
 
-入口与场景表见 [`2026-11-23-ios-rust-extension-memory.md`](2026-11-23-ios-rust-extension-memory.md) 与 `tool/ios/verify-device.md`。
+入口与场景表见 [`2026-11-23-ios-rust-extension-memory.md`](2026-11-23-ios-rust-extension-memory.md) 与 `tool/ios/verify-device.md`。R3 以 Instruments `Physical Footprint` 为准，`peakRssBytes` 仅作旁证；R4 的 `tcpFlows/queuedPackets/generation` 从 `ios_vpn_status("rust").stats` 读取。
 
-## 6. 本轮修正
+## 6. 修正与历史（保留 T8-A1）
 
-- 修正 T7 证据中的 ignored 计数：`tool/kernel-compat/evidence/t7-ios-ffi.md` 与 `t7-ios-a3.json` 中 `cargo test -p billow-kernel --features ios-vpn` 的 **1 ignored** 改为本次复跑的 **91 ignored**（417 passed / 91 ignored，17 个 test binary）。`--lib` 单跑仍为 192 passed / 1 ignored，未改。
-- 交付复审后返修 macOS 打包双向切换测试：负例不再使用 T23 已支持的 `proxy-groups`，改用仍被具名拒绝的 `sniffer.enable: true`；`tool/engine-switch.md` 同步更新。返修后 `packaged_engines_switch_both_ways_with_a_marked_request` 为 **1 passed**（`t8-macos-switch-rework.log`）。
+- T8-A1 修正 T7 证据中的 ignored 计数：`t7-ios-ffi.md` / `t7-ios-a3.json` 的 `cargo test -p billow-kernel --features ios-vpn` 由 **1 ignored** 改为 **91 ignored**（417 passed / 91 ignored）；`--lib` 仍为 192 passed / 1 ignored，未改。
+- T8-A1 返修 macOS 打包切换测试负例：不再使用 T23 已支持的 `proxy-groups`，改用仍被具名拒绝的 `sniffer.enable: true`；`tool/engine-switch.md` 同步更新。
+- T8-A2 在 HEAD `e1a53f9` 上重新构建候选并复跑：默认套件、runner、选项矩阵、T22/T23/T24/T25/T5、macOS 切换/离线、iOS 宿主 typecheck/app-group。候选哈希、时间与结果均记录于 `t8-a2-*` 与 `t8-delivery.json`，不复用 A1 的 `6e708345…`/`c4467fe9…` 候选数字。
+- 未改动产品代码；仅写入 `docs/testing` 与 `tool/kernel-compat/evidence`。
 
 ## 7. 交付前必须补齐
 
-1. ~~更新并重跑 macOS 打包双引擎切换测试的负例~~（已返修：`sniffer.enable` 负例，macOS 1 passed）。
-2. 在 Windows/Linux/Android 宿主实跑打包后的双向切换与标记流量；Android 需先补齐 Rust 内核的 VpnService TUN 路径。
-3. 物理 iPhone 上完成 iOS 双向切换、R3 六类峰值、R4 逐轮回收，并附原始 trace/status JSON。
-4. R2 仍有多项 pinned Mihomo 接受而 Rust 具名拒绝的有效配置（见选项矩阵与 rust-mapping），需补齐实现或由需求方收窄范围。
-5. Delivery 在以上证据与 R2 缺口处理前保持未通过结论。
+1. Windows runner：打包后执行 release.yml 的两条命令（offline + 双向切换），附标记序列与服务端观测。
+2. Linux runner：同上（ubuntu-22.04）。
+3. Android：NDK/SDK/JDK 21/签名/设备齐备后构建 APK，按 `tool/engine-switch.md` 双向切换并核对 `--tun-fd` 数据面（release.yml 无此步，需手动）。
+4. iPhone：Team + 签名宿主 + 物理设备，完成 iOS 双向切换、R3 六类峰值（Allocations + VM Tracker instrument）、R4 逐轮 trace，并附原始 `status/rust.json` 与 jetsam 查询。
+5. R2：76 条具名拒绝族与 TUN/sniffer/设备 dial 等缺口需补齐实现或由需求方收窄范围；`client-fingerprint` 近似需决定是否接受。
+6. Delivery 在上述证据与 R2 缺口处理前保持未通过结论。

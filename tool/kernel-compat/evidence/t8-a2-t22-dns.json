@@ -1,0 +1,2992 @@
+{
+  "format": "t22-differential",
+  "version": 1,
+  "startedAt": "2026-11-25T00:58:05.799Z",
+  "mihomo": "/Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7",
+  "rust": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/target/release/billow-kernel",
+  "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb",
+  "fixtures": {
+    "main": 55056,
+    "policy": 64579,
+    "fallback": 63521,
+    "tcp": 50412,
+    "dot": 50413,
+    "doh": 50414,
+    "silent": 62196,
+    "socks": 50415,
+    "echo": 50416
+  },
+  "summary": {
+    "cases": 23,
+    "pass": 22,
+    "differ": 0,
+    "knownDifference": 1,
+    "unexpected": 0,
+    "startupFailed": 0,
+    "skipped": 0
+  },
+  "notes": [
+    "Both engines answer on their own dns.listen with the same effective configuration; answers are compared as rcode + A/AAAA address + TTL.",
+    "DoT/DoH use self-signed certificates with skip-cert-verify, as the pinned `#skip-cert-verify=true` parameter allows.",
+    "The timeout case compares the failure rcode, not elapsed time: both resolvers use the pinned 5s timeout.",
+    "respect-rules is compared through a loopback SOCKS5 hop: the rule IP-CIDR,127.0.0.1/32,RULES must route the TCP DNS upstream through it for both engines.",
+    "CONNECT cases normalize Mihomo's 200-then-close rejection to `blocked`; the Rust inbound answers 403.",
+    "Not covered here (named gaps, see evidence): DoQ, DHCP/system/Tailscale/EasyTier/rcode upstreams, fake-ip-filter rule mode, profile.store-fake-ip persistence, nameserver #proxy names, EDNS client subnet, name-cert-verify, and HTTP/3 DoH."
+  ],
+  "results": [
+    {
+      "id": "a-record-udp",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50417\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50418\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:36.499528000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:36.499564000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:36.499568000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:36.499661000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:36.595487000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50417,
+            "dnsPort": 50418,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50426\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50427\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=6037085e-3b41-4ec4-9d44-daac906b7f49 pid=2960 version=0.1.0 listen=127.0.0.1:50426 overridden_port=- config=sha256:6b19267f4581f78a4c94e0435631b66ab213f8ed04e49075bd787e07bd284461 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50427)\nstopped instance=6037085e-3b41-4ec4-9d44-daac906b7f49 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:36.703 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50427) instance=6037085e-3b41-4ec4-9d44-daac906b7f49 pid=2960 version=\"0.1.0\" listen=127.0.0.1:50426\n[00:57:36.801 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50436 code=\"closed\"\n[00:57:36.801 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:36.802 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:36.802 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:36.802 INFO  billow_kernel::engine] message=billow-kernel stopped instance=6037085e-3b41-4ec4-9d44-daac906b7f49 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50426,
+            "dnsPort": 50427,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nxdomain",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50437\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50438\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:36.813862000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:36.813904000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:36.813908000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:36.814009000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:36.907345000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "absent.test",
+              "type": 1,
+              "rcode": 3,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50437,
+            "dnsPort": 50438,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50446\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50447\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=66a4aa6b-942e-4398-933c-91d000b84f30 pid=2966 version=0.1.0 listen=127.0.0.1:50446 overridden_port=- config=sha256:a6a897833de8d44ae0728d6d251ae7a8a6ced17e4ed81e0feb782aaa04717e96 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50447)\nstopped instance=66a4aa6b-942e-4398-933c-91d000b84f30 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:37.014 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50447) instance=66a4aa6b-942e-4398-933c-91d000b84f30 pid=2966 version=\"0.1.0\" listen=127.0.0.1:50446\n[00:57:37.112 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50456 code=\"closed\"\n[00:57:37.113 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:37.113 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:37.113 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:37.113 INFO  billow_kernel::engine] message=billow-kernel stopped instance=66a4aa6b-942e-4398-933c-91d000b84f30 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "absent.test",
+              "type": 1,
+              "rcode": 3,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50446,
+            "dnsPort": 50447,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 3,
+            "timeout": false,
+            "answers": []
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 3,
+            "timeout": false,
+            "answers": []
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "tcp-upstream",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50457\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50458\n  enhanced-mode: normal\n  nameserver: ['tcp://127.0.0.1:50412']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:37.125685000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:37.125726000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:37.125737000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:37.125869000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:37.219562000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "tcp.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 1,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50457,
+            "dnsPort": 50458,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50467\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50468\n  enhanced-mode: normal\n  nameserver: ['tcp://127.0.0.1:50412']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=0008b00e-68a9-42d4-b796-bd3ea44f6d63 pid=2970 version=0.1.0 listen=127.0.0.1:50467 overridden_port=- config=sha256:e725828016614ed94c9dc818f3b6050051ff34238b570ea6c18537c5bbc74e99 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50468)\nstopped instance=0008b00e-68a9-42d4-b796-bd3ea44f6d63 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:37.328 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50468) instance=0008b00e-68a9-42d4-b796-bd3ea44f6d63 pid=2970 version=\"0.1.0\" listen=127.0.0.1:50467\n[00:57:37.426 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50477 code=\"closed\"\n[00:57:37.427 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:37.427 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:37.427 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:37.427 INFO  billow_kernel::engine] message=billow-kernel stopped instance=0008b00e-68a9-42d4-b796-bd3ea44f6d63 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "tcp.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 1,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50467,
+            "dnsPort": 50468,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.2:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.2:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "nameserver-policy",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50479\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50480\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  nameserver-policy:\n    '+.policy.test': ['udp://127.0.0.1:64579']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:37.439926000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:37.439971000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:37.439976000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:37.440095000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:37.534210000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "policy.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.3",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "deep.policy.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.3",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 2,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50479,
+            "dnsPort": 50480,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50488\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50489\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  nameserver-policy:\n    '+.policy.test': ['udp://127.0.0.1:64579']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=8a67eaa8-3543-4f85-b720-bcb8b2bc78eb pid=2974 version=0.1.0 listen=127.0.0.1:50488 overridden_port=- config=sha256:5de02719154e172b983ad5f16a7a24245f5e441c73ddf408913f148690dcb25f rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=1,listen=127.0.0.1:50489)\nstopped instance=8a67eaa8-3543-4f85-b720-bcb8b2bc78eb accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:37.642 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=1,listen=127.0.0.1:50489) instance=8a67eaa8-3543-4f85-b720-bcb8b2bc78eb pid=2974 version=\"0.1.0\" listen=127.0.0.1:50488\n[00:57:37.740 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50498 code=\"closed\"\n[00:57:37.741 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:37.741 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:37.741 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:37.741 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8a67eaa8-3543-4f85-b720-bcb8b2bc78eb sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "policy.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.3",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "deep.policy.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.3",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 2,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50488,
+            "dnsPort": 50489,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.3:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.3:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.3:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.3:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "fallback-ipcidr",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50499\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50500\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: false\n    ipcidr: [\"1.0.0.0/8\"]\n    domain: [\"+.only.test\"]\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:37.754178000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:37.754221000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:37.754226000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:37.754344000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:37.848633000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "filtered.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "7.7.7.7",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "public.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "8.8.8.8",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "6.6.6.6",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 3,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50499,
+            "dnsPort": 50500,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50506\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50507\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: false\n    ipcidr: [\"1.0.0.0/8\"]\n    domain: [\"+.only.test\"]\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=8093f7ae-f231-44f0-90e4-9ece1e4c3eb4 pid=2977 version=0.1.0 listen=127.0.0.1:50506 overridden_port=- config=sha256:e06f77822fd193ec6a871d668e96375aa4c87b81ba97b3ff6b02fc6ae38f0e44 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50507)\nstopped instance=8093f7ae-f231-44f0-90e4-9ece1e4c3eb4 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:37.964 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50507) instance=8093f7ae-f231-44f0-90e4-9ece1e4c3eb4 pid=2977 version=\"0.1.0\" listen=127.0.0.1:50506\n[00:57:38.056 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50511 code=\"closed\"\n[00:57:38.057 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:38.057 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:38.057 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:38.057 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8093f7ae-f231-44f0-90e4-9ece1e4c3eb4 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "filtered.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "7.7.7.7",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "public.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "8.8.8.8",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "6.6.6.6",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 3,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50506,
+            "dnsPort": 50507,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:7.7.7.7:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:8.8.8.8:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:6.6.6.6:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:7.7.7.7:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:8.8.8.8:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:6.6.6.6:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "fallback-geoip-code",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50512\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\ndns:\n  enable: true\n  listen: 127.0.0.1:50513\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"zz\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:38.072084000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:38.072133000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:38.072139000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:38.072325000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T08:57:38.072767000+08:00\" level=info msg=\"Load GeoIP rule: zz\"\ntime=\"2026-11-25T08:57:38.073159000+08:00\" level=info msg=\"Finished initial GeoIP rule zz => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T08:57:38.073168000+08:00\" level=info msg=\"Initial configuration complete, total time: 1ms\"\ntime=\"2026-11-25T08:57:38.164135000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "geoip-zz.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "geoip-other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "6.6.6.6",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 2,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50512,
+            "dnsPort": 50513,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50517\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\ndns:\n  enable: true\n  listen: 127.0.0.1:50518\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"zz\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=b897e72f-87d6-470e-a63a-5b95c88ac714 pid=2979 version=0.1.0 listen=127.0.0.1:50517 overridden_port=- config=sha256:5b21f9b00f253d281b1a40ce60931a4ee16d36f7376667ba5c70234eb92946e0 rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t22-diff-sxxmya/fallback-geoip-code-rust-0 state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50518)\nstopped instance=b897e72f-87d6-470e-a63a-5b95c88ac714 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:38.282 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50518) instance=b897e72f-87d6-470e-a63a-5b95c88ac714 pid=2979 version=\"0.1.0\" listen=127.0.0.1:50517\n[00:57:38.372 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50522 code=\"closed\"\n[00:57:38.373 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:38.373 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:38.373 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:38.374 INFO  billow_kernel::engine] message=billow-kernel stopped instance=b897e72f-87d6-470e-a63a-5b95c88ac714 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "geoip-zz.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "geoip-other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "6.6.6.6",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 2,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50517,
+            "dnsPort": 50518,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:6.6.6.6:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:6.6.6.6:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "fallback-geoip-code-negated",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50523\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\ndns:\n  enable: true\n  listen: 127.0.0.1:50524\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"!zz\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:38.386750000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:38.386796000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:38.386801000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:38.386961000+08:00\" level=info msg=\"Load GeoIP rule: cn\"\ntime=\"2026-11-25T08:57:38.387390000+08:00\" level=info msg=\"Load GeoIP rule: zz\"\ntime=\"2026-11-25T08:57:38.387711000+08:00\" level=info msg=\"Finished initial GeoIP rule !zz => dns.fallback-filter.geoip, records: 1\"\ntime=\"2026-11-25T08:57:38.387722000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:38.478998000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "geoip-zz.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "7.7.7.7",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "geoip-other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "8.8.8.8",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 2,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50523,
+            "dnsPort": 50524,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50528\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: true\ndns:\n  enable: true\n  listen: 127.0.0.1:50529\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"!zz\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=73d66e5a-fb23-404d-b0bc-601a685d1a95 pid=2981 version=0.1.0 listen=127.0.0.1:50528 overridden_port=- config=sha256:d4da8205b24769e1e93217065c9a1380331d5a0cb54a138bc26bec548c0f3f13 rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t22-diff-sxxmya/fallback-geoip-code-negated-rust-0 state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50529)\nstopped instance=73d66e5a-fb23-404d-b0bc-601a685d1a95 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:38.594 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50529) instance=73d66e5a-fb23-404d-b0bc-601a685d1a95 pid=2981 version=\"0.1.0\" listen=127.0.0.1:50528\n[00:57:38.686 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50533 code=\"closed\"\n[00:57:38.687 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:38.687 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:38.687 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:38.687 INFO  billow_kernel::engine] message=billow-kernel stopped instance=73d66e5a-fb23-404d-b0bc-601a685d1a95 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "geoip-zz.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "7.7.7.7",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            },
+            {
+              "name": "geoip-other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "8.8.8.8",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 2,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50528,
+            "dnsPort": 50529,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:7.7.7.7:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:8.8.8.8:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:7.7.7.7:60"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:8.8.8.8:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "hosts-answer",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50534\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50535\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:38.700684000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:38.700727000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:38.700733000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:38.700852000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:38.790178000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50534,
+            "dnsPort": 50535,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50539\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50540\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=39022d97-35ab-45a3-8f11-90d15b06ba53 pid=2983 version=0.1.0 listen=127.0.0.1:50539 overridden_port=- config=sha256:f39663a1d9cd02901049fe740c7ad03f39efe93902ccd96a14ec3ad8af3a7043 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50540)\nstopped instance=39022d97-35ab-45a3-8f11-90d15b06ba53 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:38.905 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50540) instance=39022d97-35ab-45a3-8f11-90d15b06ba53 pid=2983 version=\"0.1.0\" listen=127.0.0.1:50539\n[00:57:38.996 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50544 code=\"closed\"\n[00:57:38.997 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:38.997 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:38.997 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:38.997 INFO  billow_kernel::engine] message=billow-kernel stopped instance=39022d97-35ab-45a3-8f11-90d15b06ba53 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50539,
+            "dnsPort": 50540,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "use-hosts-false",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50545\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50546\n  enhanced-mode: normal\n  use-hosts: false\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:39.010722000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:39.010768000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:39.010773000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:39.010886000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:39.102617000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "5.5.5.5",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50545,
+            "dnsPort": 50546,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50550\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50551\n  enhanced-mode: normal\n  use-hosts: false\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=281ed9cb-8cbb-459a-aa31-4295aca4d34c pid=2985 version=0.1.0 listen=127.0.0.1:50550 overridden_port=- config=sha256:e27b13aebd6d49ea32e86a4d2a930dcfb85b97258dee683b76f247f817109837 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50551)\nstopped instance=281ed9cb-8cbb-459a-aa31-4295aca4d34c accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:39.214 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50551) instance=281ed9cb-8cbb-459a-aa31-4295aca4d34c pid=2985 version=\"0.1.0\" listen=127.0.0.1:50550\n[00:57:39.308 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50555 code=\"closed\"\n[00:57:39.309 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:39.309 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:39.309 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:39.309 INFO  billow_kernel::engine] message=billow-kernel stopped instance=281ed9cb-8cbb-459a-aa31-4295aca4d34c sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "5.5.5.5",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50550,
+            "dnsPort": 50551,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:5.5.5.5:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:5.5.5.5:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "hosts-redir-host",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50556\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50557\n  enhanced-mode: redir-host\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:39.322717000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:39.322763000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:39.322768000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:39.322890000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:39.413968000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "localhost",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50556,
+            "dnsPort": 50557,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50561\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50562\n  enhanced-mode: redir-host\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=8d6c8325-8add-41f0-8598-c6641825582c pid=2987 version=0.1.0 listen=127.0.0.1:50561 overridden_port=- config=sha256:45e729b588ce5a9d288956a99124a81f1d6cdadeff42d1d4bbef6a4c25ff8335 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=redir-host(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50562)\nstopped instance=8d6c8325-8add-41f0-8598-c6641825582c accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:39.525 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=redir-host(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50562) instance=8d6c8325-8add-41f0-8598-c6641825582c pid=2987 version=\"0.1.0\" listen=127.0.0.1:50561\n[00:57:39.619 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50566 code=\"closed\"\n[00:57:39.620 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:39.620 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:39.620 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:39.621 INFO  billow_kernel::engine] message=billow-kernel stopped instance=8d6c8325-8add-41f0-8598-c6641825582c sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "localhost",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "a.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50561,
+            "dnsPort": 50562,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "hosts-fake-ip",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50567\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50568\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  fake-ip-filter: ['real.test']\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:39.635917000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:39.635962000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:39.635967000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:39.636094000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:39.726758000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "localhost",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50567,
+            "dnsPort": 50568,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50579\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  host-only.test: 1.2.3.4\ndns:\n  enable: true\n  listen: 127.0.0.1:50580\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  fake-ip-filter: ['real.test']\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=24ad7837-3de4-4b04-9c3a-cc082de4e9e8 pid=2989 version=0.1.0 listen=127.0.0.1:50579 overridden_port=- config=sha256:7d162a44e52998252cff573fe1e9733ac38e4723f501aaad4da349c830009858 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50580)\nstopped instance=24ad7837-3de4-4b04-9c3a-cc082de4e9e8 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:39.851 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50580) instance=24ad7837-3de4-4b04-9c3a-cc082de4e9e8 pid=2989 version=\"0.1.0\" listen=127.0.0.1:50579\n[00:57:39.933 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50589 code=\"closed\"\n[00:57:39.934 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:39.934 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:39.934 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:39.934 INFO  billow_kernel::engine] message=billow-kernel stopped instance=24ad7837-3de4-4b04-9c3a-cc082de4e9e8 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "localhost",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "host-only.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "1.2.3.4",
+                  "ttl": 10
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50579,
+            "dnsPort": 50580,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:1.2.3.4:10"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "hosts-domain-alias",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50590\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  alias.test: alias-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:50591\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:39.947670000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:39.947713000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:39.947718000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:39.947837000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:40.040761000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "alias.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "CNAME",
+                  "ip": "alias-target.test",
+                  "ttl": 10
+                },
+                {
+                  "type": "A",
+                  "ip": "9.9.9.9",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50590,
+            "dnsPort": 50591,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50595\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  alias.test: alias-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:50596\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=e2d88f84-1156-45cf-a2ab-3f9a2db4ae74 pid=2991 version=0.1.0 listen=127.0.0.1:50595 overridden_port=- config=sha256:18ad99ee30832015682ba0698b93c80abd507f2406c297699e4b187aa4d19921 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50596)\nstopped instance=e2d88f84-1156-45cf-a2ab-3f9a2db4ae74 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:40.158 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50596) instance=e2d88f84-1156-45cf-a2ab-3f9a2db4ae74 pid=2991 version=\"0.1.0\" listen=127.0.0.1:50595\n[00:57:40.248 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50600 code=\"closed\"\n[00:57:40.248 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:40.248 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:40.248 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:40.248 INFO  billow_kernel::engine] message=billow-kernel stopped instance=e2d88f84-1156-45cf-a2ab-3f9a2db4ae74 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "alias.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "CNAME",
+                  "ip": "alias-target.test",
+                  "ttl": 10
+                },
+                {
+                  "type": "A",
+                  "ip": "9.9.9.9",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50595,
+            "dnsPort": 50596,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "CNAME:alias-target.test:10",
+              "A:9.9.9.9:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "CNAME:alias-target.test:10",
+              "A:9.9.9.9:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "hosts-domain-servfail-no-cname",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50601\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  alias.test: dead-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:50602\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:62196']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:40.262423000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:40.262467000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:40.262473000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:40.262598000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:45.355238000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "alias.test",
+              "type": 1,
+              "rcode": 2,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 5002
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50601,
+            "dnsPort": 50602,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50669\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nhosts:\n  alias.test: dead-target.test\ndns:\n  enable: true\n  listen: 127.0.0.1:50670\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:62196']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=ec49944c-01ba-439c-b9c2-f34e51648910 pid=3008 version=0.1.0 listen=127.0.0.1:50669 overridden_port=- config=sha256:78f69531945ef88cc8640b1a97e915b333c784310ff0adbe276053624e9c31e7 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50670)\nstopped instance=ec49944c-01ba-439c-b9c2-f34e51648910 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:45.488 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=1; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50670) instance=ec49944c-01ba-439c-b9c2-f34e51648910 pid=3008 version=\"0.1.0\" listen=127.0.0.1:50669\n[00:57:45.566 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50674 code=\"closed\"\n[00:57:50.570 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:50.570 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:50.570 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:50.570 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ec49944c-01ba-439c-b9c2-f34e51648910 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "alias.test",
+              "type": 1,
+              "rcode": 2,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 5003
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50669,
+            "dnsPort": 50670,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 2,
+            "timeout": false,
+            "answers": []
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 2,
+            "timeout": false,
+            "answers": []
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "fallback-geoip-code-mmdb-negated",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50746\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50747\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"!au\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:50.584909000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:50.584944000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:50.584949000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:50.585174000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:50.679453000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "public.test",
+              "type": 1,
+              "rcode": 3,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 1,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50746,
+            "dnsPort": 50747,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50755\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ngeodata-mode: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50756\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\n  fallback: ['udp://127.0.0.1:63521']\n  fallback-filter:\n    geoip: true\n    geoip-code: \"!au\"\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=ee455a51-8f6a-4801-a9be-6b8fb18c358b pid=3034 version=0.1.0 listen=127.0.0.1:50755 overridden_port=- config=sha256:4cbe22c8cc8fdaed80ff451cc22c56f5098a02416bf5ff956f6a80be01ef7704 rules=1 geosite_dir=/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/billow-t22-diff-sxxmya/fallback-geoip-code-mmdb-negated-rust-0 state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50756)\nstopped instance=ee455a51-8f6a-4801-a9be-6b8fb18c358b accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:50.793 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=1,policy=0,listen=127.0.0.1:50756) instance=ee455a51-8f6a-4801-a9be-6b8fb18c358b pid=3034 version=\"0.1.0\" listen=127.0.0.1:50755\n[00:57:50.891 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50768 code=\"closed\"\n[00:57:50.891 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:50.891 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:50.891 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:50.891 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ee455a51-8f6a-4801-a9be-6b8fb18c358b sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "public.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "8.8.8.8",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 1,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50755,
+            "dnsPort": 50756,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 3,
+            "timeout": false,
+            "answers": []
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:8.8.8.8:60"
+            ]
+          }
+        ]
+      },
+      "knownDifference": {
+        "reason": "pinned mmdb LoadGeoIPMatcher keeps the leading `!` and dnsFallbackFilter.MatchIp negates it again; `!au` therefore falls back for any non-LAN address, while both engines use the same AU-only fallback in GeoIP.dat mode",
+        "observed": {
+          "mihomo": [
+            {
+              "rcode": 3,
+              "timeout": false,
+              "answers": []
+            }
+          ],
+          "rust": [
+            {
+              "rcode": 0,
+              "timeout": false,
+              "answers": [
+                "A:8.8.8.8:60"
+              ]
+            }
+          ]
+        }
+      },
+      "status": "known-difference"
+    },
+    {
+      "id": "fake-ip",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50769\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50770\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  fake-ip-filter: ['real.test']\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:50.900855000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:50.900886000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:50.900895000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:50.901013000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:50.996638000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.5",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "real.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50769,
+            "dnsPort": 50770,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50778\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50779\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  fake-ip-filter: ['real.test']\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=df041070-d16a-4735-b4d9-ab19f3c78d7a pid=3039 version=0.1.0 listen=127.0.0.1:50778 overridden_port=- config=sha256:85e6a1e0c7bae57f486bf3e8da57e2838e0ed041eec4159a7903d1311e807cdf rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50779)\nstopped instance=df041070-d16a-4735-b4d9-ab19f3c78d7a accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:51.126 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50779) instance=df041070-d16a-4735-b4d9-ab19f3c78d7a pid=3039 version=\"0.1.0\" listen=127.0.0.1:50778\n[00:57:51.201 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50788 code=\"closed\"\n[00:57:51.202 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:51.202 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:51.202 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:51.202 INFO  billow_kernel::engine] message=billow-kernel stopped instance=df041070-d16a-4735-b4d9-ab19f3c78d7a sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "fake.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.4",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "other.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "198.18.0.5",
+                  "ttl": 3
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            },
+            {
+              "name": "real.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "127.0.0.1",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50778,
+            "dnsPort": 50779,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.5:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.4:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:198.18.0.5:3"
+            ]
+          },
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:127.0.0.1:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "ipv6-disabled-aaaa",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50789\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50790\n  enhanced-mode: normal\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:51.211982000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:51.212012000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:51.212016000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:51.212103000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:51.306955000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "v6.test",
+              "type": 28,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50789,
+            "dnsPort": 50790,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50797\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50798\n  enhanced-mode: normal\n  ipv6: false\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=5c9029b8-3367-41d0-ba69-5d4d4242ad1a pid=3042 version=0.1.0 listen=127.0.0.1:50797 overridden_port=- config=sha256:7921f4e885d04859268a5dc490967c352ddde9345b36ce44fd5d69c88d2a424e rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50798)\nstopped instance=5c9029b8-3367-41d0-ba69-5d4d4242ad1a accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:51.418 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50798) instance=5c9029b8-3367-41d0-ba69-5d4d4242ad1a pid=3042 version=\"0.1.0\" listen=127.0.0.1:50797\n[00:57:51.514 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50802 code=\"closed\"\n[00:57:51.514 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:51.514 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:51.514 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:51.514 INFO  billow_kernel::engine] message=billow-kernel stopped instance=5c9029b8-3367-41d0-ba69-5d4d4242ad1a sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "v6.test",
+              "type": 28,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 0
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50797,
+            "dnsPort": 50798,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": []
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": []
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "dot-upstream",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50803\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50804\n  enhanced-mode: normal\n  nameserver: ['tls://127.0.0.1:50413#skip-cert-verify=true']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:51.528137000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:51.528176000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:51.528185000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:51.528316000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:51.624640000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "dot.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.2.0.1",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 5
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 1,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50803,
+            "dnsPort": 50804,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50809\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50810\n  enhanced-mode: normal\n  nameserver: ['tls://127.0.0.1:50413#skip-cert-verify=true']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=075c9fb1-dbf1-4230-817e-d2aba810e6a6 pid=3044 version=0.1.0 listen=127.0.0.1:50809 overridden_port=- config=sha256:85909b54def19b067b891e3e05bea345eba817047fed21bf622dc71fc3de37d9 rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50810)\nstopped instance=075c9fb1-dbf1-4230-817e-d2aba810e6a6 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:51.741 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50810) instance=075c9fb1-dbf1-4230-817e-d2aba810e6a6 pid=3044 version=\"0.1.0\" listen=127.0.0.1:50809\n[00:57:51.831 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50816 code=\"closed\"\n[00:57:51.832 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:51.832 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:51.832 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:51.832 INFO  billow_kernel::engine] message=billow-kernel stopped instance=075c9fb1-dbf1-4230-817e-d2aba810e6a6 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "dot.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.2.0.1",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 2
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 1,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50809,
+            "dnsPort": 50810,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.2.0.1:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.2.0.1:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "doh-upstream",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50818\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50819\n  enhanced-mode: normal\n  nameserver: ['https://127.0.0.1:50414/dns-query#skip-cert-verify=true']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:51.843568000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:51.843605000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:51.843610000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:51.843709000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:51.940484000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "doh.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.2.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 3
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 1,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50818,
+            "dnsPort": 50819,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50825\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50826\n  enhanced-mode: normal\n  nameserver: ['https://127.0.0.1:50414/dns-query#skip-cert-verify=true']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=a71e0270-d74e-4f83-9b40-f8c551022dbd pid=3047 version=0.1.0 listen=127.0.0.1:50825 overridden_port=- config=sha256:c081c930294ca1ccc14ea071657281be96baa0a8e283be0efe48f0bad7ccab5d rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50826)\nstopped instance=a71e0270-d74e-4f83-9b40-f8c551022dbd accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:52.043 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50826) instance=a71e0270-d74e-4f83-9b40-f8c551022dbd pid=3047 version=\"0.1.0\" listen=127.0.0.1:50825\n[00:57:52.145 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50833 code=\"closed\"\n[00:57:52.147 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:57:52.147 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:57:52.147 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:57:52.147 INFO  billow_kernel::engine] message=billow-kernel stopped instance=a71e0270-d74e-4f83-9b40-f8c551022dbd sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "doh.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.2.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 2
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 1,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50825,
+            "dnsPort": 50826,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.2.0.2:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.2.0.2:60"
+            ]
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "timeout-is-servfail",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50835\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50836\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:62196']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:57:52.160888000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:57:52.160932000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:57:52.160938000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:57:52.161055000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:57:57.255461000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "slow.test",
+              "type": 1,
+              "rcode": 2,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 5003
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50835,
+            "dnsPort": 50836,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50891\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50892\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:62196']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=34de9591-6fc1-4fa8-9f85-19e9dcb82fa8 pid=3061 version=0.1.0 listen=127.0.0.1:50891 overridden_port=- config=sha256:87cb3948bd39c0592c469e056dd9d2045330c04d581ccc0babae35d128a6546e rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50892)\nstopped instance=34de9591-6fc1-4fa8-9f85-19e9dcb82fa8 accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:57:57.368 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50892) instance=34de9591-6fc1-4fa8-9f85-19e9dcb82fa8 pid=3061 version=\"0.1.0\" listen=127.0.0.1:50891\n[00:57:57.462 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50896 code=\"closed\"\n[00:58:02.466 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:58:02.466 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:58:02.466 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:58:02.466 INFO  billow_kernel::engine] message=billow-kernel stopped instance=34de9591-6fc1-4fa8-9f85-19e9dcb82fa8 sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "slow.test",
+              "type": 1,
+              "rcode": 2,
+              "truncated": false,
+              "answers": [],
+              "timeout": false,
+              "elapsedMs": 5004
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50891,
+            "dnsPort": 50892,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 2,
+            "timeout": false,
+            "answers": []
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 2,
+            "timeout": false,
+            "answers": []
+          }
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "id": "respect-rules",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50939\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nproxies:\n  - {name: RULES, type: socks5, server: 127.0.0.1, port: 50415}\ndns:\n  enable: true\n  listen: 127.0.0.1:50940\n  enhanced-mode: normal\n  nameserver: ['tcp://127.0.0.1:50412']\n  respect-rules: true\n  proxy-server-nameserver: ['223.5.5.5']\nrules:\n  - IP-CIDR,127.0.0.1/32,RULES\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:58:02.492854000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:58:02.493033000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:58:02.493042000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:58:02.493217000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:58:02.580095000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [
+            {
+              "name": "tcp.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 4
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 1,
+            "dot": 0,
+            "doh": 0,
+            "socks": 1
+          },
+          "context": {
+            "mixedPort": 50939,
+            "dnsPort": 50940,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50946\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\nproxies:\n  - {name: RULES, type: socks5, server: 127.0.0.1, port: 50415}\ndns:\n  enable: true\n  listen: 127.0.0.1:50947\n  enhanced-mode: normal\n  nameserver: ['tcp://127.0.0.1:50412']\n  respect-rules: true\n  proxy-server-nameserver: ['223.5.5.5']\nrules:\n  - IP-CIDR,127.0.0.1/32,RULES\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=1911a703-d6ab-4f41-96d8-0586096f499f pid=3078 version=0.1.0 listen=127.0.0.1:50946 overridden_port=- config=sha256:34aec86718158ed33d0b1d27b380cbd9e17ba3e3a5233086b5b00c32600a1cd3 rules=2 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=RULES=socks5; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50947)\nstopped instance=1911a703-d6ab-4f41-96d8-0586096f499f accepted=1 active=0 completed=0 rejected=0 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:58:02.706 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=RULES=socks5; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50947) instance=1911a703-d6ab-4f41-96d8-0586096f499f pid=3078 version=\"0.1.0\" listen=127.0.0.1:50946\n[00:58:02.789 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50951 code=\"closed\"\n[00:58:02.790 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:58:02.790 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=1\n[00:58:02.790 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:58:02.790 INFO  billow_kernel::engine] message=billow-kernel stopped instance=1911a703-d6ab-4f41-96d8-0586096f499f sessions=1 active=0 finished=1\n"
+          },
+          "dns": [
+            {
+              "name": "tcp.test",
+              "type": 1,
+              "rcode": 0,
+              "truncated": false,
+              "answers": [
+                {
+                  "type": "A",
+                  "ip": "10.0.0.2",
+                  "ttl": 60
+                }
+              ],
+              "timeout": false,
+              "elapsedMs": 1
+            }
+          ],
+          "connect": null,
+          "counters": {
+            "main": 0,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 1,
+            "dot": 0,
+            "doh": 0,
+            "socks": 1
+          },
+          "context": {
+            "mixedPort": 50946,
+            "dnsPort": 50947,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.2:60"
+            ]
+          }
+        ],
+        "rust": [
+          {
+            "rcode": 0,
+            "timeout": false,
+            "answers": [
+              "A:10.0.0.2:60"
+            ]
+          }
+        ]
+      },
+      "socksConnects": {
+        "mihomo": 1,
+        "rust": 1
+      },
+      "status": "pass"
+    },
+    {
+      "id": "engine-ip-rule",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50954\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50955\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:58:02.802518000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:58:02.802555000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:58:02.802560000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:58:02.802666000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:58:02.895571000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [],
+          "connect": {
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
+          },
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50954,
+            "dnsPort": 50955,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50960\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50961\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - IP-CIDR,127.0.0.0/8,REJECT\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=ef9fdf94-2a8a-4f62-9d01-93a9e2650f80 pid=3080 version=0.1.0 listen=127.0.0.1:50960 overridden_port=- config=sha256:149c88a33c69ad13e5afff872a955cb11e05fd2f5c586c27d8cde554d01c0101 rules=2 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50961)\nstopped instance=ef9fdf94-2a8a-4f62-9d01-93a9e2650f80 accepted=2 active=0 completed=0 rejected=1 failed=1 bytes_up=0 bytes_down=0\n",
+            "stderr": "[00:58:03.012 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50961) instance=ef9fdf94-2a8a-4f62-9d01-93a9e2650f80 pid=3080 version=\"0.1.0\" listen=127.0.0.1:50960\n[00:58:03.102 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50965 code=\"closed\"\n[00:58:03.102 INFO  billow_kernel::engine] message=REJECT session=2 target=loop.test:50416 protocol=\"http-connect\" rule=IP-CIDR,127.0.0.0/8 -> REJECT\n[00:58:03.102 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:58:03.102 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[00:58:03.102 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:58:03.102 INFO  billow_kernel::engine] message=billow-kernel stopped instance=ef9fdf94-2a8a-4f62-9d01-93a9e2650f80 sessions=2 active=0 finished=2\n"
+          },
+          "dns": [],
+          "connect": {
+            "category": "closed",
+            "connectStatus": 0,
+            "error": "connection closed before the response head"
+          },
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50960,
+            "dnsPort": 50961,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": "blocked",
+        "rust": "blocked"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "engine-no-resolve",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50967\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50968\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - IP-CIDR,127.0.0.0/8,REJECT,no-resolve\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:58:03.115118000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:58:03.115160000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:58:03.115165000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:58:03.115271000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:58:03.712063000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [],
+          "connect": {
+            "category": "echoed",
+            "connectStatus": 200,
+            "replyLength": 131
+          },
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50967,
+            "dnsPort": 50968,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 50974\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50975\n  enhanced-mode: normal\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - IP-CIDR,127.0.0.0/8,REJECT,no-resolve\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=59c87549-d07c-41bf-ab9f-498576f029c3 pid=3082 version=0.1.0 listen=127.0.0.1:50974 overridden_port=- config=sha256:13eaaeb2d6d34e628fd76071826282e528e77f5ea5db09e59da6060de0dd046a rules=2 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50975)\nstopped instance=59c87549-d07c-41bf-ab9f-498576f029c3 accepted=2 active=0 completed=1 rejected=0 failed=1 bytes_up=98 bytes_down=131\n",
+            "stderr": "[00:58:03.846 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(2 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=normal(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:50975) instance=59c87549-d07c-41bf-ab9f-498576f029c3 pid=3082 version=\"0.1.0\" listen=127.0.0.1:50974\n[00:58:03.922 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:50979 code=\"closed\"\n[00:58:03.923 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=loop.test:50416 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:50416 config=sha256:13eaaeb2d6d34e628fd76071826282e528e77f5ea5db09e59da6060de0dd046a\n[00:58:03.924 INFO  billow_kernel::engine] message=session closed session=2 target=loop.test:50416 bytes_up=98 bytes_down=131\n[00:58:04.428 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:58:04.428 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[00:58:04.428 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:58:04.429 INFO  billow_kernel::engine] message=billow-kernel stopped instance=59c87549-d07c-41bf-ab9f-498576f029c3 sessions=2 active=0 finished=2\n"
+          },
+          "dns": [],
+          "connect": {
+            "category": "echoed",
+            "connectStatus": 200,
+            "replyLength": 131
+          },
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50974,
+            "dnsPort": 50975,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": "echoed",
+        "rust": "echoed"
+      },
+      "status": "pass"
+    },
+    {
+      "id": "engine-fake-ip",
+      "engines": {
+        "mihomo": {
+          "engine": "mihomo",
+          "ready": true,
+          "config": "mixed-port: 50985\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:50986\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "time=\"2026-11-25T08:58:04.457049000+08:00\" level=info msg=\"Start initial configuration in progress\"\ntime=\"2026-11-25T08:58:04.457124000+08:00\" level=info msg=\"Geodata Loader mode: memconservative\"\ntime=\"2026-11-25T08:58:04.457133000+08:00\" level=info msg=\"Geosite Matcher implementation: succinct\"\ntime=\"2026-11-25T08:58:04.457354000+08:00\" level=info msg=\"Initial configuration complete, total time: 0ms\"\ntime=\"2026-11-25T08:58:05.061776000+08:00\" level=warning msg=\"Mihomo shutting down\"\n",
+            "stderr": ""
+          },
+          "dns": [],
+          "connect": {
+            "category": "echoed",
+            "connectStatus": 200,
+            "replyLength": 130
+          },
+          "fakeIp": "198.18.0.4",
+          "counters": {
+            "main": 2,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 50985,
+            "dnsPort": 50986,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        },
+        "rust": {
+          "engine": "rust",
+          "ready": true,
+          "config": "mixed-port: 51001\nmode: rule\nlog-level: warning\nprofile:\n  store-selected: false\n  store-fake-ip: false\ndns:\n  enable: true\n  listen: 127.0.0.1:51002\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-ttl: 3\n  nameserver: ['udp://127.0.0.1:55056']\nrules:\n  - MATCH,DIRECT\n",
+          "logs": {
+            "stdout": "instance=71e358c9-fc41-4e01-9ef5-362f220060a5 pid=3087 version=0.1.0 listen=127.0.0.1:51001 overridden_port=- config=sha256:e4ca396017759d6c61d24c6e1a5ea8df66aa6fe2b446d56bb515b8f0477948ab rules=1 geosite_dir=- state_dir=-\nfeatures: mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:51002)\nstopped instance=71e358c9-fc41-4e01-9ef5-362f220060a5 accepted=2 active=0 completed=1 rejected=0 failed=1 bytes_up=97 bytes_down=130\n",
+            "stderr": "[00:58:05.192 INFO  billow_kernel::engine] message=billow-kernel started; mixed-inbound(tcp,http-connect,socks5); rules=inline(1 entries); rule-providers=0; proxy-providers=0; proxy-groups=0; sub-rules=0; outbounds=DIRECT,REJECT; protocols=none; hosts=0; dns=fake-ip(nameserver=1,default=4,fallback=0,policy=0,listen=127.0.0.1:51002) instance=71e358c9-fc41-4e01-9ef5-362f220060a5 pid=3087 version=\"0.1.0\" listen=127.0.0.1:51001\n[00:58:05.272 WARN  billow_kernel::engine] message=handshake failed: client closed during handshake session=1 peer=127.0.0.1:51006 code=\"closed\"\n[00:58:05.273 INFO  billow_kernel::engine] message=DIRECT tunnel established session=2 target=fake.test:50416 protocol=\"http-connect\" rule=MATCH -> DIRECT outbound=127.0.0.1:50416 config=sha256:e4ca396017759d6c61d24c6e1a5ea8df66aa6fe2b446d56bb515b8f0477948ab\n[00:58:05.295 INFO  billow_kernel::engine] message=session closed session=2 target=fake.test:50416 bytes_up=97 bytes_down=130\n[00:58:05.797 INFO  billow_kernel] message=stop requested reason=\"SIGTERM\"\n[00:58:05.797 INFO  billow_kernel::engine] message=listener stopped; waiting for 0 session tasks sessions=2\n[00:58:05.797 INFO  billow_kernel::engine] message=all session tasks joined; listener released\n[00:58:05.797 INFO  billow_kernel::engine] message=billow-kernel stopped instance=71e358c9-fc41-4e01-9ef5-362f220060a5 sessions=2 active=0 finished=2\n"
+          },
+          "dns": [],
+          "connect": {
+            "category": "echoed",
+            "connectStatus": 200,
+            "replyLength": 130
+          },
+          "fakeIp": "198.18.0.4",
+          "counters": {
+            "main": 1,
+            "policy": 0,
+            "fallback": 0,
+            "tcp": 0,
+            "dot": 0,
+            "doh": 0,
+            "socks": 0
+          },
+          "context": {
+            "mixedPort": 51001,
+            "dnsPort": 51002,
+            "socksPort": 50415,
+            "mmdbDir": "/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/mmdb"
+          }
+        }
+      },
+      "observed": {
+        "mihomo": "echoed",
+        "rust": "echoed"
+      },
+      "fakeIp": {
+        "mihomo": "198.18.0.4",
+        "rust": "198.18.0.4"
+      },
+      "status": "pass"
+    }
+  ],
+  "exitOk": true
+}

@@ -1,0 +1,1 @@
+{"summary":{"scenarios":12,"pass":12,"differ":0,"startupFailed":0},"effective":"sniffer (T7) is the only top-level key rejected by name; removing it makes both desktop and Android artifacts load","exitOk":true}

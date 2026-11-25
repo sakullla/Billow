@@ -1,0 +1,1125 @@
+    Blocking waiting for file lock on package cache
+    Updating crates.io index
+    Blocking waiting for file lock on package cache
+ Downloading crates ...
+  Downloaded alloc-no-stdlib v3.0.0
+  Downloaded adler2 v2.0.1
+  Downloaded alloc-stdlib v0.3.0
+  Downloaded age-core v0.12.0
+  Downloaded allocator-api2 v0.2.21
+  Downloaded dirs v6.0.0
+  Downloaded dirs-sys v0.5.0
+  Downloaded cssparser-macros v0.7.1
+  Downloaded fluent-langneg v0.13.1
+  Downloaded darling_macro v0.24.1
+  Downloaded http-body v1.1.0
+  Downloaded dirs v7.0.0
+  Downloaded dpi v0.1.2
+  Downloaded foreign-types-macros v0.2.4
+  Downloaded core-graphics-types v0.2.0
+  Downloaded foreign-types v0.5.0
+  Downloaded foreign-types-shared v0.3.1
+  Downloaded find-crate v0.6.3
+  Downloaded bit-set v0.8.0
+  Downloaded form_urlencoded v1.2.2
+  Downloaded i18n-embed-impl v0.8.4
+  Downloaded dunce v1.0.5
+  Downloaded i18n-config v0.4.8
+  Downloaded cargo-platform v0.1.9
+  Downloaded fluent v0.17.0
+  Downloaded dtoa-short v0.3.5
+  Downloaded byteorder-lite v0.1.0
+  Downloaded embed_plist v1.2.2
+  Downloaded deranged v0.5.9
+  Downloaded fastrand v2.5.0
+  Downloaded cookie-factory v0.3.3
+  Downloaded dtoa v1.0.11
+  Downloaded embed-resource v3.0.12
+  Downloaded i18n-embed-fl v0.10.1
+  Downloaded fluent-syntax v0.12.0
+  Downloaded cexpr v0.6.0
+  Downloaded core-foundation v0.9.4
+  Downloaded either v1.19.0
+  Downloaded displaydoc v0.2.7
+  Downloaded erased-serde v0.4.11
+  Downloaded hyper-rustls v0.27.10
+  Downloaded fdeflate v0.3.7
+  Downloaded glob v0.3.4
+  Downloaded bit-vec v0.8.0
+  Downloaded http-body-util v0.1.5
+  Downloaded bs58 v0.5.1
+  Downloaded cargo_metadata v0.19.2
+  Downloaded serde-untagged v0.1.9
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded block2 v0.6.2
+  Downloaded cargo_toml v1.0.1
+  Downloaded dyn-clone v1.0.20
+  Downloaded foldhash v0.2.0
+  Downloaded sync_wrapper v1.0.2
+  Downloaded camino v1.2.6
+  Downloaded convert_case v0.12.0
+  Downloaded core-graphics v0.25.0
+  Downloaded iana-time-zone v0.1.65
+  Downloaded filetime v0.2.29
+  Downloaded fluent-bundle v0.16.0
+  Downloaded i18n-embed v0.16.0
+  Downloaded auto-launch v0.6.0
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded cookie v0.18.2
+  Downloaded hybrid-array v0.2.3
+  Downloaded ctor v1.0.14
+  Downloaded shlex v1.3.0
+  Downloaded bytemuck v1.25.2
+  Downloaded crc32fast v1.5.5
+  Downloaded keccak v0.1.6
+  Downloaded clang-sys v1.9.1
+  Downloaded darling v0.24.1
+  Downloaded httparse v1.10.1
+  Downloaded cssparser v0.37.0
+  Downloaded dispatch2 v0.3.1
+  Downloaded libloading v0.8.9
+  Downloaded ml-kem v0.2.3
+  Downloaded bytes v1.12.1
+  Downloaded basic-toml v0.1.10
+  Downloaded base64 v0.22.1
+  Downloaded ico v0.6.0
+  Downloaded crossbeam-channel v0.5.17
+  Downloaded darling_core v0.24.1
+  Downloaded utf8_iter v1.1.0
+  Downloaded uuid v1.29.2
+  Downloaded want v0.3.2
+  Downloaded arc-swap v1.9.5
+  Downloaded base64 v0.21.7
+  Downloaded base64 v0.23.1
+  Downloaded bech32 v0.11.1
+  Downloaded cfb v0.14.0
+  Downloaded tower-service v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded type-map v0.5.1
+  Downloaded web_atoms v0.2.6
+  Downloaded webpki-roots v0.26.11
+  Downloaded xattr v1.7.0
+  Downloaded yoke-derive v0.8.4
+  Downloaded zerofrom v0.1.8
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded ident_case v1.0.1
+  Downloaded idna_adapter v1.2.2
+  Downloaded intl-memoizer v0.5.3
+  Downloaded io_tee v0.1.1
+  Downloaded md-5 v0.10.6
+  Downloaded derive_more v2.1.1
+  Downloaded tower-layer v0.3.3
+  Downloaded unic-langid v0.9.6
+  Downloaded kem v0.3.0-pre.0
+  Downloaded icu_locale_core v2.4.0
+  Downloaded intl_pluralrules v7.0.2
+  Downloaded json-patch v4.2.0
+  Downloaded mime v0.3.18
+  Downloaded toml_writer v1.2.0+spec-1.1.0
+  Downloaded utf_types v1.0.0
+  Downloaded web-time v1.1.0
+  Downloaded zerovec-derive v0.11.7
+  Downloaded infer v0.22.0
+  Downloaded markup5ever v0.39.0
+  Downloaded tauri-build v2.7.4
+  Downloaded tauri-macros v2.7.4
+  Downloaded time-core v0.1.9
+  Downloaded toml_datetime v1.1.3+spec-1.1.0
+  Downloaded lazy_static v1.5.1
+  Downloaded mime_guess v2.0.5
+  Downloaded minisign-verify v0.3.0
+  Downloaded typeid v1.0.3
+  Downloaded tauri-winres v0.3.7
+  Downloaded tinystr v0.8.5
+  Downloaded unicase v2.10.0
+  Downloaded zeroize v1.9.1
+  Downloaded ipnet v2.12.2
+  Downloaded walkdir v2.5.0
+  Downloaded tendril v0.5.1
+  Downloaded tauri-codegen v2.7.4
+  Downloaded tempfile v3.27.0
+  Downloaded dom_query v0.28.0
+  Downloaded bumpalo v3.20.4
+  Downloaded tauri-runtime v2.12.2
+  Downloaded toml_parser v1.1.5+spec-1.1.0
+  Downloaded urlpattern v0.6.0
+  Downloaded writeable v0.6.4
+  Downloaded jsonptr v0.7.1
+  Downloaded litemap v0.8.3
+  Downloaded derive_more-impl v2.1.1
+  Downloaded flate2 v1.1.11
+  Downloaded hashbrown v0.12.3
+  Downloaded html5ever v0.39.0
+  Downloaded icu_collections v2.4.0
+  Downloaded icu_normalizer_data v2.4.0
+  Downloaded tauri-plugin v2.7.2
+  Downloaded tauri-plugin-autostart v2.7.0
+  Downloaded tauri-plugin-opener v2.7.3
+  Downloaded tauri-plugin-process v2.4.0
+  Downloaded tauri-runtime-wry v2.12.3
+  Downloaded time-macros v0.2.32
+  Downloaded toml v0.5.11
+  Downloaded toml v1.2.1+spec-1.1.0
+  Downloaded yoke v0.8.4
+  Downloaded zopfli v0.8.4
+  Downloaded indexmap v1.9.3
+  Downloaded objc2-io-surface v0.3.2
+  Downloaded tar v0.4.46
+  Downloaded toml_edit v0.25.19+spec-1.1.0
+  Downloaded icu_provider v2.4.0
+  Downloaded miniz_oxide v0.9.1
+  Downloaded hyper-util v0.1.21
+  Downloaded tray-icon v0.25.1
+  Downloaded cc v1.11.2
+  Downloaded age v0.12.1
+  Downloaded phf_shared v0.13.1
+  Downloaded tauri-plugin-updater v2.14.1
+  Downloaded minimal-lexical v0.2.1
+  Downloaded unic-langid-impl v0.9.6
+  Downloaded url v2.5.8
+  Downloaded miniz_oxide v0.8.9
+  Downloaded zerotrie v0.2.5
+  Downloaded hyper v1.12.0
+  Downloaded tauri-plugin-deep-link v2.6.3
+  Downloaded tower v0.5.3
+  Downloaded unicode-segmentation v1.13.3
+  Downloaded keyboard-types v0.8.3
+  Downloaded zerovec v0.11.9
+  Downloaded zip v2.6.1
+  Downloaded open v5.4.5
+  Downloaded selectors v0.38.0
+  Downloaded ureq v2.12.1
+  Downloaded jiff-core v0.1.5
+  Downloaded itertools v0.13.0
+  Downloaded raw-window-handle v0.6.2
+  Downloaded tauri-utils v2.10.2
+  Downloaded icu_properties v2.4.0
+  Downloaded idna v1.1.0
+  Downloaded nom v7.1.3
+  Downloaded bindgen v0.72.1
+  Downloaded brotli-decompressor v6.3.1
+  Downloaded chrono v0.4.45
+  Downloaded serde_with v3.24.0
+  Downloaded tower-http v0.6.11
+  Downloaded icu_properties_data v2.4.0
+  Downloaded objc2-core-foundation v0.3.2
+  Downloaded objc2-web-kit v0.3.2
+  Downloaded prettyplease v0.2.37
+  Downloaded ref-cast v1.0.27
+  Downloaded webpki-roots v1.0.12
+  Downloaded winnow v1.0.5
+  Downloaded wry v0.57.2
+  Downloaded zlib-rs v0.6.8
+  Downloaded png v0.18.1
+  Downloaded rquickjs-core v0.14.0
+  Downloaded time v0.3.55
+  Downloaded tauri v2.12.5
+  Downloaded image v0.25.10
+  Downloaded jiff v0.2.43
+  Downloaded icu_normalizer v2.4.0
+  Downloaded brotli v9.1.1
+  Downloaded window-vibrancy v0.8.1
+  Downloaded rquickjs-macro v0.14.0
+  Downloaded serialize-to-javascript v0.1.2
+  Downloaded serialize-to-javascript-impl v0.1.2
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded powerfmt v0.2.1
+  Downloaded precomputed-hash v0.1.1
+  Downloaded proc-macro-crate v3.5.0
+  Downloaded rust-embed-utils v8.14.0
+  Downloaded schemars v1.2.3
+  Downloaded schemars_derive v0.8.22
+  Downloaded secrecy v0.10.3
+  Downloaded smallvec v1.16.5
+  Downloaded swift-rs v1.0.9
+  Downloaded osakit v0.3.1
+  Downloaded hpke v0.12.0
+  Downloaded ref-cast-impl v1.0.27
+  Downloaded moxcms v0.8.1
+  Downloaded muda v0.20.0
+  Downloaded objc2-exception-helper v0.1.1
+  Downloaded objc2-service-management v0.3.2
+  Downloaded percent-encoding v2.3.2
+  Downloaded pin-project-internal v1.1.13
+  Downloaded pin-project-lite v0.2.17
+  Downloaded regex v1.13.1
+  Downloaded quick-xml v0.42.0
+  Downloaded serde_repr v0.1.21
+  Downloaded simd-adler32 v0.3.10
+  Downloaded servo_arc v0.4.3
+  Downloaded regex-automata v0.4.18
+  Downloaded new_debug_unreachable v1.0.6
+  Downloaded objc2-osa-kit v0.3.2
+  Downloaded objc2-foundation v0.3.2
+  Downloaded pin-project v1.1.13
+  Downloaded phf_macros v0.13.1
+  Downloaded sha3 v0.10.9
+  Downloaded relative-path v2.0.3
+  Downloaded regex-syntax v0.8.11
+  Downloaded same-file v1.0.6
+  Downloaded smappservice-rs v0.1.3
+  Downloaded num-conv v0.2.2
+  Downloaded schemars v0.8.22
+  Downloaded siphasher v1.0.4
+  Downloaded objc2-core-graphics v0.3.2
+  Downloaded nom v8.0.0
+  Downloaded objc2 v0.6.5
+  Downloaded objc2-app-kit v0.3.2
+  Downloaded rust-embed-impl v8.14.0
+  Downloaded phf_codegen v0.13.1
+  Downloaded rustix v1.1.6
+  Downloaded objc2-encode v4.1.0
+  Downloaded nix v0.31.3
+  Downloaded rust-embed v8.14.0
+  Downloaded proc-macro-error-attr3 v3.1.1
+  Downloaded proc-macro-error3 v3.1.1
+  Downloaded rquickjs-sys v0.14.0
+  Downloaded serde_derive_internals v0.29.1
+  Downloaded serde_spanned v1.1.3
+  Downloaded system-configuration-sys v0.6.0
+  Downloaded phf_generator v0.13.1
+  Downloaded plist v1.10.3
+  Downloaded tao v0.37.2
+  Downloaded static_vcruntime v3.0.0
+  Downloaded string_cache v0.9.0
+  Downloaded phf v0.13.1
+  Downloaded os_info v3.15.0
+  Downloaded reqwest v0.13.5
+  Downloaded rquickjs v0.14.0
+  Downloaded pxfm v0.1.30
+  Downloaded potential_utf v0.1.6
+  Downloaded serde_with_macros v3.24.0
+  Downloaded synstructure v0.14.0
+  Downloaded self_cell v1.3.0
+  Downloaded option-ext v0.2.0
+  Downloaded schemars v0.9.0
+  Downloaded system-configuration v0.7.0
+  Downloaded objc2-quartz-core v0.3.2
+  Downloaded rustls-platform-verifier v0.7.1
+  Downloaded objc2-security v0.3.2
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.191
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling find-msvc-tools v0.1.15
+   Compiling shlex v2.0.1
+   Compiling typenum v1.20.1
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde v1.0.229
+   Compiling cc v1.11.2
+   Compiling version_check v0.9.5
+   Compiling itoa v1.0.19
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling syn v3.0.10
+   Compiling syn v2.0.119
+   Compiling log v0.4.35
+   Compiling utf_types v1.0.0
+   Compiling utf8_iter v1.1.0
+   Compiling thiserror v2.0.21
+   Compiling siphasher v1.0.4
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling phf_shared v0.13.1
+   Compiling getrandom v0.2.17
+   Compiling smallvec v1.16.5
+   Compiling fastrand v2.5.0
+   Compiling zmij v1.0.23
+   Compiling bytes v1.12.1
+   Compiling phf_generator v0.13.1
+   Compiling parking_lot_core v0.9.12
+   Compiling same-file v1.0.6
+   Compiling rustc-hash v2.1.3
+   Compiling walkdir v2.5.0
+   Compiling scopeguard v1.2.0
+   Compiling equivalent v1.0.3
+   Compiling lock_api v0.4.14
+   Compiling strsim v0.11.1
+   Compiling rand_core v0.6.4
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling phf_codegen v0.13.1
+   Compiling generic-array v0.14.7
+   Compiling powerfmt v0.2.1
+   Compiling http v1.5.0
+   Compiling winnow v1.0.5
+   Compiling ident_case v1.0.1
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.2
+   Compiling deranged v0.5.9
+   Compiling typeid v1.0.3
+   Compiling serde_json v1.0.154
+   Compiling subtle v2.6.1
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling semver v1.0.28
+   Compiling parking_lot v0.12.5
+   Compiling base64 v0.23.1
+   Compiling getrandom v0.4.3
+   Compiling toml_writer v1.2.0+spec-1.1.0
+   Compiling objc2-encode v4.1.0
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling erased-serde v0.4.11
+   Compiling alloc-stdlib v0.3.0
+   Compiling objc2-exception-helper v0.1.1
+   Compiling aho-corasick v1.1.5
+   Compiling web-time v1.1.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling fnv v1.0.7
+   Compiling regex-syntax v0.8.11
+   Compiling string_cache_codegen v0.6.1
+   Compiling precomputed-hash v0.1.1
+   Compiling quick-xml v0.42.0
+   Compiling web_atoms v0.2.6
+   Compiling anyhow v1.0.104
+   Compiling objc2 v0.6.5
+   Compiling string_cache v0.9.0
+   Compiling serde_spanned v1.1.3
+   Compiling toml_datetime v1.1.3+spec-1.1.0
+   Compiling percent-encoding v2.3.2
+   Compiling dtoa v1.0.11
+   Compiling dunce v1.0.5
+   Compiling dtoa-short v0.3.5
+   Compiling form_urlencoded v1.2.2
+   Compiling toml v1.2.1+spec-1.1.0
+   Compiling uuid v1.29.2
+   Compiling tendril v0.5.1
+   Compiling indexmap v1.9.3
+   Compiling selectors v0.38.0
+   Compiling glob v0.3.4
+   Compiling camino v1.2.6
+   Compiling ctor v1.0.14
+   Compiling serde_derive_internals v0.29.1
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling regex-automata v0.4.18
+   Compiling servo_arc v0.4.3
+   Compiling bit-vec v0.8.0
+   Compiling hashbrown v0.12.3
+   Compiling schemars v0.8.22
+   Compiling zeroize_derive v1.5.0
+   Compiling phf_macros v0.13.1
+   Compiling derive_more-impl v2.1.1
+   Compiling hashbrown v0.17.1
+   Compiling zeroize v1.9.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.7
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling phf v0.13.1
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.4
+   Compiling zerovec v0.11.9
+   Compiling zerotrie v0.2.5
+   Compiling cssparser-macros v0.7.1
+   Compiling markup5ever v0.39.0
+   Compiling crypto-common v0.1.7
+   Compiling derive_more v2.1.1
+   Compiling html5ever v0.39.0
+   Compiling cssparser v0.37.0
+   Compiling indexmap v2.14.2
+   Compiling darling_macro v0.24.1
+   Compiling darling v0.24.1
+   Compiling serde_with_macros v3.24.0
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.4.0
+   Compiling icu_locale_core v2.4.0
+   Compiling regex v1.13.1
+   Compiling schemars_derive v0.8.22
+   Compiling bit-set v0.8.0
+   Compiling cfb v0.14.0
+   Compiling time v0.3.55
+   Compiling icu_provider v2.4.0
+   Compiling brotli-decompressor v6.3.1
+   Compiling base64 v0.21.7
+   Compiling icu_normalizer v2.4.0
+   Compiling icu_properties v2.4.0
+   Compiling jsonptr v0.7.1
+   Compiling swift-rs v1.0.9
+   Compiling cargo-platform v0.1.9
+   Compiling dyn-clone v1.0.20
+   Compiling foldhash v0.2.0
+   Compiling tauri-utils v2.10.2
+   Compiling dom_query v0.28.0
+   Compiling json-patch v4.2.0
+   Compiling cargo_metadata v0.19.2
+   Compiling infer v0.22.0
+   Compiling serde-untagged v0.1.9
+   Compiling serde_with v3.24.0
+   Compiling objc2-core-foundation v0.3.2
+   Compiling block2 v0.6.2
+   Compiling brotli v9.1.1
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling option-ext v0.2.0
+   Compiling plist v1.10.3
+   Compiling rustc_version v0.4.1
+   Compiling pin-project-lite v0.2.17
+   Compiling url v2.5.8
+   Compiling simd-adler32 v0.3.10
+   Compiling crc32fast v1.5.5
+   Compiling core-foundation-sys v0.8.7
+   Compiling objc2-foundation v0.3.2
+   Compiling adler2 v2.0.1
+   Compiling once_cell v1.21.4
+   Compiling miniz_oxide v0.9.1
+   Compiling urlpattern v0.6.0
+   Compiling embed-resource v3.0.12
+   Compiling dirs-sys v0.5.0
+   Compiling futures-core v0.3.34
+   Compiling heck v0.5.0
+   Compiling flate2 v1.1.11
+   Compiling tauri-winres v0.3.7
+   Compiling dirs v7.0.0
+   Compiling cargo_toml v1.0.1
+   Compiling allocator-api2 v0.2.21
+   Compiling static_vcruntime v3.0.0
+   Compiling block-buffer v0.10.4
+   Compiling mio v1.2.5
+   Compiling socket2 v0.6.5
+   Compiling digest v0.10.7
+   Compiling miniz_oxide v0.8.9
+   Compiling tokio v1.54.1
+   Compiling fdeflate v0.3.7
+   Compiling hybrid-array v0.4.15
+   Compiling mime v0.3.18
+   Compiling futures-sink v0.3.34
+   Compiling core-foundation v0.10.1
+   Compiling time-macros v0.2.32
+   Compiling crossbeam-utils v0.8.23
+   Compiling futures-channel v0.3.34
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling dpi v0.1.2
+   Compiling unic-langid-impl v0.9.6
+   Compiling futures-macro v0.3.34
+   Compiling cpufeatures v0.2.17
+   Compiling slab v0.4.12
+   Compiling const-oid v0.10.3
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling unic-langid v0.9.6
+   Compiling futures-util v0.3.34
+   Compiling digest v0.11.3
+   Compiling inout v0.1.4
+   Compiling ring v0.17.14
+   Compiling cookie v0.18.2
+   Compiling raw-window-handle v0.6.2
+   Compiling cipher v0.4.4
+   Compiling crossbeam-channel v0.5.17
+   Compiling rustls-pki-types v1.16.0
+   Compiling foreign-types-macros v0.2.4
+   Compiling num-traits v0.2.19
+   Compiling type-map v0.5.1
+   Compiling unicase v2.10.0
+   Compiling foreign-types-shared v0.3.1
+   Compiling foreign-types v0.5.0
+   Compiling mime_guess v2.0.5
+   Compiling wry v0.57.2
+   Compiling core-graphics-types v0.2.0
+   Compiling png v0.18.1
+   Compiling hmac v0.12.1
+   Compiling cpufeatures v0.3.1
+   Compiling muda v0.20.0
+   Compiling byteorder v1.5.0
+   Compiling tauri-runtime v2.12.2
+   Compiling untrusted v0.9.0
+   Compiling sha2 v0.11.1
+   Compiling ico v0.6.0
+   Compiling sha2 v0.10.9
+   Compiling core-graphics v0.25.0
+   Compiling dispatch2 v0.3.1
+   Compiling keyboard-types v0.8.3
+   Compiling universal-hash v0.5.1
+   Compiling fluent-syntax v0.12.0
+   Compiling pxfm v0.1.30
+   Compiling tauri-runtime-wry v2.12.3
+   Compiling thiserror v1.0.69
+   Compiling rustls v0.23.46
+   Compiling const-oid v0.9.6
+   Compiling opaque-debug v0.3.1
+   Compiling getrandom v0.3.4
+   Compiling tray-icon v0.25.1
+   Compiling self_cell v1.3.0
+   Compiling der v0.7.10
+   Compiling rustls-webpki v0.103.17
+   Compiling rust-embed-utils v8.14.0
+   Compiling objc2-core-graphics v0.3.2
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling thiserror-impl v1.0.69
+   Compiling http-body v1.1.0
+   Compiling ff v0.13.1
+   Compiling httparse v1.10.1
+   Compiling zerocopy v0.8.63
+   Compiling rustversion v1.0.23
+   Compiling byteorder-lite v0.1.0
+   Compiling bytemuck v1.25.2
+   Compiling base16ct v0.2.0
+   Compiling system-configuration-sys v0.6.0
+   Compiling sec1 v0.7.3
+   Compiling tauri-plugin v2.7.2
+   Compiling tauri-build v2.7.4
+   Compiling tauri-codegen v2.7.4
+   Compiling group v0.13.0
+   Compiling serialize-to-javascript v0.1.2
+   Compiling rust-embed-impl v8.14.0
+   Compiling hkdf v0.12.4
+   Compiling tracing-core v0.1.36
+   Compiling basic-toml v0.1.10
+   Compiling moxcms v0.8.1
+   Compiling toml v0.5.11
+   Compiling crypto-bigint v0.5.5
+   Compiling serde_repr v0.1.21
+   Compiling tracing-attributes v0.1.31
+   Compiling tower-service v0.3.3
+   Compiling try-lock v0.2.5
+   Compiling cfg_aliases v0.2.2
+   Compiling embed_plist v1.2.2
+   Compiling rustix v1.1.6
+   Compiling tracing v0.1.44
+   Compiling elliptic-curve v0.13.8
+   Compiling nix v0.31.3
+   Compiling want v0.3.2
+   Compiling find-crate v0.6.3
+   Compiling i18n-config v0.4.8
+   Compiling polyval v0.6.2
+   Compiling intl-memoizer v0.5.3
+   Compiling fluent-langneg v0.13.1
+   Compiling intl_pluralrules v7.0.2
+   Compiling core-foundation v0.9.4
+   Compiling aead v0.5.2
+   Compiling errno v0.3.15
+   Compiling atomic-waker v1.1.2
+   Compiling hyper v1.12.0
+   Compiling fluent-bundle v0.16.0
+   Compiling objc2-quartz-core v0.3.2
+   Compiling objc2-app-kit v0.3.2
+   Compiling image v0.25.10
+   Compiling system-configuration v0.7.0
+   Compiling ghash v0.5.1
+   Compiling i18n-embed-impl v0.8.4
+   Compiling arc-swap v1.9.5
+   Compiling tauri v2.12.5
+   Compiling tauri-macros v2.7.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling primeorder v0.13.6
+   Compiling poly1305 v0.8.0
+   Compiling futures-executor v0.3.34
+   Compiling chacha20 v0.9.1
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling sync_wrapper v1.0.2
+   Compiling security-framework-sys v2.17.0
+   Compiling objc2-security v0.3.2
+   Compiling curve25519-dalek v4.1.3
+   Compiling rquickjs-sys v0.14.0
+   Compiling tower-layer v0.3.3
+   Compiling ipnet v2.12.2
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling objc2-service-management v0.3.2
+   Compiling security-framework v3.7.0
+   Compiling aes-gcm v0.10.3
+   Compiling chacha20poly1305 v0.10.1
+   Compiling futures v0.3.34
+   Compiling p256 v0.13.2
+   Compiling rand_chacha v0.3.1
+   Compiling tauri-plugin-updater v2.14.1
+   Compiling tauri-plugin-process v2.4.0
+   Compiling tauri-plugin-deep-link v2.6.3
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling tauri-plugin-opener v2.7.3
+   Compiling fluent v0.17.0
+   Compiling tokio-rustls v0.26.6
+   Compiling rust-embed v8.14.0
+   Compiling keccak v0.1.6
+   Compiling proc-macro-error-attr3 v3.1.1
+   Compiling base64 v0.22.1
+   Compiling proc-macro-error3 v3.1.1
+   Compiling hyper-rustls v0.27.10
+   Compiling sha3 v0.10.9
+   Compiling i18n-embed v0.16.0
+   Compiling rand v0.8.8
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling os_info v3.15.0
+   Compiling hpke v0.12.0
+   Compiling cookie-factory v0.3.3
+   Compiling smappservice-rs v0.1.3
+   Compiling tower-http v0.6.11
+   Compiling xattr v1.7.0
+   Compiling http-body-util v0.1.5
+   Compiling pbkdf2 v0.12.2
+   Compiling tokio-util v0.7.20
+   Compiling webpki-roots v1.0.12
+   Compiling salsa20 v0.10.2
+   Compiling dirs v6.0.0
+   Compiling kem v0.3.0-pre.0
+   Compiling secrecy v0.10.3
+   Compiling pin-project-internal v1.1.13
+   Compiling filetime v0.2.29
+   Compiling hybrid-array v0.2.3
+   Compiling nom v8.0.0
+   Compiling io_tee v0.1.1
+   Compiling bumpalo v3.20.4
+   Compiling zip v2.6.1
+   Compiling bech32 v0.11.1
+   Compiling x25519-dalek v2.0.1
+   Compiling tempfile v3.27.0
+   Compiling zopfli v0.8.4
+   Compiling reqwest v0.13.5
+   Compiling pin-project v1.1.13
+   Compiling tar v0.4.46
+   Compiling scrypt v0.11.0
+   Compiling auto-launch v0.6.0
+   Compiling webpki-roots v0.26.11
+   Compiling i18n-embed-fl v0.10.1
+   Compiling rquickjs-core v0.14.0
+   Compiling ml-kem v0.2.3
+   Compiling billow v0.1.33 (/Users/yanggeng/github/Billow/src-tauri)
+   Compiling open v5.4.5
+   Compiling ryu v1.0.23
+   Compiling minisign-verify v0.3.0
+   Compiling unsafe-libyaml v0.2.11
+   Compiling lazy_static v1.5.1
+   Compiling ureq v2.12.1
+   Compiling serde_yaml v0.9.34+deprecated (/Users/yanggeng/github/Billow/src-tauri/vendor/serde_yaml)
+   Compiling md-5 v0.10.6
+   Compiling ruzstd v0.8.3
+   Compiling rquickjs v0.14.0
+   Compiling objc2-web-kit v0.3.2
+   Compiling tao v0.37.2
+   Compiling window-vibrancy v0.8.1
+   Compiling objc2-osa-kit v0.3.2
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/serde_yaml/src/mapping.rs:81:18
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry {
+   |                  ^^^^^^^^^               ^^^^^ the same lifetime is hidden here
+   |                  |
+   |                  the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry<'_> {
+   |                                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:188:17
+    |
+188 |     pub fn iter(&self) -> Iter {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+188 |     pub fn iter(&self) -> Iter<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:197:21
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut {
+    |                     ^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut<'_> {
+    |                                          ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:204:17
+    |
+204 |     pub fn keys(&self) -> Keys {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+204 |     pub fn keys(&self) -> Keys<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:218:19
+    |
+218 |     pub fn values(&self) -> Values {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+218 |     pub fn values(&self) -> Values<'_> {
+    |                                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:225:23
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut {
+    |                       ^^^^^^^^^     ^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut<'_> {
+    |                                              ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/number.rs:555:34
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected {
+    |                                  ^^^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+    |                                  |
+    |                                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected<'_> {
+    |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> vendor/serde_yaml/src/value/de.rs:1231:30
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected {
+     |                              ^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+     |                              |
+     |                              the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected<'_> {
+     |                                                  ++++
+
+   Compiling age-core v0.12.0
+   Compiling osakit v0.3.1
+   Compiling age v0.12.1
+warning: `serde_yaml` (lib) generated 8 warnings (run `cargo fix --lib -p serde_yaml` to apply 8 suggestions)
+warning: function `seed` is never used
+  --> src/bundled_geo.rs:99:8
+   |
+99 | pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_delays` is never used
+   --> src/nodes.rs:666:8
+    |
+666 | pub fn fetch_delays(
+    |        ^^^^^^^^^^^^
+
+warning: function `fetch_delays_with_progress` is never used
+   --> src/nodes.rs:675:8
+    |
+675 | pub fn fetch_delays_with_progress(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_installed`, `matching_installed`, and `test_group` are never used
+    --> src/profile.rs:2574:12
+     |
+2421 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+2574 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+2596 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+4391 |     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+     |            ^^^^^^^^^^
+
+warning: function `filter_installed` is never used
+   --> src/takeover.rs:228:8
+    |
+228 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+    --> src/takeover.rs:1107:12
+     |
+1093 | impl HostVpn {
+     | ------------ methods in this implementation
+...
+1107 |     pub fn calls(&self) -> &[String] {
+     |            ^^^^^
+...
+1111 |     pub fn last_excluded(&self) -> &[String] {
+     |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+    --> src/takeover.rs:1141:12
+     |
+1141 | pub struct RecordingVpn {
+     |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+    --> src/takeover.rs:1150:12
+     |
+1149 | impl RecordingVpn {
+     | ----------------- associated function in this implementation
+1150 |     pub fn granted() -> Self {
+     |            ^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow` (lib test) generated 1 warning
+warning: `billow` (lib) generated 9 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 01s
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/src-tauri-target/debug/deps/billow_lib-a348cec30b23a6a2)
+
+running 1 test
+test profile::tests::packaged_engines_switch_both_ways_with_a_marked_request ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 259 filtered out; finished in 7.89s
+
+     Running unittests src/main.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/src-tauri-target/debug/deps/billow-59cf639d95aee454)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+switch_exit=0
+    Blocking waiting for file lock on shared package cache
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> vendor/serde_yaml/src/mapping.rs:81:18
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry {
+   |                  ^^^^^^^^^               ^^^^^ the same lifetime is hidden here
+   |                  |
+   |                  the lifetime is elided here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+81 |     pub fn entry(&mut self, k: Value) -> Entry<'_> {
+   |                                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:188:17
+    |
+188 |     pub fn iter(&self) -> Iter {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+188 |     pub fn iter(&self) -> Iter<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:197:21
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut {
+    |                     ^^^^^^^^^     ^^^^^^^ the same lifetime is hidden here
+    |                     |
+    |                     the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+197 |     pub fn iter_mut(&mut self) -> IterMut<'_> {
+    |                                          ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:204:17
+    |
+204 |     pub fn keys(&self) -> Keys {
+    |                 ^^^^^     ^^^^ the same lifetime is hidden here
+    |                 |
+    |                 the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+204 |     pub fn keys(&self) -> Keys<'_> {
+    |                               ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:218:19
+    |
+218 |     pub fn values(&self) -> Values {
+    |                   ^^^^^     ^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+218 |     pub fn values(&self) -> Values<'_> {
+    |                                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/mapping.rs:225:23
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut {
+    |                       ^^^^^^^^^     ^^^^^^^^^ the same lifetime is hidden here
+    |                       |
+    |                       the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+225 |     pub fn values_mut(&mut self) -> ValuesMut<'_> {
+    |                                              ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/serde_yaml/src/number.rs:555:34
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected {
+    |                                  ^^^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+    |                                  |
+    |                                  the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+555 | pub(crate) fn unexpected(number: &Number) -> Unexpected<'_> {
+    |                                                        ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> vendor/serde_yaml/src/value/de.rs:1231:30
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected {
+     |                              ^^^^^     ^^^^^^^^^^ the same lifetime is hidden here
+     |                              |
+     |                              the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1231 |     pub(crate) fn unexpected(&self) -> Unexpected<'_> {
+     |                                                  ++++
+
+warning: `serde_yaml` (lib) generated 8 warnings (run `cargo fix --lib -p serde_yaml` to apply 8 suggestions)
+warning: function `seed` is never used
+  --> src/bundled_geo.rs:99:8
+   |
+99 | pub fn seed(apk: &Path, home: &Path) -> Result<(), String> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_delays` is never used
+   --> src/nodes.rs:666:8
+    |
+666 | pub fn fetch_delays(
+    |        ^^^^^^^^^^^^
+
+warning: function `fetch_delays_with_progress` is never used
+   --> src/nodes.rs:675:8
+    |
+675 | pub fn fetch_delays_with_progress(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `set_installed`, `matching_installed`, and `test_group` are never used
+    --> src/profile.rs:2574:12
+     |
+2421 | impl ProfileBook {
+     | ---------------- methods in this implementation
+...
+2574 |     pub fn set_installed(&mut self, apps: Vec<crate::takeover::InstalledApp>) {
+     |            ^^^^^^^^^^^^^
+...
+2596 |     pub fn matching_installed(&self, query: &str) -> Vec<&crate::takeover::InstalledApp> {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+4391 |     pub fn test_group(&mut self, group: &str, kernel: &mut dyn KernelLaunch) -> ProfileSnapshot {
+     |            ^^^^^^^^^^
+
+warning: function `filter_installed` is never used
+   --> src/takeover.rs:228:8
+    |
+228 | pub fn filter_installed<'a>(apps: &'a [InstalledApp], query: &str) -> Vec<&'a InstalledApp> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+
+warning: methods `calls` and `last_excluded` are never used
+    --> src/takeover.rs:1107:12
+     |
+1093 | impl HostVpn {
+     | ------------ methods in this implementation
+...
+1107 |     pub fn calls(&self) -> &[String] {
+     |            ^^^^^
+...
+1111 |     pub fn last_excluded(&self) -> &[String] {
+     |            ^^^^^^^^^^^^^
+
+warning: struct `RecordingVpn` is never constructed
+    --> src/takeover.rs:1141:12
+     |
+1141 | pub struct RecordingVpn {
+     |            ^^^^^^^^^^^^
+
+warning: associated function `granted` is never used
+    --> src/takeover.rs:1150:12
+     |
+1149 | impl RecordingVpn {
+     | ----------------- associated function in this implementation
+1150 |     pub fn granted() -> Self {
+     |            ^^^^^^^
+
+warning: function `set_system_proxy` is never used
+   --> src/takeover.rs:395:8
+    |
+395 | pub fn set_system_proxy(
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `billow` (lib) generated 9 warnings
+warning: `billow` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.73s
+     Running unittests src/lib.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/src-tauri-target/debug/deps/billow_lib-a348cec30b23a6a2)
+
+running 1 test
+test profile::tests::desktop_packaged_runtime_starts_offline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 259 filtered out; finished in 5.70s
+
+     Running unittests src/main.rs (/private/var/folders/vy/lszwy3c52plgsr4_19b2pxvh0000gn/T/t8-a2.c0y7Pm/src-tauri-target/debug/deps/billow-59cf639d95aee454)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+offline_exit=0
