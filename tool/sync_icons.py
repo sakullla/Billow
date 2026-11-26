@@ -1,7 +1,7 @@
 """Derive the tray, web and Android assets after `tauri icon assets/icon-manifest.json`.
 
-The in-app logo (public/brand-mark.png) is written by generate_app_icons.py;
-the UI draws the theme-aware tile behind it, so it is not derived here.
+generate_app_icons.py writes the in-app logo to public/brand-mark.svg.
+The UI draws the theme-aware tile behind it.
 """
 from pathlib import Path
 import shutil

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="public/icon.png" width="96" alt="Billow" />
+<img src="assets/icon-desktop.png" width="96" alt="Billow" />
 
 # Billow
 
