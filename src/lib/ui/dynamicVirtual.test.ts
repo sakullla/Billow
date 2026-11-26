@@ -1,5 +1,7 @@
 import { nextTick, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
+import { createDemoBackend } from '../demo'
+import { createStore } from '../store'
 import { useDynamicVirtualList } from './dynamicVirtual'
 
 function makeContainer(clientHeight = 320, scrollTop = 0, scrollHeight = 0) {
@@ -133,6 +135,29 @@ describe('useDynamicVirtualList', () => {
     expect(list.heightOf(4)).toBe(32)
   })
 
+  it('prunes evicted keys during setItemHeight when ring buffer stays at fixed count', () => {
+    const baseKey = ref(0)
+    const count = ref(10)
+    const list = useDynamicVirtualList(count, {
+      estimateHeight: 32,
+      overscan: 2,
+      keyOf: (index) => baseKey.value + index,
+    })
+
+    // Measure key=0 as 96px, then rotate keys past the 2048 pruning threshold with fixed count=10
+    list.setItemHeight(0, 96)
+    expect(list.heightOf(0)).toBe(96)
+    for (let step = 1; step <= 2060; step++) {
+      baseKey.value = step
+      list.setItemHeight(0, 64)
+    }
+    // Current live key (2060) retains its measured height
+    expect(list.heightOf(0)).toBe(64)
+    // Evicted key (0) was pruned and falls back to estimateHeight (32)
+    baseKey.value = 0
+    expect(list.heightOf(0)).toBe(32)
+  })
+
   it('clamps window safely when list shrinks or refills from empty', async () => {
     const count = ref(100)
     const list = useDynamicVirtualList(count, { estimateHeight: 32, overscan: 2 })
@@ -153,5 +178,133 @@ describe('useDynamicVirtualList', () => {
     await nextTick()
     expect(list.scrollTop.value).toBe(0)
     expect(list.window.value.start).toBe(0)
+  })
+})
+
+describe('store cross-page diagnostic return state machine', () => {
+  it('preserves connectionReturn across connections -> rules -> resources -> rules -> connections', async () => {
+    const backend = createDemoBackend()
+    const store = createStore(backend)
+    await store.start()
+    try {
+      store.go('connections')
+      store.connectionReturn.value = {
+        sessionId: store.connectionSessionId.value,
+        targetPage: 'rules',
+        tab: 'active',
+        query: 'openai.com',
+        routeFilter: 'reject',
+        protocolFilter: 'tcp',
+        activeOnly: true,
+        quickProcess: 'curl',
+        quickHost: 'openai.com',
+        sortKey: 'time',
+        sortDir: 'desc',
+        listScrollTop: 120,
+        paused: false,
+        pausedAt: null,
+        frozenRows: [],
+        frozenIds: [],
+        frozenTotal: 0,
+        frozenUp: null,
+        frozenDown: null,
+        connectionKey: null,
+        detailFromClosed: false,
+        rulePolicy: 'DIRECT',
+      }
+
+      // Hop 1: connections -> rules
+      store.openRuleMatch({ target: 'openai.com', dstPort: 443, process: 'curl', fromConnections: true })
+      expect(store.page.value).toBe('rules')
+      expect(store.connectionReturn.value?.targetPage).toBe('rules')
+      expect(store.diagnosticTarget.value).toEqual({
+        kind: 'rule-match',
+        target: 'openai.com',
+        dstPort: 443,
+        process: 'curl',
+      })
+
+      // Hop 2: rules -> resources (saving ruleReturn first)
+      store.ruleReturn.value = {
+        sessionId: store.connectionSessionId.value,
+        profileId: store.snapshot.value.active_id,
+        targetPage: 'resources',
+        query: 'cn',
+        kindFilter: 'all',
+        proxyFilter: 'all',
+        disabledOnly: false,
+        listScrollTop: 64,
+        limit: 400,
+        matcherOpen: true,
+        matchTarget: 'openai.com',
+        matchPort: '443',
+        matchProcess: 'curl',
+        matchResult: null,
+      }
+      store.openProvider('rule', 'cn-domains')
+      expect(store.page.value).toBe('resources')
+      expect(store.ruleReturn.value?.targetPage).toBe('resources')
+      // connectionReturn MUST survive the nested rules -> resources hop
+      expect(store.connectionReturn.value?.query).toBe('openai.com')
+
+      // Return 1: resources -> rules
+      store.go('rules')
+      expect(store.page.value).toBe('rules')
+      expect(store.ruleReturn.value?.query).toBe('cn')
+      expect(store.connectionReturn.value?.query).toBe('openai.com')
+
+      // Return 2: rules -> connections
+      store.go('connections')
+      expect(store.page.value).toBe('connections')
+      expect(store.connectionReturn.value?.query).toBe('openai.com')
+      expect(store.ruleReturn.value).toBeNull()
+
+      // Navigating away to an unrelated page clears connectionReturn
+      store.go('settings')
+      expect(store.connectionReturn.value).toBeNull()
+    } finally {
+      store.stop()
+    }
+  })
+
+  it('increments connectionSessionId and clears ruleReturn/diagnosticTarget when switching profile while connected', async () => {
+    const backend = createDemoBackend()
+    const store = createStore(backend)
+    await store.start()
+    try {
+      await store.connect()
+      expect(store.snapshot.value.connected).toBe(true)
+      const beforeSession = store.connectionSessionId.value
+      const other = store.snapshot.value.profiles.find((p) => !p.current)
+      expect(other).toBeDefined()
+
+      store.ruleReturn.value = {
+        sessionId: beforeSession,
+        profileId: store.snapshot.value.active_id,
+        targetPage: 'resources',
+        query: '',
+        kindFilter: 'all',
+        proxyFilter: 'all',
+        disabledOnly: false,
+        listScrollTop: 0,
+        limit: 400,
+        matcherOpen: false,
+        matchTarget: '',
+        matchPort: '',
+        matchProcess: '',
+        matchResult: null,
+      }
+      store.diagnosticTarget.value = { kind: 'connection-search', query: 'github.com' }
+      store.go('resources')
+
+      await store.enable(other!.id)
+      expect(store.snapshot.value.connected).toBe(true)
+      expect(store.snapshot.value.active_id).toBe(other!.id)
+      expect(store.connectionSessionId.value).toBe(beforeSession + 1)
+      expect(store.ruleReturn.value).toBeNull()
+      expect(store.diagnosticTarget.value).toBeNull()
+    } finally {
+      store.stop()
+    }
   })
 })

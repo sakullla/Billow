@@ -121,15 +121,18 @@ export function useDynamicVirtualList(
     Math.max(0, layout.value.totalHeight - (layout.value.offsets[window.value.end] ?? 0)),
   )
 
+  function pruneHeights(total: number) {
+    if (!keyOf || heights.size <= Math.max(2048, total * 2)) return
+    const live = new Set<string | number>()
+    for (let i = 0; i < total; i++) live.add(keyOf(i))
+    for (const key of heights.keys()) {
+      if (!live.has(key)) heights.delete(key)
+    }
+  }
+
   watch(count, (next, previous) => {
     if (next > 0 && previous === 0) scrollTop.value = 0
-    if (keyOf && heights.size > Math.max(2048, next * 2)) {
-      const live = new Set<string | number>()
-      for (let i = 0; i < next; i++) live.add(keyOf(i))
-      for (const key of heights.keys()) {
-        if (!live.has(key)) heights.delete(key)
-      }
-    }
+    pruneHeights(next)
   })
 
   function offsetOf(index: number): number {
@@ -166,6 +169,7 @@ export function useDynamicVirtualList(
     const itemTopBefore = layout.value.offsets[index] ?? 0
     const delta = next - prev
     heights.set(key, next)
+    pruneHeights(count.value)
     version.value += 1
 
     if (opts?.follow) {

@@ -694,11 +694,11 @@ export function createStore(backend: Backend) {
     }
     const wasConnected = Boolean(snapshot.value.connected)
     const prevActiveId = snapshot.value.active_id
-    if (Boolean(next.connected) !== wasConnected) {
-      connectionSessionId.value += 1
-    }
     const disconnected = wasConnected && !next.connected
     const profileSwitched = prevActiveId !== null && next.active_id !== prevActiveId
+    if (Boolean(next.connected) !== wasConnected || profileSwitched) {
+      connectionSessionId.value += 1
+    }
     if (disconnected || profileSwitched) {
       if (diagnosticTarget.value) diagnosticTarget.value = null
       if (ruleReturn.value) {
@@ -1254,10 +1254,16 @@ export function createStore(backend: Backend) {
 
   function go(next: PageId, group?: string) {
     const changed = page.value !== next
+    // Preserve connectionReturn across nested connections -> rules -> resources/proxies hops (R5).
+    const nestedFromRules =
+      connectionReturn.value?.targetPage === 'rules' &&
+      ruleReturn.value != null &&
+      next === ruleReturn.value.targetPage
     if (
       connectionReturn.value &&
       next !== 'connections' &&
-      next !== connectionReturn.value.targetPage
+      next !== connectionReturn.value.targetPage &&
+      !nestedFromRules
     ) {
       connectionReturn.value = null
     }
