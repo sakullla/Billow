@@ -1441,7 +1441,7 @@
     },
     "wireguard": {
       "status": "partial",
-      "reason": "The WireGuard transport (Noise IK, cookie reply, pre-shared key, transport keys, padding, replay window, initiator rekey, keepalive) is implemented in src/outbound/wireguard.rs and verified against the locked metacubex/wireguard-go device; TCP/UDP through the tunnel needs the userspace IP stack and TUN device owned by T6/T7, so dial() refuses with that gap named. AmneziaWG, an explicit ip-stack mode, the stack resolver and endpoint refresh are rejected by name.",
+      "reason": "The WireGuard transport (Noise IK, cookie reply, pre-shared key, transport keys, padding, replay window, initiator rekey, keepalive) and TCP/UDP through the shared smoltcp userspace stack (src/outbound/l3/) are implemented in src/outbound/wireguard.rs and verified against the locked metacubex/wireguard-go device: UDP and TCP echo round trips, a second TCP session and two peers selected by allowed-ips. ip/ipv6 supply the stack's local addresses, allowed-ips selects the peer by longest prefix, and missing address/no-route conditions are named. AmneziaWG, an explicit ip-stack mode, the stack resolver and endpoint refresh are rejected by name.",
       "options": [
         "private-key",
         "ip",
@@ -1477,14 +1477,28 @@
         "src/outbound/wireguard.rs::tests::initiation_has_the_documented_shape",
         "src/outbound/wireguard.rs::tests::replay_window_rejects_duplicates_and_old_counters",
         "tests/config.rs::wireguard_accepts_the_pinned_shapes_and_names_its_gaps",
+        "src/outbound/wireguard.rs::tests::allowed_ips_select_by_longest_prefix_and_later_peer_wins",
+        "tests/config.rs::wireguard_and_openvpn_dial_reasons_are_their_own",
+        "tests/l3_stack.rs::tcp_three_concurrent_connections_echo",
+        "tests/l3_stack.rs::tcp_half_close_delivers_remaining_data_then_eof",
+        "tests/l3_stack.rs::tcp_reset_is_reported_as_a_connection_error",
+        "tests/l3_stack.rs::tcp_connect_timeout_is_named_and_releases_the_socket",
+        "tests/l3_stack.rs::udp_association_carries_two_remotes_and_ipv6",
+        "tests/l3_stack.rs::tcp_ipv6_and_large_payloads_stay_within_the_mtu",
+        "tests/l3_stack.rs::tcp_socket_limit_and_drop_reclaim",
         "tests/wireguard_peer.rs::handshake_and_icmp_round_trip_through_the_locked_peer",
         "tests/wireguard_peer.rs::preshared_key_is_mixed_into_the_handshake",
         "tests/wireguard_peer.rs::wrong_peer_public_key_fails_the_handshake",
         "tests/wireguard_peer.rs::an_unregistered_client_key_is_rejected",
         "tests/wireguard_peer.rs::packets_over_the_mtu_and_short_buffers_are_named_errors",
-        "tool/kernel-compat/evidence/t16-feasibility.json"
+        "tests/wireguard_peer.rs::udp_round_trip_through_the_locked_peer_and_l3_stack",
+        "tests/wireguard_peer.rs::tcp_round_trip_through_the_locked_peer_and_l3_stack",
+        "tests/wireguard_peer.rs::multiple_peers_select_by_allowed_ips",
+        "tool/kernel-compat/evidence/t16-feasibility.json",
+        "tool/kernel-compat/evidence/t35-l3.json",
+        "tests/config.rs::wireguard_and_openvpn_udp_capability_follows_pinned"
       ],
-      "notes": "Both peer forms load: `peers:` and the embedded top-level server/port/public-key form. `allowed-ips` defaults to 0.0.0.0/0 and/or ::/0 from ip/ipv6 in the single-peer form; `mtu` defaults to 1408. The transport is initiator-only for rekeys (it rekeys before the responder's 120 s window); answering a server-initiated handshake is not implemented.",
+      "notes": "Both peer forms load: `peers:` and the embedded top-level server/port/public-key form. `allowed-ips` defaults to 0.0.0.0/0 and/or ::/0 from ip/ipv6 in the single-peer form; `mtu` defaults to 1408. TCP/UDP terminate in the shared smoltcp stack (bounded: 16 TCP sockets, 32 UDP sockets, 32 KiB per TCP direction). The carriers bind through `outbound::bind_udp` so a desktop TUN cannot capture them. The transport is initiator-only for rekeys; answering a server-initiated handshake is not implemented.",
       "license": "No wireguard/boringtun crate; no Go source vendored, linked, or translated. The locked MIT wireguard-go device is a test peer only. The pinned adapter/outbound/wireguard.go (GPL-3.0) was read for option names/defaults; this is source consultation, not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
     },
     "tailscale": {
@@ -1603,7 +1617,7 @@
     },
     "openvpn": {
       "status": "partial",
-      "reason": "The control channel (UDP/TCP framing, hard reset, reliable ACKs, TLS 1.2/1.3 client authentication, key-method 2) and the AEAD data channel are implemented in src/outbound/openvpn.rs and verified against OpenVPN 2.7.9; TCP/UDP through the tunnel needs the T6/T7 userspace IP stack and TUN device, so dial() refuses with that gap named. tls-auth/tls-crypt, compression and CBC data ciphers are rejected by name.",
+      "reason": "The control channel (UDP/TCP framing, hard reset, reliable ACKs, TLS 1.2/1.3 client authentication, key-method 2) and the AEAD data channel are implemented in src/outbound/openvpn.rs and verified against OpenVPN 2.7.9; TCP/UDP run through the shared smoltcp userspace stack (src/outbound/l3/), with the local address taken from PUSH_REPLY ifconfig/ifconfig-ipv6 (routes, dns, redirect-gateway and block-outside-dns are parsed). tls-auth/tls-crypt, compression, CBC data ciphers and an explicit mips/gVisor ip-stack are rejected by name. The real OpenVPN datapath is not end-to-end verified: the controlled server runs `--dev null`, so stack construction, PUSH_REPLY parsing and data-channel send/receive are proven, not delivery of a TCP/UDP payload through the tunnel.",
       "options": [
         "server",
         "port",
@@ -1644,15 +1658,22 @@
       "evidence": [
         "src/outbound/openvpn.rs::tests::control_packets_round_trip",
         "src/outbound/openvpn.rs::tests::push_reply_parses_cipher_peer_id_and_ifconfig",
+        "src/outbound/openvpn.rs::tests::push_reply_derives_prefixes_ipv6_dns_and_redirect",
         "src/outbound/openvpn.rs::tests::prf_is_deterministic_and_sensitive_to_the_label",
         "tests/config.rs::openvpn_accepts_the_pinned_shapes_and_names_its_gaps",
+        "tests/config.rs::wireguard_and_openvpn_dial_reasons_are_their_own",
+        "tests/l3_stack.rs::tcp_three_concurrent_connections_echo",
+        "tests/l3_stack.rs::udp_association_carries_two_remotes_and_ipv6",
         "tests/openvpn_peer.rs::control_channel_pushes_and_the_data_keys_decrypt_a_keepalive",
+        "tests/openvpn_peer.rs::connect_stack_uses_the_pushed_ifconfig",
         "tests/openvpn_peer.rs::an_untrusted_server_certificate_is_rejected",
         "tests/openvpn_peer.rs::a_missing_client_certificate_fails_authentication",
         "tests/openvpn_peer.rs::no_common_data_cipher_is_a_named_failure",
-        "tool/kernel-compat/evidence/t16-feasibility.json"
+        "tool/kernel-compat/evidence/t16-feasibility.json",
+        "tool/kernel-compat/evidence/t35-l3.json",
+        "tests/config.rs::wireguard_and_openvpn_udp_capability_follows_pinned"
       ],
-      "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional; without them the server may reject the TLS client (observed as a bounded handshake timeout). The data ciphers are AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305; AES-192-GCM and CBC are not implemented.",
+      "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional; without them the server may reject the TLS client (observed as a bounded handshake timeout). The data ciphers are AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305; AES-192-GCM and CBC are not implemented. The data-channel actor is one dedicated OS thread (blocking control/data link), never a tokio worker; `PUSH_REPLY` prefixes give the stack its local address and an empty ifconfig is the named `NoIfconfig` failure.",
       "license": "No OpenVPN crate; no OpenVPN/Mihomo source vendored, linked, or copied line-by-line. The GPL-2.0 OpenVPN binary is a test peer only. The pinned transport/openvpn (GPL-3.0) was read for functional wire facts; this is not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
     }
   },

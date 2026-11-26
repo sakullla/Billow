@@ -1674,12 +1674,13 @@ fn wireguard_accepts_the_pinned_shapes_and_names_its_gaps() {
     ));
     assert!(e.contains("amnezia-wg-option"), "{e}");
     assert!(e.contains("amneziawg-go"), "{e}");
-    // The userspace IP stack belongs to the T6/T7 device layer.
+    // Only the kernel's smoltcp stack exists; the pinned mips/gVisor modes are
+    // not implemented and are still rejected by name.
     let e = proxy_err(&format!(
         "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}], ip-stack: {{mode: gvisor}}}}\nrules: ['MATCH,wg']\n"
     ));
     assert!(e.contains("ip-stack.mode"), "{e}");
-    assert!(e.contains("T6/T7"), "{e}");
+    assert!(e.contains("smoltcp"), "{e}");
     // A peer without allowed IPs is rejected by the pinned device too.
     let e = proxy_err(&format!(
         "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 1, public-key: {KEY}}}]}}\nrules: ['MATCH,wg']\n"
@@ -1723,11 +1724,13 @@ fn openvpn_accepts_the_pinned_shapes_and_names_its_gaps() {
         "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", comp-lzo: yes}}\nrules: ['MATCH,ov']\n"
     ));
     assert!(e.contains("comp-lzo"), "{e}");
-    // The userspace IP stack belongs to the T6/T7 device layer.
+    // Only the kernel's smoltcp stack exists; the pinned mips/gVisor modes are
+    // not implemented and are still rejected by name.
     let e = proxy_err(&format!(
         "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", ip-stack: {{mode: gvisor}}}}\nrules: ['MATCH,ov']\n"
     ));
     assert!(e.contains("ip-stack.mode"), "{e}");
+    assert!(e.contains("smoltcp"), "{e}");
     // A certificate without its key is not a usable TLS identity.
     let e = proxy_err(&format!(
         "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\", cert: \"{cert}\"}}\nrules: ['MATCH,ov']\n"
@@ -1817,17 +1820,9 @@ fn mesh_control_planes_load_the_pinned_shapes() {
 }
 
 #[tokio::test]
-async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
-    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+async fn mesh_device_families_load_and_dial_names_the_t6_t7_gap() {
     let zt_identity = "64bb654c16:0:1621a4a2d540cdf6d3b63947a29b9aaed1c86842b12da93e468fa723944c3c4357e8ac7436ccb931a0c230df4da2a8575237262a9564d543cd725b4f48de76c2:cfedde328eca0973d0ddaf3f47f78fc43f9c332b2019cecbecc7e483652d03eda60ec8322f1589580807a3ca79163bd673892eb433b54945c697dfef79e2adc7".to_string();
     let configs = [
-        format!(
-            "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
-        ),
-        format!(
-            "mixed-port: 1\nproxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 9, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
-        ),
         "mixed-port: 1\nproxies:\n  - {name: ts, type: tailscale, control-url: http://127.0.0.1:1}\nrules: ['MATCH,ts']\n".to_string(),
         format!(
             "mixed-port: 1\nproxies:\n  - {{name: zt, type: zerotier, network: 8056c2e21c000001, identity-secret: {zt_identity}}}\nrules: ['MATCH,zt']\n"
@@ -1857,6 +1852,82 @@ async fn implemented_device_families_load_and_dial_names_the_t6_t7_gap() {
         assert!(text.contains("T6/T7"), "{}: {text}", proxy.name);
         assert!(text.contains("IP stack"), "{}: {text}", proxy.name);
     }
+}
+
+/// WireGuard and OpenVPN no longer refuse with "the T6/T7 stack is missing":
+/// they now fail with their own named reason. WireGuard without `ip`/`ipv6`
+/// cannot build the userspace stack; OpenVPN reaches its control channel (a
+/// closed TCP port here) instead of short-circuiting.
+#[tokio::test]
+async fn wireguard_and_openvpn_dial_reasons_are_their_own() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let tls = billow_kernel::outbound::tls::ClientTls::new(&[]);
+    let target = billow_kernel::outbound::Target {
+        host: "127.0.0.1".to_string(),
+        port: 80,
+    };
+
+    let wireguard = format!(
+        "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
+    );
+    let loaded = load_config(&wireguard, "wg-no-local.yaml").expect("configuration loads");
+    let error = match billow_kernel::outbound::dial(
+        &loaded.config.proxies[0],
+        &target,
+        std::time::Duration::from_millis(500),
+        &tls,
+    )
+    .await
+    {
+        Ok(_) => panic!("WireGuard without a local address must not dial"),
+        Err(error) => error,
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("no local IPv4 or IPv6 address"),
+        "wireguard: {text}"
+    );
+    assert!(!text.contains("T6/T7"), "wireguard: {text}");
+
+    // The key material is fake, so the handshake cannot complete; what matters
+    // is that the failure comes from WireGuard's own stack path, not from a
+    // blanket T6/T7 refusal.
+    let wireguard_with_ip = format!(
+        "mixed-port: 1\nproxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, ip: 10.0.0.2, peers: [{{server: 127.0.0.1, port: 9, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
+    );
+    let loaded = load_config(&wireguard_with_ip, "wg-unreachable.yaml").expect("configuration loads");
+    let error = match billow_kernel::outbound::dial(
+        &loaded.config.proxies[0],
+        &target,
+        std::time::Duration::from_millis(500),
+        &tls,
+    )
+    .await
+    {
+        Ok(_) => panic!("an unreachable WireGuard peer must not dial"),
+        Err(error) => error,
+    };
+    assert!(!error.to_string().contains("T6/T7"), "{error}");
+
+    let openvpn = format!(
+        "mixed-port: 1\nproxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 9, proto: tcp, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
+    );
+    let loaded = load_config(&openvpn, "ov-unreachable.yaml").expect("configuration loads");
+    let error = match billow_kernel::outbound::dial(
+        &loaded.config.proxies[0],
+        &target,
+        std::time::Duration::from_secs(2),
+        &tls,
+    )
+    .await
+    {
+        Ok(_) => panic!("an unreachable OpenVPN server must not dial"),
+        Err(error) => error,
+    };
+    let text = error.to_string();
+    assert!(!text.contains("T6/T7"), "openvpn: {text}");
+    assert!(text.contains("openvpn"), "openvpn: {text}");
 }
 
 #[test]
@@ -2411,4 +2482,30 @@ fn t28_masque_quic_controller_and_trojan_ss_opts_are_parsed() {
         "proxies:\n  - {name: t, type: trojan, server: 127.0.0.1, port: 443, password: p, ss-opts: {enabled: true}}\nrules: ['MATCH,t']\n",
     );
     assert!(error.contains("option 'ss-opts.password'"), "{error}");
+}
+
+#[test]
+fn wireguard_and_openvpn_udp_capability_follows_pinned() {
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let wireguard = |udp: &str| {
+        format!(
+            "proxies:\n  - {{name: wg, type: wireguard, private-key: {KEY}, ip: 10.13.13.2, {udp}peers: [{{server: 127.0.0.1, port: 51820, public-key: {KEY}, allowed-ips: [0.0.0.0/0]}}]}}\nrules: ['MATCH,wg']\n"
+        )
+    };
+    let loaded = load_config(&wireguard("udp: false, "), "wg-udp-false.yaml").expect("loads");
+    assert!(!loaded.config.proxies[0].udp_enabled());
+    let loaded = load_config(&wireguard("udp: true, "), "wg-udp-true.yaml").expect("loads");
+    assert!(loaded.config.proxies[0].udp_enabled());
+
+    // The pinned OpenVPN outbound always advertises UDP; the option is a
+    // tolerated no-op and cannot turn the association off.
+    let ca = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----";
+    let loaded = load_config(
+        &format!(
+            "proxies:\n  - {{name: ov, type: openvpn, server: 127.0.0.1, port: 1194, ca: \"{ca}\"}}\nrules: ['MATCH,ov']\n"
+        ),
+        "ov-udp.yaml",
+    )
+    .expect("loads");
+    assert!(loaded.config.proxies[0].udp_enabled());
 }

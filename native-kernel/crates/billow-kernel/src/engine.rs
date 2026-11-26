@@ -1919,6 +1919,10 @@ async fn serve_udp_associate_inner(
     let mut hysteria: Option<outbound::udp::HysteriaUdp> = None;
     let mut hysteria2: Option<outbound::udp::Hysteria2Udp> = None;
     let mut tuic: Option<outbound::tuic::TuicUdp> = None;
+    // WireGuard/OpenVPN UDP is terminated by the shared userspace L3 stack.
+    // The stack owns one unconnected smoltcp UDP socket per association; the
+    // association carries every destination of this client flow.
+    let mut l3: Option<outbound::l3::L3UdpSocket> = None;
     // Destination-bound UoT / plain-UDP associations (anytls, ss UoT v2/v1,
     // vmess plain). The pinned outbound opens one packet conn per destination
     // and reads every one of them concurrently; the relay mirrors that with a
@@ -1946,6 +1950,7 @@ async fn serve_udp_associate_inner(
     let mut hysteria_buf: Option<Vec<u8>> = None;
     let mut hysteria2_buf: Option<Vec<u8>> = None;
     let mut tuic_buf: Option<Vec<u8>> = None;
+    let mut l3_buf: Option<Vec<u8>> = None;
     let mut control_probe = [0u8; 1];
     let mut failed = false;
     let mut idle_deadline = tokio::time::Instant::now() + limits.udp_idle_timeout;
@@ -1967,6 +1972,7 @@ async fn serve_udp_associate_inner(
     let mut hysteria_eof = false;
     let mut hysteria2_eof = false;
     let mut tuic_eof = false;
+    let mut l3_eof = false;
 
     'associate: loop {
         if direct_eof {
@@ -2044,6 +2050,11 @@ async fn serve_udp_associate_inner(
             tuic = None;
             tuic_buf = None;
             tuic_eof = false;
+        }
+        if l3_eof {
+            l3 = None;
+            l3_buf = None;
+            l3_eof = false;
         }
         tokio::select! {
             biased;
@@ -2817,6 +2828,106 @@ async fn serve_udp_associate_inner(
                                     .await
                             }
                         }
+                        crate::proxies::Protocol::Wireguard(option) if option.udp => {
+                            if l3.is_none() {
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::wireguard::connect_stack(
+                                        option,
+                                        limits.dial_timeout,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(stack) => match stack.udp_socket() {
+                                        Ok(socket) => {
+                                            l3 = Some(socket);
+                                            l3_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                            l3_eof = false;
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "wireguard UDP socket: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "wireguard UDP stack failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            let destination = match direct_udp_destination(
+                                context,
+                                &outgoing.host,
+                                ip,
+                                outgoing.port,
+                            )
+                            .await
+                            {
+                                Ok(addr) => addr,
+                                Err(e) => {
+                                    debug!(session = id, target = %datagram.target.host, "wireguard UDP resolve failed: {e}");
+                                    failed = true;
+                                    continue;
+                                }
+                            };
+                            l3.as_ref()
+                                .expect("created above")
+                                .send(destination, payload)
+                                .await
+                        }
+                        crate::proxies::Protocol::OpenVpn(option) => {
+                            if l3.is_none() {
+                                match outbound::with_dialer(
+                                    proxy.dialer.clone(),
+                                    outbound::openvpn::connect_stack(
+                                        option,
+                                        limits.dial_timeout,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(stack) => match stack.udp_socket() {
+                                        Ok(socket) => {
+                                            l3 = Some(socket);
+                                            l3_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                            l3_eof = false;
+                                        }
+                                        Err(e) => {
+                                            warn!(session = id, proxy = %proxy.name, "openvpn UDP socket: {e}");
+                                            failed = true;
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!(session = id, proxy = %proxy.name, "openvpn UDP stack failed: {e}");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            let destination = match direct_udp_destination(
+                                context,
+                                &outgoing.host,
+                                ip,
+                                outgoing.port,
+                            )
+                            .await
+                            {
+                                Ok(addr) => addr,
+                                Err(e) => {
+                                    debug!(session = id, target = %datagram.target.host, "openvpn UDP resolve failed: {e}");
+                                    failed = true;
+                                    continue;
+                                }
+                            };
+                            l3.as_ref()
+                                .expect("created above")
+                                .send(destination, payload)
+                                .await
+                        }
                         other => {
                             // The pinned outbound has no UDP association this
                             // kernel implements for this family; dropping is a
@@ -3161,6 +3272,31 @@ async fn serve_udp_associate_inner(
                 }
             }
             received = async {
+                match (l3.as_ref(), l3_buf.as_mut()) {
+                    (Some(association), Some(buffer)) => {
+                        association.recv(buffer.as_mut_slice()).await.map(Some)
+                    }
+                    _ => std::future::pending().await,
+                }
+            }, if l3.is_some() && !l3_eof => {
+                if matches!(&received, Ok(None) | Err(_)) {
+                    l3_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer)) = (received, l3_buf.as_ref()) {
+                    if let Some(client_udp) = client_udp {
+                        let target = outbound::Target {
+                            host: from.ip().to_string(),
+                            port: from.port(),
+                        };
+                        let mut reply = outbound::udp::reply_header(&target);
+                        reply.extend_from_slice(&buffer[..read]);
+                        let _ = relay.send_to(&reply, client_udp).await;
+                        counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
+                    }
+                }
+            }
+            received = async {
                 match (tuic.as_mut(), tuic_buf.as_mut()) {
                     (Some(association), Some(buffer)) => {
                         association.recv(buffer.as_mut_slice()).await
@@ -3217,8 +3353,8 @@ fn other_type(protocol: &crate::proxies::Protocol) -> &'static str {
         crate::proxies::Protocol::Sudoku(_) => "sudoku (udp: false)",
         crate::proxies::Protocol::Masque(_) => "masque (udp: false)",
         crate::proxies::Protocol::ShadowQuic(_) => "shadowquic",
-        crate::proxies::Protocol::Wireguard(_) => "wireguard (no UDP association)",
-        crate::proxies::Protocol::OpenVpn(_) => "openvpn (no UDP association)",
+        crate::proxies::Protocol::Wireguard(_) => "wireguard (udp: false)",
+        crate::proxies::Protocol::OpenVpn(_) => "openvpn",
         crate::proxies::Protocol::Tailscale(_) => "tailscale (no UDP association)",
         crate::proxies::Protocol::Zerotier(_) => "zerotier (no UDP association)",
         crate::proxies::Protocol::Easytier(_) => "easytier (no UDP association)",

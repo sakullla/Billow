@@ -282,12 +282,28 @@ fn control_channel_pushes_and_the_data_keys_decrypt_a_keepalive() {
     let push = tunnel.push_reply();
     assert!(push.raw.starts_with("PUSH_REPLY"), "{}", push.raw);
     assert!(push.ifconfig.is_some(), "{}", push.raw);
+    // The stack uses the first pushed address as its local address; the
+    // prefix must line up with the ifconfig record the server sent.
+    let ifconfig = push.ifconfig.as_deref().expect("ifconfig");
+    let first = ifconfig.split_whitespace().next().expect("ifconfig address");
+    let (local, bits) = *push.prefixes.first().expect("ifconfig prefix");
+    assert_eq!(local.to_string(), first, "{}", push.raw);
+    assert!(bits <= 32, "{}: {bits}", push.raw);
     assert_eq!(tunnel.cipher(), "AES-256-GCM");
     // The server pings every second; decrypting one proves the AEAD data
     // keys, the peer ID and the implicit IV.
     tunnel
         .exchange_keepalive(Duration::from_secs(5))
         .expect("data-channel keepalive");
+
+    // The data channel also accepts an IP packet. `--dev null` throws it away,
+    // so this proves encryption/framing and that the session stays usable; the
+    // real tunnel datapath is not claimed to be end-to-end verified here.
+    let packet = vec![0x45u8; 60];
+    tunnel.send_data(&packet).expect("send_data");
+    tunnel
+        .exchange_keepalive(Duration::from_secs(5))
+        .expect("keepalive after send_data");
 }
 
 #[test]
@@ -351,4 +367,35 @@ fn no_common_data_cipher_is_a_named_failure() {
             || text.contains("AES"),
         "{text}"
     );
+}
+
+
+/// The stack entry point builds an OpenVPN session, takes its local address
+/// from PUSH_REPLY and opens a UDP socket. `--dev null` discards every IP
+/// packet, so this is a wiring/lifecycle check, not an end-to-end datapath
+/// proof; that limitation is recorded in the task evidence.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn connect_stack_uses_the_pushed_ifconfig() {
+    if skip("connect_stack_uses_the_pushed_ifconfig") {
+        return;
+    }
+    let server = start_server().expect("server");
+    let ca = std::fs::read_to_string(server.dir.join("server-ca.pem")).unwrap();
+    let cert = std::fs::read_to_string(server.dir.join("client.pem")).unwrap();
+    let key = std::fs::read_to_string(server.dir.join("client.key")).unwrap();
+    let yaml = config_yaml(&server, &ca, Some(&cert), Some(&key));
+    let option = openvpn_option(&yaml);
+    let stack = billow_kernel::outbound::openvpn::connect_stack(&option, Duration::from_secs(15))
+        .await
+        .expect("openvpn stack");
+    assert!(
+        stack.ipv4().is_some() || stack.ipv6().is_some(),
+        "PUSH_REPLY must provide a local address"
+    );
+    let socket = stack.udp_socket().expect("udp socket");
+    let remote = std::net::SocketAddr::from(([10, 8, 0, 1], 53));
+    // The server is `--dev null`: the datagram is discarded, but it must leave
+    // the stack without an error.
+    socket.send(remote, b"wiring").await.expect("send");
 }

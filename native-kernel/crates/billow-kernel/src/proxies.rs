@@ -615,13 +615,13 @@ pub struct WireguardPeerOutbound {
 ///
 /// The Noise IK handshake and the transport data messages are implemented in
 /// `outbound/wireguard.rs` and verified against a controlled peer built from
-/// the locked `metacubex/wireguard-go` device. The IP stack, TUN device and
-/// the TCP/UDP socket layer inside the tunnel are the T6/T7 device layer: this
-/// outbound loads a valid configuration, validates its keys and then refuses
-/// every dial with that device gap named. `amnezia-wg-option`, an explicit
-/// `ip-stack` mode, `remote-dns-resolve`/`dns` and endpoint refresh are
-/// rejected at load because they ask for a device/stack feature this kernel
-/// does not have.
+/// the locked `metacubex/wireguard-go` device. TCP and UDP inside the tunnel
+/// are terminated by the shared userspace stack in `outbound/l3` (smoltcp over
+/// a bounded IP-packet device); `ip`/`ipv6` are the stack's local addresses and
+/// `allowed-ips` selects the peer by longest prefix. `amnezia-wg-option`, an
+/// explicit `ip-stack` mode, `remote-dns-resolve`/`dns` and endpoint refresh
+/// are rejected at load because they ask for a device/stack feature this
+/// kernel does not have.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireguardOutbound {
     /// Base64 of the local 32-byte Curve25519 private key.
@@ -629,7 +629,8 @@ pub struct WireguardOutbound {
     /// `ip`/`ipv6` local addresses (also the single-peer allowed-IP source).
     pub ip: Option<String>,
     pub ipv6: Option<String>,
-    /// Device worker count; 0 selects the pinned default. Used by T6/T7.
+    /// Device worker count; 0 selects the pinned default. Accepted as a
+    /// scheduling hint only: this kernel's smoltcp stack has no worker pool.
     pub workers: u16,
     /// Tunnel MTU, default 1408 as the pinned outbound.
     pub mtu: u32,
@@ -644,17 +645,17 @@ pub struct WireguardOutbound {
 ///
 /// The control channel (UDP or TCP framing, hard reset, reliable ACK layer,
 /// TLS 1.3 client authentication, key-method 2 exchange and PUSH_REPLY) and
-/// the AEAD data channel are implemented in `outbound/openvpn.rs`. The pinned
-/// adapter then runs the data channel over a userspace IP stack; that device
-/// layer is T6/T7, so this outbound loads and validates a configuration and
-/// refuses every dial with the device gap named. `tls-auth`/`tls-crypt`,
-/// compression, CBC data ciphers and `tcp` are rejected at load with the
-/// missing piece named instead of being loaded as compatible.
+/// the AEAD data channel are implemented in `outbound/openvpn.rs`. TCP and UDP
+/// inside the tunnel are terminated by the shared userspace stack in
+/// `outbound/l3`; the local address comes from `PUSH_REPLY`
+/// (`ifconfig`/`ifconfig-ipv6`). `tls-auth`/`tls-crypt`, compression and CBC
+/// data ciphers are rejected at load with the missing piece named instead of
+/// being loaded as compatible; both UDP and TCP control framing are supported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenVpnOutbound {
     pub server: String,
     pub port: u16,
-    /// `udp` (default) or `tcp`; the transport is UDP only in this kernel.
+    /// `udp` (default) or `tcp`; both control framings are implemented.
     pub proto: String,
     /// `tun` is the only device type the pinned adapter accepts.
     pub dev: String,
@@ -1475,6 +1476,11 @@ impl Proxy {
             Protocol::Tuic(_) => true,
             Protocol::ShadowQuic(_) => true,
             Protocol::Sudoku(p) => p.udp,
+            // The pinned OpenVPN outbound always advertises UDP; WireGuard
+            // follows its `udp` switch. Both are carried by the shared
+            // userspace L3 stack (`outbound::l3`).
+            Protocol::OpenVpn(_) => true,
+            Protocol::Wireguard(p) => p.udp,
             Protocol::Tailscale(p) => p.udp,
             Protocol::Zerotier(p) => p.udp,
             Protocol::Easytier(p) => p.udp,
@@ -5674,14 +5680,14 @@ fn parse_wireguard(entry: &mut Entry<'_>) -> Result<WireguardOutbound, ConfigErr
                     let mode = value.as_str().unwrap_or("").to_ascii_lowercase();
                     if !mode.is_empty() && mode != "auto" {
                         return Err(entry.unsupported(format!(
-                            "option 'ip-stack.mode' value '{mode}' is not implemented: the userspace IP stack (mips/gVisor) and its TUN device belong to the T6/T7 device layer; the WireGuard transport itself is implemented and exposed to that layer"
+                            "option 'ip-stack.mode' value '{mode}' is not implemented: only the kernel's smoltcp-based userspace stack is available; the pinned mips/gVisor device stacks are not implemented"
                         )));
                     }
                 }
                 "congestion-controller" => {
                     if value.as_str().is_some_and(|value| !value.is_empty()) {
                         return Err(entry.unsupported(
-                            "option 'ip-stack.congestion-controller' is not implemented: it configures the T6/T7 userspace IP stack",
+                            "option 'ip-stack.congestion-controller' is not implemented: it configures the pinned mips/gVisor stack, not the kernel's smoltcp stack",
                         ));
                     }
                 }
@@ -5703,12 +5709,12 @@ fn parse_wireguard(entry: &mut Entry<'_>) -> Result<WireguardOutbound, ConfigErr
     }
     if entry.bool("remote-dns-resolve")?.unwrap_or(false) {
         return Err(entry.unsupported(
-            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned userspace IP stack's resolver (T6/T7 device layer)",
+            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned device stack's resolver; the kernel's smoltcp stack has no DNS resolver",
         ));
     }
     if !entry.string_list("dns")?.is_empty() {
         return Err(entry.unsupported(
-            "option 'dns' is not implemented: it configures the pinned userspace IP stack's resolver (T6/T7 device layer)",
+            "option 'dns' is not implemented: it configures the pinned device stack's resolver; the kernel's smoltcp stack has no DNS resolver",
         ));
     }
     if entry.int("refresh-server-ip-interval")?.unwrap_or(0) != 0 {
@@ -6223,14 +6229,14 @@ fn parse_openvpn(entry: &mut Entry<'_>) -> Result<OpenVpnOutbound, ConfigError> 
                     let mode = value.as_str().unwrap_or("").to_ascii_lowercase();
                     if !mode.is_empty() && mode != "auto" {
                         return Err(entry.unsupported(format!(
-                            "option 'ip-stack.mode' value '{mode}' is not implemented: the userspace IP stack and TUN device belong to the T6/T7 device layer; the OpenVPN control and data channels are implemented and exposed to that layer"
+                            "option 'ip-stack.mode' value '{mode}' is not implemented: only the kernel's smoltcp-based userspace stack is available; the pinned mips/gVisor stacks are not implemented"
                         )));
                     }
                 }
                 "congestion-controller" => {
                     if value.as_str().is_some_and(|value| !value.is_empty()) {
                         return Err(entry.unsupported(
-                            "option 'ip-stack.congestion-controller' is not implemented: it configures the T6/T7 userspace IP stack",
+                            "option 'ip-stack.congestion-controller' is not implemented: it configures the pinned mips/gVisor stack, not the kernel's smoltcp stack",
                         ));
                     }
                 }
@@ -6245,13 +6251,13 @@ fn parse_openvpn(entry: &mut Entry<'_>) -> Result<OpenVpnOutbound, ConfigError> 
     let remote_dns_resolve = entry.bool("remote-dns-resolve")?.unwrap_or(false);
     if remote_dns_resolve {
         return Err(entry.unsupported(
-            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned userspace IP stack's resolver (T6/T7 device layer)",
+            "option 'remote-dns-resolve' is not implemented: it resolves through the pinned device stack's resolver; the kernel's smoltcp stack has no DNS resolver",
         ));
     }
     let dns = entry.string_list("dns")?;
     if !dns.is_empty() {
         return Err(entry.unsupported(
-            "option 'dns' is not implemented: it configures the pinned userspace IP stack's resolver (T6/T7 device layer)",
+            "option 'dns' is not implemented: it configures the pinned device stack's resolver; the kernel's smoltcp stack has no DNS resolver",
         ));
     }
     if entry

@@ -16,9 +16,10 @@
 //!   (AES-128/256-GCM and CHACHA20-POLY1305) with P_DATA_V2 peer IDs and the
 //!   OpenVPN keepalive payload.
 //!
-//! The data channel writes/reads IP packets; turning them into TCP streams is
-//! the userspace IP stack and TUN device owned by T6/T7, so [`dial`] refuses
-//! with that gap named. `tls-auth`/`tls-crypt`, CBC data ciphers and
+//! The data channel writes/reads IP packets; [`connect_stack`] wires them to
+//! the shared smoltcp stack in [`crate::outbound::l3`], whose local address
+//! comes from `PUSH_REPLY` (`ifconfig`/`ifconfig-ipv6`). [`dial`] therefore
+//! returns a real TCP stream. `tls-auth`/`tls-crypt`, CBC data ciphers and
 //! compression are rejected at configuration load (see `proxies.rs`).
 //!
 //! The protocol facts were taken from the public OpenVPN wire protocol and
@@ -85,6 +86,10 @@ pub enum OpenVpnError {
     Data(String),
     #[error("openvpn unsupported configuration: {0}")]
     Unsupported(String),
+    #[error("openvpn PUSH_REPLY carries no ifconfig/ifconfig-ipv6: the userspace IP stack has no local address")]
+    NoIfconfig,
+    #[error("openvpn userspace stack: {0}")]
+    Stack(String),
 }
 
 /// The parsed `PUSH_REPLY` fields the data channel needs.
@@ -94,6 +99,16 @@ pub struct PushReply {
     pub data_ciphers: Vec<String>,
     pub peer_id: Option<u32>,
     pub ifconfig: Option<String>,
+    /// Local addresses the server assigned (`ifconfig` + `ifconfig-ipv6`),
+    /// already converted to prefixes: a dotted netmask gives its length, a
+    /// peer address in topology-p2p position gives a host prefix.
+    pub prefixes: Vec<(std::net::IpAddr, u8)>,
+    /// `route`/`route-ipv6` prefixes.
+    pub routes: Vec<(std::net::IpAddr, u8)>,
+    /// `dns` servers pushed by the server.
+    pub dns: Vec<std::net::IpAddr>,
+    pub redirect_gateway: bool,
+    pub block_outside_dns: bool,
     pub raw: String,
 }
 
@@ -138,6 +153,18 @@ impl OpenVpnTunnel {
     /// exchange and PUSH_REPLY. The returned tunnel can send/receive data
     /// packets; no IP stack is involved.
     pub fn connect(option: &OpenVpnOutbound, timeout: Duration) -> Result<Self, OpenVpnError> {
+        let address = resolve(&option.server, option.port)?;
+        Self::connect_at(option, address, timeout)
+    }
+
+    /// Connect to an already-resolved server address. The data-path entry
+    /// resolves in the async dial task (honouring `ip-version`/DNS) and hands
+    /// the address to the blocking data-channel thread.
+    pub fn connect_at(
+        option: &OpenVpnOutbound,
+        address: SocketAddr,
+        timeout: Duration,
+    ) -> Result<Self, OpenVpnError> {
         if option.tls_auth.is_some() || option.tls_crypt.is_some() || option.tls_crypt_v2.is_some()
         {
             return Err(OpenVpnError::Unsupported(
@@ -145,7 +172,7 @@ impl OpenVpnTunnel {
             ));
         }
         let deadline = Instant::now() + timeout;
-        let link = Link::connect(option, timeout)?;
+        let link = Link::connect_address(option, address, timeout)?;
         let local_session = random_session();
         let mut control = Control::new(link, local_session);
         control.handshake(deadline)?;
@@ -263,10 +290,7 @@ impl OpenVpnTunnel {
     /// Send one data-channel keepalive and wait for one keepalive from the
     /// server. This is the data-channel proof used by the controlled test.
     pub fn exchange_keepalive(&mut self, timeout: Duration) -> Result<(), OpenVpnError> {
-        let packet = self.encrypt_payload(&PING_PAYLOAD)?;
-        self.control.link
-            .send(&packet)
-            .map_err(|error| OpenVpnError::Data(error.to_string()))?;
+        self.send_keepalive()?;
         let start = Instant::now();
         loop {
             if start.elapsed() >= timeout {
@@ -278,6 +302,26 @@ impl OpenVpnTunnel {
                 None => continue,
             }
         }
+    }
+
+    /// Encrypt and send one IP packet through the data channel.
+    pub fn send_data(&mut self, packet: &[u8]) -> Result<(), OpenVpnError> {
+        let encrypted = self.encrypt_payload(packet)?;
+        self.control
+            .link
+            .send(&encrypted)
+            .map_err(|error| OpenVpnError::Data(error.to_string()))
+    }
+
+    /// Send the data-channel keepalive (`PING_STRING`). The pinned client
+    /// answers the server's `--ping` records so a `--ping-restart` timer does
+    /// not tear the session down while the stack is idle.
+    pub fn send_keepalive(&mut self) -> Result<(), OpenVpnError> {
+        let packet = self.encrypt_payload(&PING_PAYLOAD)?;
+        self.control
+            .link
+            .send(&packet)
+            .map_err(|error| OpenVpnError::Data(error.to_string()))
     }
 
     /// Receive one data packet (or keepalive). Control packets that arrive
@@ -416,10 +460,13 @@ enum Link {
 }
 
 impl Link {
-    fn connect(option: &OpenVpnOutbound, timeout: Duration) -> Result<Self, OpenVpnError> {
-        let address = resolve(&option.server, option.port)?;
+    fn connect_address(
+        option: &OpenVpnOutbound,
+        address: SocketAddr,
+        timeout: Duration,
+    ) -> Result<Self, OpenVpnError> {
         if option.proto == "tcp" {
-            let stream = TcpStream::connect_timeout(&address, timeout)
+            let stream = crate::outbound::tcp_stream_std_blocking(address, timeout)
                 .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
             stream
                 .set_read_timeout(Some(timeout))
@@ -434,8 +481,13 @@ impl Link {
             } else {
                 SocketAddr::from(([0u16; 8], 0))
             };
-            let socket = UdpSocket::bind(bind)
-                .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
+            // Bound through the process-wide physical interface so a desktop
+            // TUN does not capture the control channel again.
+            let socket = crate::outbound::udp_socket_std_blocking(
+                bind,
+                &crate::proxies::DialerOptions::default(),
+            )
+            .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
             socket
                 .connect(address)
                 .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
@@ -496,6 +548,207 @@ fn resolve(server: &str, port: u16) -> Result<SocketAddr, OpenVpnError> {
                 io::Error::new(io::ErrorKind::NotFound, "resolved to no address"),
             )
         })
+}
+
+// ---------------------------------------------------------------------------
+// Userspace stack carrier
+// ---------------------------------------------------------------------------
+
+/// Registry key of one configured OpenVPN outbound. Certificate/key material
+/// is part of the key and is never printed (only the digest).
+pub(crate) fn stack_fingerprint(option: &OpenVpnOutbound) -> String {
+    let mut parts = vec![
+        option.server.clone(),
+        option.port.to_string(),
+        option.proto.clone(),
+        option.cipher.clone(),
+        option.data_ciphers.join(":"),
+        option.data_cipher_fallback.clone().unwrap_or_default(),
+        option.auth.clone(),
+        option.ca.expose().to_string(),
+        option.cert.as_ref().map(|value| value.expose().to_string()).unwrap_or_default(),
+        option.key.as_ref().map(|value| value.expose().to_string()).unwrap_or_default(),
+        option.username.as_ref().map(|value| value.expose().to_string()).unwrap_or_default(),
+        option.password.as_ref().map(|value| value.expose().to_string()).unwrap_or_default(),
+        option.mtu.to_string(),
+        option.ping.to_string(),
+    ];
+    for (key, value) in &option.peer_info {
+        parts.push(format!("{key}={value}"));
+    }
+    let borrowed: Vec<&str> = parts.iter().map(String::as_str).collect();
+    crate::outbound::l3::fingerprint("openvpn", &borrowed)
+}
+
+fn local_addresses(push: &PushReply) -> (Option<std::net::Ipv4Addr>, Option<std::net::Ipv6Addr>) {
+    let mut ipv4 = None;
+    let mut ipv6 = None;
+    for (addr, _bits) in &push.prefixes {
+        match addr {
+            std::net::IpAddr::V4(addr) if ipv4.is_none() => ipv4 = Some(*addr),
+            std::net::IpAddr::V6(addr) if ipv6.is_none() => ipv6 = Some(*addr),
+            _ => {}
+        }
+    }
+    (ipv4, ipv6)
+}
+
+struct OpenVpnInit {
+    ipv4: Option<std::net::Ipv4Addr>,
+    ipv6: Option<std::net::Ipv6Addr>,
+}
+
+/// Resolve the server in the async dial task, connect the blocking control and
+/// data channel on a dedicated OS thread, then build/reuse the shared stack.
+pub async fn connect_stack(
+    option: &OpenVpnOutbound,
+    timeout: Duration,
+) -> Result<Arc<crate::outbound::l3::Stack>, OpenVpnError> {
+    use crate::outbound::l3;
+
+    let fingerprint = stack_fingerprint(option);
+    let _guard = l3::registry_lock().lock().await;
+    if let Some(stack) = l3::lookup(&fingerprint) {
+        return Ok(stack);
+    }
+    let addresses = crate::outbound::resolve_all(&option.server, option.port)
+        .await
+        .map_err(|error| {
+            OpenVpnError::Connect(
+                format!("{}:{}", option.server, option.port),
+                std::io::Error::other(error.to_string()),
+            )
+        })?;
+    let address = addresses.into_iter().next().ok_or_else(|| {
+        OpenVpnError::Connect(
+            format!("{}:{}", option.server, option.port),
+            std::io::Error::new(std::io::ErrorKind::NotFound, "resolved to no address"),
+        )
+    })?;
+    let mtu = if option.mtu == 0 { 1500 } else { option.mtu as usize };
+    let option_for_thread = option.clone();
+    let (init_tx, init_rx) = tokio::sync::oneshot::channel::<Result<OpenVpnInit, OpenVpnError>>();
+    let (stack_tx, stack_rx) =
+        std::sync::mpsc::channel::<Arc<crate::outbound::l3::Stack>>();
+    std::thread::Builder::new()
+        .name("openvpn-datapath".to_string())
+        .spawn(move || {
+            let tunnel = match OpenVpnTunnel::connect_at(&option_for_thread, address, timeout) {
+                Ok(tunnel) => tunnel,
+                Err(error) => {
+                    let _ = init_tx.send(Err(error));
+                    return;
+                }
+            };
+            let (ipv4, ipv6) = local_addresses(tunnel.push_reply());
+            if ipv4.is_none() && ipv6.is_none() {
+                let _ = init_tx.send(Err(OpenVpnError::NoIfconfig));
+                return;
+            }
+            if init_tx.send(Ok(OpenVpnInit { ipv4, ipv6 })).is_err() {
+                return;
+            }
+            // The async side builds the stack (it needs the same local
+            // addresses) and hands it back; if it dies the thread exits.
+            if let Ok(stack) = stack_rx.recv_timeout(Duration::from_secs(10)) {
+                run_datapath(tunnel, stack);
+            }
+        })
+        .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
+
+    let init = match tokio::time::timeout(timeout + Duration::from_secs(1), init_rx).await {
+        Ok(Ok(Ok(init))) => init,
+        Ok(Ok(Err(error))) => return Err(error),
+        Ok(Err(_)) => {
+            return Err(OpenVpnError::Control(
+                "openvpn data-path thread exited before reporting the push reply".to_string(),
+            ))
+        }
+        Err(_) => return Err(OpenVpnError::Timeout(timeout)),
+    };
+    let config = l3::StackConfig::new(init.ipv4, init.ipv6, mtu, fingerprint.clone());
+    let stack = l3::Stack::new(config).map_err(|error| OpenVpnError::Stack(error.to_string()))?;
+    stack_tx
+        .send(stack.clone())
+        .map_err(|_| OpenVpnError::Control("openvpn data-path thread is gone".to_string()))?;
+    l3::publish(fingerprint, &stack);
+    Ok(stack)
+}
+
+fn run_datapath(mut tunnel: OpenVpnTunnel, stack: Arc<crate::outbound::l3::Stack>) {
+    let weak = Arc::downgrade(&stack);
+    loop {
+        let Some(stack) = weak.upgrade() else {
+            return;
+        };
+        while let Some(packet) = stack.take_tx_packet() {
+            if let Err(error) = tunnel.send_data(&packet) {
+                stack.fail(format!("openvpn data send: {error}"));
+                return;
+            }
+        }
+        match tunnel.recv_data(Duration::from_millis(10)) {
+            Ok(Some(DataPacket::Data(packet))) => {
+                stack.push_rx_packet(&packet);
+            }
+            Ok(Some(DataPacket::Keepalive)) => {
+                if let Err(error) = tunnel.send_keepalive() {
+                    stack.fail(format!("openvpn keepalive send: {error}"));
+                    return;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                stack.fail(format!("openvpn data receive: {error}"));
+                return;
+            }
+        }
+    }
+}
+
+fn dial_error(error: OpenVpnError) -> crate::outbound::DialError {
+    crate::outbound::DialError::Handshake {
+        protocol: "openvpn",
+        source: std::io::Error::other(error.to_string()),
+    }
+}
+
+/// `dial_inner` entry: build the stack, resolve the destination through the
+/// session resolver, and return one TCP stream terminated by smoltcp.
+pub(crate) async fn dial(
+    option: &OpenVpnOutbound,
+    target: &crate::outbound::Target,
+    timeout: Duration,
+) -> Result<crate::outbound::Dialed, crate::outbound::DialError> {
+    let stack = connect_stack(option, timeout).await.map_err(dial_error)?;
+    let addresses = crate::outbound::resolve_all(&target.host, target.port).await?;
+    let remote = addresses
+        .into_iter()
+        .find(|address| match address.ip() {
+            std::net::IpAddr::V4(_) => stack.ipv4().is_some(),
+            std::net::IpAddr::V6(_) => stack.ipv6().is_some(),
+        })
+        .ok_or_else(|| crate::outbound::DialError::Resolve {
+            host: target.host.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no resolved address matches a local tunnel address family",
+            ),
+        })?;
+    let stream = stack.dial_tcp(remote, timeout).await.map_err(|error| {
+        crate::outbound::DialError::Handshake {
+            protocol: "openvpn",
+            source: error,
+        }
+    })?;
+    Ok(crate::outbound::Dialed {
+        stream,
+        server: option
+            .server
+            .parse::<std::net::IpAddr>()
+            .map(|ip| SocketAddr::new(ip, option.port))
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], option.port))),
+    })
 }
 
 struct Control {
@@ -1098,7 +1351,13 @@ fn parse_push_reply(text: &str) -> Result<PushReply, OpenVpnError> {
     };
     for field in text.split(',') {
         let field = field.trim();
-        if let Some(value) = field.strip_prefix("cipher ") {
+        if let Some(value) = field.strip_prefix("PUSH_REPLY") {
+            // `PUSH_REPLY` may itself carry a first option in the same record.
+            let value = value.trim_start_matches(' ');
+            if !value.is_empty() {
+                parse_push_field(value, &mut reply);
+            }
+        } else if let Some(value) = field.strip_prefix("cipher ") {
             reply.cipher = Some(value.trim().to_string());
         } else if let Some(value) = field.strip_prefix("data-ciphers ") {
             reply.data_ciphers = value
@@ -1110,12 +1369,100 @@ fn parse_push_reply(text: &str) -> Result<PushReply, OpenVpnError> {
             reply.peer_id = value.trim().parse().ok();
         } else if let Some(value) = field.strip_prefix("ifconfig ") {
             reply.ifconfig = Some(value.trim().to_string());
+            parse_push_field(field, &mut reply);
+        } else {
+            parse_push_field(field, &mut reply);
         }
     }
     if reply.ifconfig.is_none() && !text.starts_with("PUSH_REPLY") {
         return Err(OpenVpnError::Push("not a PUSH_REPLY".to_string()));
     }
     Ok(reply)
+}
+
+fn parse_push_field(field: &str, reply: &mut PushReply) {
+    let mut parts = field.split_whitespace();
+    match parts.next() {
+        Some("ifconfig") => {
+            let values: Vec<&str> = parts.collect();
+            if let Some((addr, bits)) = ifconfig_prefix(&values) {
+                reply.prefixes.push((addr, bits));
+            }
+        }
+        Some("ifconfig-ipv6") => {
+            let values: Vec<&str> = parts.collect();
+            if let Some((addr, bits)) = ifconfig_prefix(&values) {
+                reply.prefixes.push((addr, bits));
+            }
+        }
+        Some("route") | Some("route-ipv6") => {
+            let values: Vec<&str> = parts.collect();
+            if let Some(prefix) = route_prefix(&values) {
+                reply.routes.push(prefix);
+            }
+        }
+        Some("dns") => {
+            if let Some(value) = parts.next() {
+                if let Ok(addr) = value.parse() {
+                    reply.dns.push(addr);
+                }
+            }
+        }
+        Some("redirect-gateway") => reply.redirect_gateway = true,
+        Some("block-outside-dns") => reply.block_outside_dns = true,
+        _ => {}
+    }
+}
+
+/// `ifconfig <local> <netmask-or-peer>` / `ifconfig-ipv6 <local/len> <peer>`.
+/// The second IPv4 field is a netmask only when it is a contiguous mask;
+/// otherwise it is the topology-p2p peer address and the local address is a
+/// host prefix (`10.211.1.37 10.211.254.254` -> `/32`).
+fn ifconfig_prefix(values: &[&str]) -> Option<(std::net::IpAddr, u8)> {
+    let local = values.first()?.trim();
+    if let Some((addr, bits)) = local.split_once('/') {
+        let addr = addr.parse().ok()?;
+        let bits = bits.parse().ok()?;
+        return Some((addr, bits));
+    }
+    let addr: std::net::IpAddr = local.parse().ok()?;
+    let bits = values
+        .get(1)
+        .and_then(|mask| mask.parse::<std::net::Ipv4Addr>().ok())
+        .and_then(netmask_bits)
+        .unwrap_or(if addr.is_ipv4() { 32 } else { 128 });
+    Some((addr, bits))
+}
+
+fn route_prefix(values: &[&str]) -> Option<(std::net::IpAddr, u8)> {
+    let network = values.first()?.trim();
+    if let Some((addr, bits)) = network.split_once('/') {
+        let addr = addr.parse().ok()?;
+        let bits = bits.parse().ok()?;
+        return Some((addr, bits));
+    }
+    let addr: std::net::IpAddr = network.parse().ok()?;
+    let bits = if addr.is_ipv4() {
+        values
+            .get(1)
+            .and_then(|mask| mask.parse::<std::net::Ipv4Addr>().ok())
+            .and_then(netmask_bits)
+            .unwrap_or(32)
+    } else {
+        128
+    };
+    Some((addr, bits))
+}
+
+/// Prefix length of a contiguous IPv4 netmask, or `None` when the bits have a
+/// hole (a peer address is not a netmask).
+fn netmask_bits(mask: std::net::Ipv4Addr) -> Option<u8> {
+    let value = u32::from(mask);
+    let inverted = !value;
+    if inverted & inverted.wrapping_add(1) != 0 {
+        return None;
+    }
+    Some(inverted.leading_zeros() as u8)
 }
 
 fn negotiate_cipher(option: &OpenVpnOutbound, push: &PushReply) -> Result<String, OpenVpnError> {
@@ -1460,6 +1807,46 @@ mod tests {
         assert_eq!(reply.peer_id, Some(3));
         assert_eq!(reply.cipher.as_deref(), Some("AES-256-GCM"));
         assert_eq!(reply.ifconfig.as_deref(), Some("10.8.0.6 10.8.0.5"));
+        // The peer address in a p2p topology is not a netmask.
+        assert_eq!(
+            reply.prefixes,
+            vec![(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 6)), 32)]
+        );
+        assert_eq!(
+            reply.routes,
+            vec![(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 0)),
+                24
+            )]
+        );
+    }
+
+    #[test]
+    fn push_reply_derives_prefixes_ipv6_dns_and_redirect() {
+        let reply = parse_push_reply(
+            "PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,ifconfig-ipv6 fd00::2/64 fd00::1,route-ipv6 2000::/3,dns 10.8.0.1,redirect-gateway def1,block-outside-dns",
+        )
+        .expect("parse");
+        assert_eq!(
+            reply.prefixes,
+            vec![
+                (std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 2)), 24),
+                (std::net::IpAddr::V6(std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)), 64),
+            ]
+        );
+        assert_eq!(
+            reply.routes,
+            vec![(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0)),
+                3
+            )]
+        );
+        assert_eq!(
+            reply.dns,
+            vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 1))]
+        );
+        assert!(reply.redirect_gateway);
+        assert!(reply.block_outside_dns);
     }
 
     #[test]

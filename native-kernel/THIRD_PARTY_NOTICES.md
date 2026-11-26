@@ -339,3 +339,13 @@ Noise XX/secure-datagram layers are translated; OSPF/route identity and the
 userspace IP stack/TUN remain out of scope. The controlled peer
 `tool/kernel-compat/peers/easytier-peer` runs the locked Go/wasm module as a
 test fixture only and is not linked into the kernel.
+
+## `smoltcp` (MIT OR Apache-2.0, crates.io)
+
+Upstream: <https://github.com/smoltcp-rs/smoltcp>, version `0.11.0`
+(`smoltcp-0.11.0.crate` in the Cargo registry). It is the TCP/UDP state machine
+behind the shared userspace L3 stack (`crates/billow-kernel/src/outbound/l3/`)
+used by the `wireguard` and `openvpn` outbounds. Only the library is linked; no
+source is vendored. smoltcp is dual-licensed under MIT OR Apache-2.0; both are
+compatible with the GPL-3.0-only workspace, and the GPL-3.0 obligations of the
+combined binary are unchanged.

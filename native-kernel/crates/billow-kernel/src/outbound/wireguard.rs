@@ -2,13 +2,11 @@
 //!
 //! This module is the protocol half of the pinned `wireguard` outbound
 //! (`adapter/outbound/wireguard.go`): it terminates the WireGuard tunnel at
-//! the packet level and exposes encrypted IP packets. It deliberately does not
-//! implement an IP stack, a TUN device or the TCP/UDP socket layer inside the
-//! tunnel; the pinned adapter wires the WireGuard device to a userspace IP
-//! stack (mips by default, gVisor with `with_gvisor`) and that device/TUN
-//! ownership is the T6/T7 layer. Without it this module has no `dial()` that
-//! can return a TCP stream, so the outbound refuses every dial by name while
-//! the transport itself is usable through [`WireguardTunnel`].
+//! the packet level and exposes encrypted IP packets. [`connect_stack`] wires
+//! that packet stream to the shared smoltcp stack in [`crate::outbound::l3`],
+//! so [`dial`] returns a real TCP stream and `tunnel::udp` gets a real UDP
+//! association. Peer selection follows `allowed-ips` by longest prefix
+//! (`select_peer`).
 //!
 //! Wire format implemented here (WireGuard whitepaper, public protocol):
 //!
@@ -29,6 +27,7 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use blake2::digest::consts::U16;
@@ -40,6 +39,8 @@ use rand::rngs::OsRng;
 use tokio::net::UdpSocket;
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::outbound::l3::{self, Stack, StackConfig};
+use crate::outbound::ipstack::IpPrefix;
 use crate::proxies::{WireguardOutbound, WireguardPeerOutbound};
 
 /// `CONSTRUCTION` from the WireGuard whitepaper.
@@ -146,6 +147,14 @@ pub enum WireguardError {
     BufferTooSmall { len: usize, packet: usize },
     #[error("wireguard endpooint {0} resolved to no address")]
     Resolve(String),
+    #[error("wireguard configuration has no local IPv4 or IPv6 address ('ip'/'ipv6'): the userspace IP stack needs one")]
+    NoLocalAddress,
+    #[error("wireguard has no peer with an allowed-ips prefix covering {0}")]
+    NoRoute(IpAddr),
+    #[error("wireguard userspace stack: {0}")]
+    Stack(String),
+    #[error("wireguard data packet authentication failed; the session needs a new handshake")]
+    Authentication,
 }
 
 /// One peer the tunnel encrypts packets for. Keys are already decoded; the
@@ -159,6 +168,10 @@ pub struct WireguardPeer {
     /// The three reserved header bytes (`reserved:`); every message sends
     /// them, as the pinned `ClientBind` does (`b[1..4]`).
     pub reserved: [u8; 3],
+    /// Prefixes this peer carries; an empty list means "every destination"
+    /// only for the compatibility constructors that do not know the config.
+    /// The configuration path always fills it from `allowed-ips`.
+    pub allowed_ips: Vec<IpPrefix>,
 }
 
 impl std::fmt::Debug for WireguardPeer {
@@ -223,6 +236,7 @@ impl WireguardPeer {
             public_key,
             preshared_key,
             reserved,
+            allowed_ips: Vec::new(),
         })
     }
 
@@ -274,6 +288,10 @@ pub struct WireguardTunnel {
     keepalive: u16,
     last_sent: Instant,
     handshake_timeout: Duration,
+    /// Reused receive scratch for transport data so a steady stream does not
+    /// allocate a 64 KiB buffer per datagram. The handshake keeps its own
+    /// allocation (it retransmits while holding the datagram).
+    recv_scratch: Vec<u8>,
 }
 
 impl std::fmt::Debug for WireguardTunnel {
@@ -304,6 +322,11 @@ impl WireguardTunnel {
         let (server, port, public_key, preshared_key, reserved) =
             WireguardPeer::from_outbound(peer)?;
         let endpoint = resolve(&server, port).await?;
+        let allowed_ips = peer
+            .allowed_ips
+            .iter()
+            .filter_map(|value| IpPrefix::parse(value).ok())
+            .collect();
         Self::connect_endpoint(
             private,
             WireguardPeer {
@@ -311,6 +334,7 @@ impl WireguardTunnel {
                 public_key: PublicKey::from(public_key),
                 preshared_key,
                 reserved,
+                allowed_ips,
             },
             outbound.mtu as usize,
             outbound.persistent_keepalive,
@@ -319,8 +343,11 @@ impl WireguardTunnel {
         .await
     }
 
-    /// Perform the handshake against one already-resolved peer. Tests and
-    /// the future device layer use this entry point directly.
+    /// Perform the handshake against one already-resolved peer. Tests and the
+    /// stack entry point use this constructor; the UDP socket is bound through
+    /// [`super::bind_udp`] so the physical-interface binding of a desktop TUN
+    /// is honoured (a plain `UdpSocket::bind` would be captured by the TUN
+    /// again).
     pub async fn connect_endpoint(
         private_key: [u8; 32],
         peer: WireguardPeer,
@@ -333,12 +360,26 @@ impl WireguardTunnel {
         } else {
             SocketAddr::from(([0u16; 8], 0))
         };
-        let socket = UdpSocket::bind(bind)
+        let socket = super::bind_udp(bind)
             .await
             .map_err(|source| WireguardError::Connect {
                 endpoint: peer.endpoint.to_string(),
                 source,
             })?;
+        Self::connect_with_socket(private_key, peer, mtu, keepalive, timeout, socket).await
+    }
+
+    /// [`connect_endpoint`](Self::connect_endpoint) with a socket the caller
+    /// already bound. The stack entry point creates it in the dial task so the
+    /// task-local `DialerOptions` are in scope.
+    pub async fn connect_with_socket(
+        private_key: [u8; 32],
+        peer: WireguardPeer,
+        mtu: usize,
+        keepalive: u16,
+        timeout: Duration,
+        socket: UdpSocket,
+    ) -> Result<Self, WireguardError> {
         socket
             .connect(peer.endpoint)
             .await
@@ -362,6 +403,7 @@ impl WireguardTunnel {
             keepalive,
             last_sent: Instant::now(),
             handshake_timeout: timeout,
+            recv_scratch: vec![0u8; 65535],
         };
         tunnel.handshake().await?;
         Ok(tunnel)
@@ -382,8 +424,13 @@ impl WireguardTunnel {
         self.peer.endpoint
     }
 
-    async fn handshake(&mut self) -> Result<(), WireguardError> {
-        let mut initiation =
+    /// Replace both transport keys with a fresh handshake. The carrier calls
+    /// this once after an authenticated data packet fails to decrypt.
+    pub async fn rekey(&mut self) -> Result<(), WireguardError> {
+        self.handshake().await
+    }
+
+    async fn handshake(&mut self) -> Result<(), WireguardError> {        let mut initiation =
             InitiatorHandshake::new(&self.local_static, self.peer.public_key);
         self.local_index = random_u32();
         initiation.sender_index = self.local_index;
@@ -523,12 +570,13 @@ impl WireguardTunnel {
             {
                 self.send_keepalive().await?;
             }
-            let datagram = self.recv_datagram().await?;
-            if datagram.len() < TRANSPORT_HEADER_LEN
-                || datagram[0] != MESSAGE_TRANSPORT_DATA
+            let length = self.recv_datagram_into().await?;
+            if length < TRANSPORT_HEADER_LEN
+                || self.recv_scratch[0] != MESSAGE_TRANSPORT_DATA
             {
                 continue;
             }
+            let datagram = &self.recv_scratch[..length];
             let receiver = u32::from_le_bytes(datagram[4..8].try_into().unwrap());
             if receiver != self.local_index {
                 continue;
@@ -548,10 +596,7 @@ impl WireguardTunnel {
                         aad: &[],
                     },
                 )
-                .map_err(|_| {
-                    WireguardError::Transport("authentication failed (wrong key or replay)"
-                        .to_string())
-                })?;
+                .map_err(|_| WireguardError::Authentication)?;
             let length = ip_length(&plaintext, self.mtu);
             if length == 0 {
                 // Keepalive: authenticated, no IP packet.
@@ -579,6 +624,14 @@ impl WireguardTunnel {
             })
     }
 
+    /// Fill `recv_scratch` with one datagram and return its length.
+    async fn recv_datagram_into(&mut self) -> Result<usize, WireguardError> {
+        self.socket
+            .recv(&mut self.recv_scratch)
+            .await
+            .map_err(|source| WireguardError::Transport(source.to_string()))
+    }
+
     async fn recv_datagram(&mut self) -> Result<Vec<u8>, WireguardError> {
         let mut buffer = vec![0u8; 65535];
         let length = self
@@ -591,22 +644,327 @@ impl WireguardTunnel {
     }
 }
 
+/// Resolve the endpoint with the in-scope `ip-version` and proxy DNS, the same
+/// resolver every other outbound server name uses.
 async fn resolve(server: &str, port: u16) -> Result<SocketAddr, WireguardError> {
-    if let Ok(ip) = server.parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, port));
-    }
-    let mut addresses = tokio::net::lookup_host((server, port))
-        .await
-        .map_err(|source| WireguardError::Connect {
+    let addresses = super::resolve_all(server, port).await.map_err(|error| {
+        WireguardError::Connect {
             endpoint: format!("{server}:{port}"),
-            source,
-        })?
-        .collect::<Vec<_>>();
-    addresses.sort_by_key(|address| if address.is_ipv4() { 0 } else { 1 });
+            source: io::Error::other(error.to_string()),
+        }
+    })?;
     addresses
         .into_iter()
         .next()
         .ok_or_else(|| WireguardError::Resolve(server.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Userspace stack carrier
+// ---------------------------------------------------------------------------
+
+/// Registry key of one configured WireGuard outbound. The private/peer keys
+/// are part of the key (different keys are different devices) but the digest
+/// never prints them.
+pub(crate) fn stack_fingerprint(outbound: &WireguardOutbound) -> String {
+    let mut parts = vec![
+        outbound.private_key.expose().to_string(),
+        outbound.ip.clone().unwrap_or_default(),
+        outbound.ipv6.clone().unwrap_or_default(),
+        outbound.mtu.to_string(),
+        outbound.udp.to_string(),
+        outbound.persistent_keepalive.to_string(),
+    ];
+    for peer in &outbound.peers {
+        parts.push(peer.server.clone());
+        parts.push(peer.port.to_string());
+        parts.push(peer.public_key.clone());
+        parts.push(
+            peer.preshared_key
+                .as_ref()
+                .map(|key| key.expose().to_string())
+                .unwrap_or_default(),
+        );
+        parts.push(hex::encode(&peer.reserved));
+        parts.push(peer.allowed_ips.join(","));
+    }
+    let borrowed: Vec<&str> = parts.iter().map(String::as_str).collect();
+    l3::fingerprint("wireguard", &borrowed)
+}
+
+fn local_addresses(outbound: &WireguardOutbound) -> (Option<std::net::Ipv4Addr>, Option<std::net::Ipv6Addr>) {
+    fn parse(value: &Option<String>) -> Option<IpAddr> {
+        value
+            .as_deref()
+            .and_then(|text| IpPrefix::parse(text).ok())
+            .map(|prefix| prefix.addr)
+    }
+    let ipv4 = match parse(&outbound.ip) {
+        Some(IpAddr::V4(addr)) => Some(addr),
+        _ => None,
+    };
+    let ipv6 = match parse(&outbound.ipv6) {
+        Some(IpAddr::V6(addr)) => Some(addr),
+        _ => None,
+    };
+    (ipv4, ipv6)
+}
+
+/// Peer selection by longest matching `allowed-ips` prefix. Equal lengths are
+/// resolved in configuration order with the *later* peer winning, matching the
+/// pinned device's route insertion.
+pub fn select_peer(peers: &[Vec<IpPrefix>], dst: IpAddr) -> Option<usize> {
+    let mut best: Option<(u8, usize)> = None;
+    for (index, prefixes) in peers.iter().enumerate() {
+        if prefixes.is_empty() {
+            // The compatibility constructors (`from_base64`) carry no
+            // configuration; one such peer accepts every destination.
+            if best.is_none() {
+                best = Some((0, index));
+            }
+            continue;
+        }
+        for prefix in prefixes {
+            if prefix.contains(dst) {
+                let bits = prefix.bits;
+                if best.map(|(known, _)| bits >= known).unwrap_or(true) {
+                    best = Some((bits, index));
+                }
+            }
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+fn packet_destination(packet: &[u8]) -> Option<IpAddr> {
+    crate::outbound::ipstack::parse_ip_packet(packet)
+        .ok()
+        .map(|parsed| parsed.dst)
+}
+
+fn stack_failure(weak: &Weak<Stack>, message: impl Into<String>) {
+    if let Some(stack) = weak.upgrade() {
+        stack.fail(message);
+    }
+}
+
+/// Build (or reuse) the userspace stack for one WireGuard outbound and start
+/// its carriers. All configured peers are handshaken up front: the stack needs
+/// every peer ready before the first TCP SYN, and the peer count is bounded by
+/// the configuration.
+pub async fn connect_stack(
+    outbound: &WireguardOutbound,
+    timeout: Duration,
+) -> Result<Arc<Stack>, WireguardError> {
+    let fingerprint = stack_fingerprint(outbound);
+    let _guard = l3::registry_lock().lock().await;
+    if let Some(stack) = l3::lookup(&fingerprint) {
+        return Ok(stack);
+    }
+    if outbound.peers.is_empty() {
+        return Err(WireguardError::NoPeer);
+    }
+    let (ipv4, ipv6) = local_addresses(outbound);
+    if ipv4.is_none() && ipv6.is_none() {
+        return Err(WireguardError::NoLocalAddress);
+    }
+    let mtu = if outbound.mtu == 0 {
+        1408
+    } else {
+        outbound.mtu as usize
+    };
+    let private = decode_key(outbound.private_key.expose())?;
+    let config = StackConfig::new(ipv4, ipv6, mtu, fingerprint.clone());
+    let stack = Stack::new(config).map_err(|error| WireguardError::Stack(error.to_string()))?;
+
+    let mut tunnels = Vec::with_capacity(outbound.peers.len());
+    let mut allowed = Vec::with_capacity(outbound.peers.len());
+    for peer in &outbound.peers {
+        let (server, port, public_key, preshared_key, reserved) =
+            WireguardPeer::from_outbound(peer)?;
+        let prefixes: Vec<IpPrefix> = peer
+            .allowed_ips
+            .iter()
+            .filter_map(|value| IpPrefix::parse(value).ok())
+            .collect();
+        if prefixes.is_empty() {
+            return Err(WireguardError::NoRoute(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)));
+        }
+        let endpoint = resolve(&server, port).await?;
+        let bind: SocketAddr = if endpoint.is_ipv4() {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        } else {
+            SocketAddr::from(([0u16; 8], 0))
+        };
+        let socket = super::bind_udp(bind)
+            .await
+            .map_err(|source| WireguardError::Connect {
+                endpoint: endpoint.to_string(),
+                source,
+            })?;
+        let tunnel = WireguardTunnel::connect_with_socket(
+            private,
+            WireguardPeer {
+                endpoint,
+                public_key: PublicKey::from(public_key),
+                preshared_key,
+                reserved,
+                allowed_ips: prefixes.clone(),
+            },
+            mtu,
+            outbound.persistent_keepalive,
+            timeout,
+            socket,
+        )
+        .await?;
+        tunnels.push(tunnel);
+        allowed.push(prefixes);
+    }
+    spawn_carrier(&stack, tunnels, allowed, outbound.persistent_keepalive);
+    l3::publish(fingerprint, &stack);
+    Ok(stack)
+}
+
+fn spawn_carrier(
+    stack: &Arc<Stack>,
+    tunnels: Vec<WireguardTunnel>,
+    allowed: Vec<Vec<IpPrefix>>,
+    keepalive: u16,
+) {
+    let weak = Arc::downgrade(stack);
+    let mut senders = Vec::with_capacity(tunnels.len());
+    for tunnel in tunnels {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+        senders.push(tx);
+        let weak = weak.clone();
+        tokio::spawn(async move {
+            let mut tunnel = tunnel;
+            let mut buffer = vec![0u8; 65535];
+            let interval = Duration::from_secs(u64::from(keepalive.max(1)));
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut rekeyed = false;
+            loop {
+                tokio::select! {
+                    packet = rx.recv() => match packet {
+                        Some(packet) => {
+                            if let Err(error) = tunnel.send_packet(&packet).await {
+                                stack_failure(&weak, format!("wireguard send: {error}"));
+                                return;
+                            }
+                            rekeyed = false;
+                        }
+                        None => return,
+                    },
+                    result = tunnel.recv_packet(&mut buffer) => match result {
+                        Ok(length) => {
+                            let Some(stack) = weak.upgrade() else {
+                                return;
+                            };
+                            stack.push_rx_packet(&buffer[..length]);
+                        }
+                        Err(WireguardError::Authentication) if !rekeyed => {
+                            rekeyed = true;
+                            if let Err(error) = tunnel.rekey().await {
+                                stack_failure(&weak, format!("wireguard rekey: {error}"));
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            stack_failure(&weak, format!("wireguard receive: {error}"));
+                            return;
+                        }
+                    },
+                    _ = tick.tick(), if keepalive != 0 => {
+                        if let Err(error) = tunnel.send_keepalive().await {
+                            stack_failure(&weak, format!("wireguard keepalive: {error}"));
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    // Egress dispatcher: take IP packets the stack produced and hand each to
+    // the peer whose allowed-ips prefix covers its destination.
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let Some(stack) = weak.upgrade() else {
+                return;
+            };
+            let mut packets = Vec::new();
+            while let Some(packet) = stack.take_tx_packet() {
+                packets.push(packet);
+            }
+            for packet in packets {
+                let Some(dst) = packet_destination(&packet) else {
+                    continue;
+                };
+                let Some(index) = select_peer(&allowed, dst) else {
+                    stack.fail(format!(
+                        "wireguard has no peer with an allowed-ips prefix covering {dst}"
+                    ));
+                    continue;
+                };
+                let _ = senders[index].try_send(packet);
+            }
+        }
+    });
+}
+
+fn dial_error(error: WireguardError) -> super::DialError {
+    super::DialError::Handshake {
+        protocol: "wireguard",
+        source: io::Error::other(error.to_string()),
+    }
+}
+
+fn peer_server(outbound: &WireguardOutbound) -> SocketAddr {
+    outbound
+        .peers
+        .first()
+        .map(|peer| match peer.server.parse::<IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, peer.port),
+            Err(_) => SocketAddr::from(([0, 0, 0, 0], peer.port)),
+        })
+        .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)))
+}
+
+/// `dial_inner` entry: build the stack, resolve the destination through the
+/// session resolver, and return one TCP stream terminated by smoltcp.
+pub(crate) async fn dial(
+    outbound: &WireguardOutbound,
+    target: &super::Target,
+    timeout: Duration,
+) -> Result<super::Dialed, super::DialError> {
+    let stack = connect_stack(outbound, timeout).await.map_err(dial_error)?;
+    let addresses = super::resolve_all(&target.host, target.port).await?;
+    let remote = addresses
+        .into_iter()
+        .find(|address| match address.ip() {
+            IpAddr::V4(_) => stack.ipv4().is_some(),
+            IpAddr::V6(_) => stack.ipv6().is_some(),
+        })
+        .ok_or_else(|| super::DialError::Resolve {
+            host: target.host.clone(),
+            source: io::Error::new(
+                io::ErrorKind::NotFound,
+                "no resolved address matches a local tunnel address family",
+            ),
+        })?;
+    let stream = stack.dial_tcp(remote, timeout).await.map_err(|error| {
+        super::DialError::Handshake {
+            protocol: "wireguard",
+            source: error,
+        }
+    })?;
+    Ok(super::Dialed {
+        stream,
+        server: peer_server(outbound),
+    })
 }
 
 struct InitiatorHandshake {
@@ -1060,6 +1418,36 @@ mod tests {
         too_large[0] = 0x45;
         too_large[2..4].copy_from_slice(&100u16.to_be_bytes());
         assert_eq!(ip_length(&too_large, 1420), 0);
+    }
+
+    #[test]
+    fn allowed_ips_select_by_longest_prefix_and_later_peer_wins() {
+        let prefixes = |values: &[&str]| -> Vec<IpPrefix> {
+            values
+                .iter()
+                .map(|value| IpPrefix::parse(value).expect("prefix"))
+                .collect()
+        };
+        let peers = vec![
+            prefixes(&["0.0.0.0/0"]),
+            prefixes(&["10.0.0.0/8"]),
+            prefixes(&["10.1.0.0/16"]),
+            prefixes(&["10.1.0.0/16"]),
+        ];
+        assert_eq!(
+            select_peer(&peers, IpAddr::V4(std::net::Ipv4Addr::new(10, 1, 2, 3))),
+            Some(3),
+            "equal-length prefixes: the later peer wins"
+        );
+        assert_eq!(
+            select_peer(&peers, IpAddr::V4(std::net::Ipv4Addr::new(10, 2, 2, 3))),
+            Some(1)
+        );
+        assert_eq!(
+            select_peer(&peers, IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))),
+            Some(0)
+        );
+        assert_eq!(select_peer(&peers, IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)), None);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 //! The peer is `tool/kernel-compat/peers/wireguard-peer`, a userspace device
 //! built from the locked `github.com/metacubex/wireguard-go` (the device the
 //! pinned Mihomo runs behind its `wireguard` outbound). Its fake TUN answers
-//! IPv4 ICMP echo requests, so the Rust side proves the Noise IK handshake,
-//! the transport keys, padding and the replay counter without an IP stack.
+//! IPv4 ICMP echo requests, echoes IPv4 UDP datagrams and runs a minimal IPv4
+//! TCP responder, so the Rust side proves the Noise IK handshake, the transport
+//! keys, the shared userspace L3 stack's TCP/UDP paths and `allowed-ips` peer
+//! selection.
 //!
 //! Controlled entry point:
 //!
@@ -23,9 +25,13 @@ use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use billow_kernel::keys::Secret;
 use billow_kernel::outbound::wireguard::{
-    derive_public_key, encode_key, WireguardError, WireguardPeer, WireguardTunnel,
+    connect_stack, derive_public_key, encode_key, WireguardError, WireguardPeer, WireguardTunnel,
 };
+use billow_kernel::proxies::{WireguardOutbound, WireguardPeerOutbound};
 
 struct Peer {
     child: Child,
@@ -292,4 +298,116 @@ async fn packets_over_the_mtu_and_short_buffers_are_named_errors() {
     let mut buffer = [0u8; 1500];
     let length = tunnel.recv_packet(&mut buffer).await.expect("reply");
     assert_eq!(&buffer[..length][28..], b"after");
+}
+
+
+fn wireguard_outbound(peers: &[(SocketAddr, &str, &str)]) -> WireguardOutbound {
+    WireguardOutbound {
+        private_key: Secret::new(encode_key(&CLIENT_PRIVATE)),
+        ip: Some("10.13.13.2".to_string()),
+        ipv6: None,
+        workers: 0,
+        mtu: 1420,
+        udp: true,
+        persistent_keepalive: 0,
+        peers: peers
+            .iter()
+            .map(|(endpoint, public_key, allowed)| WireguardPeerOutbound {
+                server: endpoint.ip().to_string(),
+                port: endpoint.port(),
+                public_key: (*public_key).to_string(),
+                preshared_key: None,
+                reserved: Vec::new(),
+                allowed_ips: vec![(*allowed).to_string()],
+            })
+            .collect(),
+    }
+}
+
+/// Real UDP through the userspace L3 stack and the locked wireguard-go device:
+/// the peer's fake TUN echoes the datagram, so this proves the packet carrier,
+/// smoltcp's UDP socket, the source address and the return path together.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn udp_round_trip_through_the_locked_peer_and_l3_stack() {
+    let Some(peer) = start_peer(&client_public_key()) else {
+        return skip("udp_round_trip_through_the_locked_peer_and_l3_stack");
+    };
+    let outbound = wireguard_outbound(&[(peer.endpoint, &peer.public_key, "10.13.13.1/32")]);
+    let stack = connect_stack(&outbound, Duration::from_secs(3))
+        .await
+        .expect("stack + handshake");
+    let socket = stack.udp_socket().expect("udp socket");
+    let remote = SocketAddr::from(([10, 13, 13, 1], 5353));
+    socket.send(remote, b"through-wireguard").await.expect("send");
+    let mut buffer = [0u8; 1500];
+    let (from, read) = tokio::time::timeout(Duration::from_secs(3), socket.recv(&mut buffer))
+        .await
+        .expect("reply within 3s")
+        .expect("recv");
+    assert_eq!(from, remote);
+    assert_eq!(&buffer[..read], b"through-wireguard");
+}
+
+/// Two peers with disjoint `allowed-ips`: the egress dispatcher must pick the
+/// peer by longest prefix instead of always using the first one.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn multiple_peers_select_by_allowed_ips() {
+    let Some(first) = start_peer(&client_public_key()) else {
+        return skip("multiple_peers_select_by_allowed_ips");
+    };
+    let Some(second) = start_peer(&client_public_key()) else {
+        return;
+    };
+    let outbound = wireguard_outbound(&[
+        (first.endpoint, &first.public_key, "10.13.13.1/32"),
+        (second.endpoint, &second.public_key, "10.14.14.1/32"),
+    ]);
+    let stack = connect_stack(&outbound, Duration::from_secs(3))
+        .await
+        .expect("stack + two handshakes");
+    let socket = stack.udp_socket().expect("udp socket");
+    let mut buffer = [0u8; 1500];
+    for (octet, payload) in [(13u8, b"peer-one".as_slice()), (14u8, b"peer-two".as_slice())] {
+        let remote = SocketAddr::from(([10, octet, octet, 1], 5353));
+        socket.send(remote, payload).await.expect("send");
+        let (from, read) = tokio::time::timeout(Duration::from_secs(3), socket.recv(&mut buffer))
+            .await
+            .expect("reply within 3s")
+            .expect("recv");
+        assert_eq!(from, remote);
+        assert_eq!(&buffer[..read], payload);
+    }
+}
+
+
+/// Real TCP through the userspace L3 stack and the locked wireguard-go device.
+/// The peer's fake TUN runs a minimal TCP responder, so the SYN/SYN-ACK,
+/// data, ACK and echo all cross the real WireGuard transport.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn tcp_round_trip_through_the_locked_peer_and_l3_stack() {
+    let Some(peer) = start_peer(&client_public_key()) else {
+        return skip("tcp_round_trip_through_the_locked_peer_and_l3_stack");
+    };
+    let outbound = wireguard_outbound(&[(peer.endpoint, &peer.public_key, "10.13.13.1/32")]);
+    let stack = connect_stack(&outbound, Duration::from_secs(3))
+        .await
+        .expect("stack + handshake");
+    let mut stream = stack
+        .dial_tcp(
+            SocketAddr::from(([10, 13, 13, 1], 8080)),
+            Duration::from_secs(3),
+        )
+        .await
+        .expect("tcp connect through wireguard");
+    let payload = b"tcp-through-wireguard";
+    stream.write_all(payload).await.expect("write");
+    let mut echo = vec![0u8; payload.len()];
+    tokio::time::timeout(Duration::from_secs(3), stream.read_exact(&mut echo))
+        .await
+        .expect("echo within 3s")
+        .expect("read echo");
+    assert_eq!(&echo, payload);
 }

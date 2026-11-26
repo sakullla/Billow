@@ -5,9 +5,11 @@
 //! ASSOCIATE` datagram. The transports are the same association types the
 //! mixed listener uses (`socks5`, `ss`, `trojan`, `sudoku`, `trusttunnel`,
 //! `ssr`, `masque`, `shadowquic`, `hysteria`, `hysteria2`, `tuic` including
-//! `udp-over-stream`), plus `DIRECT`. A family without a UDP association in
-//! this kernel is refused by name instead of being sent the wrong way. The mesh
-//! families (`wireguard`/`openvpn`/`tailscale`/`zerotier`/`easytier`) and
+//! `udp-over-stream`), plus `DIRECT`. `wireguard` and `openvpn` use the shared
+//! userspace L3 stack (`outbound::l3`): one unconnected smoltcp UDP socket per
+//! association carries every destination of the flow. A family without a UDP
+//! association in this kernel is refused by name instead of being sent the
+//! wrong way. The mesh families `tailscale`/`zerotier`/`easytier` and
 //! `gost-relay` still have no TUN transport; that is registered in the
 //! evidence rather than silently accepted.
 //!
@@ -26,6 +28,7 @@ use tokio::sync::mpsc;
 
 use crate::outbound::{
     self,
+    l3::L3UdpSocket,
     masque::MasqueUdpAssociation,
     shadowquic::ShadowQuicUdp,
     tls::ClientTls,
@@ -164,6 +167,37 @@ impl TuicUotAssociation {
     }
 }
 
+/// One UDP association terminated by the shared userspace IP stack
+/// (`wireguard`/`openvpn`). The smoltcp socket is unconnected, so one
+/// association carries every destination of its flow.
+pub(crate) struct L3Association {
+    socket: L3UdpSocket,
+    protocol: &'static str,
+}
+
+impl L3Association {
+    fn new(socket: L3UdpSocket, protocol: &'static str) -> L3Association {
+        L3Association { socket, protocol }
+    }
+
+    async fn send(&mut self, target: &outbound::Target, payload: &[u8]) -> io::Result<()> {
+        let ip: IpAddr = target.host.parse().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} UDP association needs a resolved IP destination, got '{}'",
+                    self.protocol, target.host
+                ),
+            )
+        })?;
+        self.socket.send(SocketAddr::new(ip, target.port), payload).await
+    }
+
+    async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(SocketAddr, usize)>> {
+        self.socket.recv(buffer).await.map(Some)
+    }
+}
+
 /// One association per device UDP flow (see [`UdpReply::flow`]); a
 /// configuration with more concurrently active UDP flows than this drops the
 /// excess by name. Bounded, never unbounded.
@@ -203,6 +237,7 @@ enum Transport {
     Hysteria2(Hysteria2Udp),
     Tuic(crate::outbound::tuic::TuicUdp),
     TuicUot(TuicUotAssociation),
+    L3(L3Association),
 }
 
 impl Transport {
@@ -220,6 +255,7 @@ impl Transport {
             Transport::Hysteria2(transport) => transport.send(target, payload).await,
             Transport::Tuic(transport) => transport.send(target, payload).await,
             Transport::TuicUot(transport) => transport.send(target, payload).await,
+            Transport::L3(transport) => transport.send(target, payload).await,
         }
     }
 
@@ -249,6 +285,9 @@ impl Transport {
             // Replies already carry an `IpAddr`; returning `None` here would
             // skip the target mapping below.
             Transport::TuicUot(transport) => return transport.recv(buffer).await,
+            // The smoltcp socket reports the remote of every datagram, the
+            // same shape the UoT reader uses.
+            Transport::L3(transport) => return transport.recv(buffer).await,
         };
         match result? {
             Some((target, read)) => match target.host.parse::<IpAddr>() {
@@ -327,6 +366,10 @@ pub(crate) async fn association_task(
         // outbound. Hysteria v1 uses the `udp=1` session with QUIC datagrams;
         // TUIC `udp-over-stream` opens one stream per destination below.
         Protocol::Hysteria(_) | Protocol::Hysteria2(_) | Protocol::Tuic(_) => true,
+        // WireGuard states the UDP capability with `udp`; OpenVPN always
+        // carries UDP in the pinned outbound.
+        Protocol::Wireguard(option) => option.udp,
+        Protocol::OpenVpn(_) => true,
         _ => false,
     };
     if !supported {
@@ -392,6 +435,36 @@ pub(crate) async fn association_task(
             )
             .await
             .map(Transport::Tuic),
+            Protocol::Wireguard(option) => {
+                let stack = crate::outbound::wireguard::connect_stack(option, timeout)
+                    .await
+                    .map_err(|error| crate::outbound::DialError::Handshake {
+                        protocol: "wireguard",
+                        source: io::Error::other(error.to_string()),
+                    })?;
+                stack
+                    .udp_socket()
+                    .map(|socket| Transport::L3(L3Association::new(socket, "wireguard")))
+                    .map_err(|source| crate::outbound::DialError::Handshake {
+                        protocol: "wireguard",
+                        source,
+                    })
+            }
+            Protocol::OpenVpn(option) => {
+                let stack = crate::outbound::openvpn::connect_stack(option, timeout)
+                    .await
+                    .map_err(|error| crate::outbound::DialError::Handshake {
+                        protocol: "openvpn",
+                        source: io::Error::other(error.to_string()),
+                    })?;
+                stack
+                    .udp_socket()
+                    .map(|socket| Transport::L3(L3Association::new(socket, "openvpn")))
+                    .map_err(|source| crate::outbound::DialError::Handshake {
+                        protocol: "openvpn",
+                        source,
+                    })
+            }
             _ => unreachable!("supported was checked above"),
         }
     });
@@ -432,7 +505,7 @@ pub(crate) async fn association_task(
                 Some(AssocCommand::Send { target, payload }) => {
                     idle = tokio::time::Instant::now() + idle_limit;
                     let target = match &transport {
-                        Transport::TrustTunnel(_) => {
+                        Transport::TrustTunnel(_) | Transport::L3(_) => {
                             match resolve_ip_only_target(&session, &proxy, target).await {
                                 Ok(target) => target,
                                 Err(error) => {

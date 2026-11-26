@@ -1,0 +1,140 @@
+{
+  "workflow": "2026-11-20-native-rust-kernel",
+  "task": "T35",
+  "attempt": "T35-A1",
+  "result": "completed_with_concerns",
+  "stack": {
+    "module": "src/outbound/l3/",
+    "engine": "smoltcp 0.11.0 (std, medium-ip, proto-ipv4, proto-ipv6, socket-tcp, socket-udp)",
+    "device": "bounded Medium::Ip RX/TX queues (256 packets each), MTU from configuration",
+    "limits": {
+      "tcp_sockets": 16,
+      "tcp_buffer_bytes_per_direction": 32768,
+      "udp_sockets": 32,
+      "udp_queue_packets": 32,
+      "udp_packet_bytes": "max(2048, mtu + 16)",
+      "idle_reclaim_seconds": 60
+    },
+    "registry": "one Stack per configuration fingerprint; Weak entries; idle-with-no-sockets stacks stop their poller and are dropped",
+    "tcp": "smoltcp tcp::Socket behind AsyncRead/AsyncWrite; poll_shutdown sends FIN; remote FIN is EOF; RST is ConnectionReset; connect timeout is TimedOut; limit is OutOfMemory naming the maximum",
+    "udp": "unconnected smoltcp udp::Socket, many destinations per association, oversized datagram is InvalidInput naming the MTU"
+  },
+  "families": {
+    "wireguard": {
+      "status": "verified_end_to_end",
+      "local_addresses": [
+        "ip",
+        "ipv6"
+      ],
+      "peer_selection": "longest matching allowed-ips prefix; equal lengths: later peer wins; missing prefix is a named no-route failure",
+      "carrier": "tokio tasks; bind_udp anti-loop; persistent-keepalive timer; one rekey after an authentication failure",
+      "verified": [
+        "IPv4 ICMP echo through the locked wireguard-go device",
+        "IPv4 UDP echo through the locked device and the L3 stack",
+        "IPv4 TCP echo through the locked device and the L3 stack",
+        "two peers selected by allowed-ips",
+        "IPv4/IPv6 stack behaviour and MTU bounds against the independent in-tree peer"
+      ],
+      "not_verified": [
+        "IPv6 through the Go wireguard-go peer (the fixture only answers IPv4)"
+      ]
+    },
+    "openvpn": {
+      "status": "wiring_verified_datapath_not_end_to_end",
+      "local_addresses": [
+        "PUSH_REPLY ifconfig",
+        "PUSH_REPLY ifconfig-ipv6"
+      ],
+      "carrier": "one dedicated OS thread owning the blocking control/data link; connect in the async task resolves the server through outbound::resolve_all; the thread waits for the stack and then pumps send_data/recv_data(10ms)",
+      "verified": [
+        "control channel, TLS and key-method 2 against OpenVPN 2.7.9",
+        "PUSH_REPLY prefixes/routes/dns/redirect/block parsing (unit tests)",
+        "AEAD keepalive decryption",
+        "send_data accepted and the session remains usable",
+        "connect_stack builds from the pushed ifconfig and opens a UDP socket"
+      ],
+      "not_verified": [
+        "delivery of TCP or UDP payload through a real OpenVPN tunnel: the controlled server runs --dev null and discards IP packets"
+      ]
+    }
+  },
+  "consumers": {
+    "tcp": "outbound::dial_inner Protocol::Wireguard / Protocol::OpenVpn return a real stream; no DIRECT fallback",
+    "udp_engine": "engine.rs serve_udp_associate_inner has WireGuard (guard option.udp) and OpenVPN send/receive arms over one L3 UDP socket",
+    "udp_tunnel": "tunnel/udp.rs Transport::L3 shared by WireGuard and OpenVPN; the association resolves domain targets through the existing IP-only helper",
+    "udp_enabled": "OpenVPN true; WireGuard follows option.udp"
+  },
+  "anti_loop": {
+    "wireguard": "outbound::bind_udp in connect_endpoint and the stack entry point",
+    "openvpn": "udp_socket_std_blocking / tcp_stream_std_blocking for the control link"
+  },
+  "tests": {
+    "l3_stack": {
+      "required_features": [
+        "device-vpn"
+      ],
+      "passed": 8,
+      "cases": [
+        "tcp_three_concurrent_connections_echo",
+        "tcp_half_close_delivers_remaining_data_then_eof",
+        "tcp_reset_is_reported_as_a_connection_error",
+        "tcp_connect_timeout_is_named_and_releases_the_socket",
+        "udp_association_carries_two_remotes_and_ipv6",
+        "tcp_ipv6_and_large_payloads_stay_within_the_mtu",
+        "tcp_socket_limit_and_drop_reclaim",
+        "unsupported_family_and_oversized_udp_are_named"
+      ]
+    },
+    "wireguard_peer": {
+      "passed": 8,
+      "new_cases": [
+        "udp_round_trip_through_the_locked_peer_and_l3_stack",
+        "tcp_round_trip_through_the_locked_peer_and_l3_stack",
+        "multiple_peers_select_by_allowed_ips"
+      ]
+    },
+    "openvpn_peer": {
+      "passed": 5,
+      "new_cases": [
+        "connect_stack_uses_the_pushed_ifconfig"
+      ],
+      "extended": [
+        "control_channel_pushes_and_the_data_keys_decrypt_a_keepalive (prefixes + send_data)"
+      ]
+    },
+    "default_suite": "pass (217 lib tests plus every default integration suite, --test-threads=1)",
+    "device_vpn_suite": "pass, including l3_stack 8/8; the desktop-tun command (which enables device-vpn) also passes",
+    "config_udp_capability": "tests/config.rs::wireguard_and_openvpn_udp_capability_follows_pinned"
+  },
+  "dependency": {
+    "name": "smoltcp",
+    "version": "0.11.0",
+    "license": "MIT OR Apache-2.0",
+    "lockfile": "native-kernel/Cargo.lock updated",
+    "notice": "native-kernel/THIRD_PARTY_NOTICES.md"
+  },
+  "changed_files": [
+    "native-kernel/Cargo.toml",
+    "native-kernel/Cargo.lock",
+    "native-kernel/THIRD_PARTY_NOTICES.md",
+    "native-kernel/crates/billow-kernel/Cargo.toml",
+    "native-kernel/crates/billow-kernel/src/outbound/l3/{mod,device,stack}.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/mod.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/wireguard.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/openvpn.rs",
+    "native-kernel/crates/billow-kernel/src/outbound/udp.rs",
+    "native-kernel/crates/billow-kernel/src/tunnel/udp.rs",
+    "native-kernel/crates/billow-kernel/src/engine.rs",
+    "native-kernel/crates/billow-kernel/src/proxies.rs",
+    "native-kernel/crates/billow-kernel/tests/{l3_stack.rs,wireguard_peer.rs,openvpn_peer.rs,config.rs}",
+    "tool/kernel-compat/peers/wireguard-peer/main.go",
+    "tool/kernel-compat/evidence/{rust-mapping.json,t35-l3.md,t35-l3.json}"
+  ],
+  "concerns": [
+    "OpenVPN payload delivery through a real tunnel is not end-to-end verified; the controlled server runs --dev null. Only control/data-channel wiring, PUSH_REPLY and stack construction are proven.",
+    "IPv6 through the WireGuard fixture is not verified (the locked Go peer only answers IPv4); IPv6 is covered by the independent in-memory L3 peer.",
+    "The option matrix was not regenerated (needs a release kernel plus the pinned Mihomo baseline); its existing ip-stack rows remain accurate because mips/gVisor are still rejected, only the rejection text changed.",
+    "target/t35 is a private build cache created for this attempt and is not part of the change; the shared target directory was not used.",
+    "WireGuard handshakes every configured peer eagerly when the stack is created; one unreachable peer therefore fails stack creation even when the target would use another peer (the pinned device connects lazily per peer)."
+  ]
+}

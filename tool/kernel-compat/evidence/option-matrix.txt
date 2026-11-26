@@ -3,6 +3,7 @@
 # mihomo: /Users/yanggeng/github/Billow/tool/kernel-compat/.cache/baseline/mihomo-a55a9073f9b7
 # no-op cases: 291, implemented cases: 119, enabled cases: 90, problems: 0
 # note: client-fingerprint `impl` rows are approximations (closest rustls profile, no uTLS ClientHello); see t30-option-closure.json `approximations_counted_as_residual`.
+# T35: wireguard/openvpn now terminate TCP/UDP in a shared smoltcp stack; `ip-stack` (no value) stays a no-op and `ip-stack.mode: mips|gvisor` stays rust=reject with a smoltcp-specific reason. No row semantics changed, so the rows below are unchanged.
 # command: node tool/kernel-compat/option-probe.mjs --rust <billow-kernel> --mihomo <mihomo>
 
 noop    socks5  skip-cert-verify             rust=accept mihomo=accept

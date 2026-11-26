@@ -65,10 +65,14 @@ verified against OpenVPN 2.7.9). T19 added the mesh adapters: `tailscale`
 (control-base Noise IK, the HTTP/2 `/machine/map` control request and the DERP
 greeting/client-info/ping/packet frames) and `zerotier` (identity proof of work,
 planet/moon parsing, VL1 armor and HELLO/OK/WHOIS/ECHO, VL2 frame payload).
-Device/TUN ownership and the userspace IP stack stay with the device layer, so
-both families load a valid configuration and refuse every `dial()` with that
-gap named (the T34 desktop TUN now reuses that stack; wiring these outbounds'
-packets into it remains separate work). T20 translates EasyTier's locked LGPL-3.0-or-later source for the
+T35 wires both packet families into a shared userspace L3 stack
+(`src/outbound/l3/`, smoltcp over a bounded IP-packet device): `dial()` returns
+a real TCP stream and the TUN/UDP paths get a real UDP association. WireGuard
+TCP and UDP round trips are verified against the locked `wireguard-go` device,
+including two peers selected by `allowed-ips`. The OpenVPN data path is
+verified against OpenVPN 2.7.9 only with `--dev null`, so its stack wiring and
+`PUSH_REPLY` local address are covered but end-to-end payload delivery is not
+claimed. Device/TUN ownership stays with the device layer. T20 translates EasyTier's locked LGPL-3.0-or-later source for the
 cleartext host/discovery path: the real `DefaultHasher`-based
 `network_secret_digest`, peer-manager frame, `HandshakeRequest`,
 `PeerManagerHeader` and PingPong are implemented and verified against the
@@ -189,9 +193,11 @@ is registered as a weak semantic with a warning. `auto-detect-interface` parses
 `route -n get default` / `ip route show default` / the Windows PowerShell route
 probe and installs that interface as the process-wide default bind for
 kernel-originated sockets: proxy-server dials, DIRECT TCP/UDP, DNS queries,
-mKCP, provider downloads and group/controller DIRECT probes. WireGuard/
-OpenVPN/Tailscale/EasyTier server/control connections still use their own
-direct sockets; binding them is T35 work, so this is not a blanket claim that
+mKCP, provider downloads and group/controller DIRECT probes. WireGuard and
+OpenVPN carrier sockets now bind through `outbound::bind_udp` /
+`udp_socket_std_blocking` / `tcp_stream_std_blocking`, so a desktop TUN does not
+capture them (T35); Tailscale/EasyTier server/control connections still use
+their own direct sockets, so this is not a blanket claim that
 all proxy-server dials are bound. The reader thread feeds `Tunnel::ingest` (the
 same T7 stack), the bounded device sink/writer thread writes replies, and stop
 (including a partial route/DNS apply) removes exactly the
@@ -841,8 +847,10 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   `tuic`, `hysteria` and
   `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP, JLS and the private
   Brutal/congestion options, but `zero-rtt` and QUIC `v2` are rejected), and
-  `wireguard`/`openvpn` (protocol transports implemented, TCP/UDP dial needs
-  the T6/T7 userspace IP stack and TUN device);
+  `wireguard` (TCP/UDP through the shared smoltcp stack, verified against the
+  locked device; AmneziaWG and mips/gVisor stack modes rejected) and `openvpn`
+  (TCP/UDP through the same stack; the controlled server runs `--dev null`, so
+  end-to-end payload delivery through a real OpenVPN tunnel is not verified);
 - **partial (2 more)**: `tailscale` (control/DERP protocol halves; the tunnel
   still needs T6/T7 and registration-only options are rejected) and `zerotier`
   (identity/planet/VL1/VL2 protocol halves; the controller membership exchange
@@ -859,7 +867,7 @@ is silently reduced:
 
 | families | why not here | task / decision |
 | --- | --- | --- |
-| `wireguard`, `openvpn` | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and verified against controlled peers, but turning their IP packets into TCP streams needs the userspace IP stack and TUN device owned by T6/T7 | **T16**: transport + configuration semantics; a `dial()` names the T6/T7 device gap. `outbound::wireguard::WireguardTunnel` and `outbound::openvpn::OpenVpnTunnel` are the interfaces for that layer |
+| `wireguard`, `openvpn` (residual options) | the protocol halves are implemented (`src/outbound/wireguard.rs`, `src/outbound/openvpn.rs`) and TCP/UDP terminate in the shared smoltcp stack (`src/outbound/l3/`). AmneziaWG, mips/gVisor stack modes, stack DNS and endpoint refresh remain rejected by name; the OpenVPN datapath has no end-to-end server test (`--dev null` only) | **T16** transport; **T35** userspace TCP/UDP stack, multi-peer `allowed-ips` selection and both UDP consumers. WireGuard is verified end to end against the locked device; OpenVPN payload delivery is not claimed |
 | `tailscale`, `zerotier` | the protocol/configuration adapters are implemented in `src/outbound/{tailscale,zerotier}.rs` and verified against controlled peers built from the locked Go modules; the tunnel's TCP/UDP socket layer needs the T6/T7 userspace IP stack and TUN device | **T19 partial**: control/DERP and identity/planet/VL1/VL2 are available to T6/T7/T22/T23; `dial()` names the device gap; registration-only Tailscale prefs and ZeroTier TCP fallback are rejected by name |
 | `easytier` | `src/outbound/easytier.rs` is an LGPL-3.0-or-later translation of the locked EasyTier source: cleartext host/discovery, Noise XX and secure-datagram AES-GCM/ChaCha20; the userspace IP stack/TUN and OSPF/route identity belong to T6/T7 | **T20 partial**: cleartext and secure handshakes/encrypted data verified against the pinned core; distribution must honor LGPL |
 | `direct`, `dns`, `reject`, `rematch` as `proxies` entries | built-ins of Mihomo; the kernel already has `DIRECT`/`REJECT` rules, group members may name `DIRECT`/`REJECT`/`COMPATIBLE`, and there are no `dns`/`rematch` outbound adapters (T22 implements the resolver configuration, not `type: dns`) | `direct`/`dns`/`reject`/`rematch` proxy entries stay rejected by name |
