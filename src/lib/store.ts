@@ -22,6 +22,8 @@ import {
   type Mode,
   type NodeGroup,
   type PalettePreference,
+  type RuleMatchInput,
+  type RuleMatchResult,
   type SaveCustomNodeInput,
   type Snapshot,
   type ThemePreference,
@@ -144,13 +146,20 @@ export interface ProfileRefreshProgress {
   failed: number
 }
 
-/** Saved ConnectionsView state when drilling into a proxy group or rule-set (R4). */
+export type ConnectionRouteFilter = 'all' | 'proxy' | 'direct' | 'reject'
+export type ConnectionProtocolFilter = 'all' | 'tcp' | 'udp'
+
+/** Saved ConnectionsView state when drilling into a proxy group, rule-set or rule matcher (R4, R5). */
 export interface ConnectionReturnState {
   sessionId: number
-  targetPage: 'proxies' | 'resources'
+  targetPage: 'proxies' | 'resources' | 'rules'
   tab: 'active' | 'closed'
   query: string
-  routeFilter: 'all' | 'proxy' | 'direct'
+  routeFilter: ConnectionRouteFilter
+  protocolFilter?: ConnectionProtocolFilter
+  activeOnly?: boolean
+  quickProcess?: string | null
+  quickHost?: string | null
   sortKey: 'time' | 'speed' | 'download' | 'upload' | 'host'
   sortDir: 'asc' | 'desc'
   listScrollTop: number
@@ -165,6 +174,37 @@ export interface ConnectionReturnState {
   detailFromClosed: boolean
   rulePolicy: string
 }
+
+/** Saved RulesView state when drilling into a rule-set or proxy group (R5). */
+export interface RuleReturnState {
+  sessionId: number
+  profileId: string | null
+  targetPage: 'resources' | 'proxies'
+  query: string
+  kindFilter: string
+  proxyFilter: string
+  disabledOnly: boolean
+  listScrollTop: number
+  limit: number
+  matcherOpen: boolean
+  matchTarget: string
+  matchPort: string
+  matchProcess: string
+  matchResult: RuleMatchResult | null
+}
+
+/** One-shot cross-page diagnostic handoff payload (R5). */
+export type DiagnosticTarget =
+  | {
+      kind: 'rule-match'
+      target: string
+      dstPort: number | null
+      process: string | null
+    }
+  | {
+      kind: 'connection-search'
+      query: string
+    }
 
 const HISTORY = 60
 const MAX_CLOSED_CONNECTIONS = 200
@@ -199,6 +239,8 @@ export function createStore(backend: Backend) {
   const focusGroup = ref<string | null>(null)
   const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
   const connectionReturn = ref<ConnectionReturnState | null>(null)
+  const ruleReturn = ref<RuleReturnState | null>(null)
+  const diagnosticTarget = ref<DiagnosticTarget | null>(null)
   const connectionSessionId = ref(0)
   const settingsTab = ref<SettingsTab>('home')
   /** A row (`data-setting` id) the settings page should scroll to and highlight once shown. */
@@ -650,8 +692,25 @@ export function createStore(backend: Backend) {
         }
       }
     }
-    if (Boolean(next.connected) !== Boolean(snapshot.value.connected)) {
+    const wasConnected = Boolean(snapshot.value.connected)
+    const prevActiveId = snapshot.value.active_id
+    if (Boolean(next.connected) !== wasConnected) {
       connectionSessionId.value += 1
+    }
+    const disconnected = wasConnected && !next.connected
+    const profileSwitched = prevActiveId !== null && next.active_id !== prevActiveId
+    if (disconnected || profileSwitched) {
+      if (diagnosticTarget.value) diagnosticTarget.value = null
+      if (ruleReturn.value) {
+        const onTarget = page.value === ruleReturn.value.targetPage
+        ruleReturn.value = null
+        if (onTarget) {
+          toast(
+            disconnected ? tr('连接已断开，规则返回上下文已重置') : tr('配置已切换，规则返回上下文已重置'),
+            'info',
+          )
+        }
+      }
     }
     if (!next.connected) {
       prevActiveConnections.clear()
@@ -1149,6 +1208,35 @@ export function createStore(backend: Backend) {
     go('resources')
   }
 
+  /** Jump to Rules and run a one-shot static rule match evaluation (R5). */
+  function openRuleMatch(payload: {
+    target: string
+    dstPort?: number | null
+    process?: string | null
+    fromConnections?: boolean
+  }) {
+    const target = payload.target.trim()
+    if (!target) return
+    diagnosticTarget.value = {
+      kind: 'rule-match',
+      target,
+      dstPort: payload.dstPort ?? null,
+      process: payload.process?.trim() || null,
+    }
+    go('rules')
+  }
+
+  /** Jump to Connections and prefill the search box with a domain/IP from Logs (R5). */
+  function openConnectionSearch(query: string) {
+    const trimmed = query.trim()
+    if (!trimmed) return
+    diagnosticTarget.value = {
+      kind: 'connection-search',
+      query: trimmed,
+    }
+    go('connections')
+  }
+
   async function saveEntry(next: PageId) {
     pendingEntry = next
     if (savingEntry) return
@@ -1172,6 +1260,20 @@ export function createStore(backend: Backend) {
       next !== connectionReturn.value.targetPage
     ) {
       connectionReturn.value = null
+    }
+    if (
+      ruleReturn.value &&
+      next !== 'rules' &&
+      next !== ruleReturn.value.targetPage
+    ) {
+      ruleReturn.value = null
+    }
+    if (
+      diagnosticTarget.value &&
+      ((diagnosticTarget.value.kind === 'rule-match' && next !== 'rules') ||
+        (diagnosticTarget.value.kind === 'connection-search' && next !== 'connections'))
+    ) {
+      diagnosticTarget.value = null
     }
     page.value = next
     focusGroup.value = group ?? null
@@ -1368,6 +1470,10 @@ export function createStore(backend: Backend) {
     focusProvider,
     openProvider,
     connectionReturn,
+    ruleReturn,
+    diagnosticTarget,
+    openRuleMatch,
+    openConnectionSearch,
     connectionSessionId,
     settingsTab,
     settingsFocus,
@@ -1614,6 +1720,8 @@ export function createStore(backend: Backend) {
     },
     /** Runs outside the action queue: a slow resolver must not hold up other controls. */
     dnsQuery: (name: string, qtype: DnsQueryType) => backend.dnsQuery(name, qtype),
+    /** Read-only static rule match evaluation outside the mutating action queue (R2). */
+    matchRule: (input: RuleMatchInput) => backend.matchRule(input),
     /** Exit IP lookup, its stale mark and last failure (R40). */
     exitIp,
     exitIpStale,

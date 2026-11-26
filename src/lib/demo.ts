@@ -41,6 +41,11 @@ import {
   type ParsedCustomNode,
   type ProviderRow,
   type ProfileItem,
+  type RuleMatchCandidate,
+  type RuleMatchHit,
+  type RuleMatchInput,
+  type RuleMatchResult,
+  type RuleMatchUncertain,
   type RuleRow,
   type SaveCustomNodeInput,
   type SimpleProxyForm,
@@ -1936,6 +1941,12 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       const result = rulesSnapshot()
       return options.latin ? latinize(result) : result
     },
+    async matchRule(input) {
+      await wait(80)
+      if (!state.kernel_running) throw new Error('内核没有运行')
+      const result = evaluateDemoRuleMatch(rules, disabledRules, providerRows, input)
+      return options.latin ? latinize(result) : result
+    },
     async providers() {
       await wait(200)
       if (!state.kernel_running) return { providers: [], error: '内核没有运行' }
@@ -2620,4 +2631,517 @@ function buildDemoLandingRulesYaml(customState: Snapshot['custom_nodes']): strin
     }
   }
   return lines.join('')
+}
+
+interface ParsedDemoRuleTarget {
+  host: string | null
+  ip: string | null
+  isV6: boolean
+  port: number | null
+  process: string | null
+}
+
+type DemoRuleEval =
+  | { state: 'matched'; subRule: string | null }
+  | { state: 'not_matched' }
+  | { state: 'uncertain'; reason: string; providerName: string | null; needsDns: boolean }
+
+function parseDemoPortStr(text: string): number {
+  const trimmed = text.trim()
+  if (!/^\d{1,5}$/.test(trimmed)) throw new Error('目标端口无效（应为 1-65535）')
+  const port = Number(trimmed)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('目标端口无效（应为 1-65535）')
+  }
+  return port
+}
+
+function parseIpv4Number(ip: string): number | null {
+  const parts = ip.split('.')
+  if (parts.length !== 4) return null
+  let out = 0
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null
+    const octet = Number(part)
+    if (octet < 0 || octet > 255) return null
+    out = (out << 8) | octet
+  }
+  return out >>> 0
+}
+
+function parseIpv6Bytes(raw: string): Uint8Array | null {
+  if (!raw || !raw.includes(':') || !/^[0-9a-f:.]+$/i.test(raw)) return null
+  let text = raw.toLowerCase()
+  const hasDot = text.includes('.')
+  let v4Tail: [number, number] | null = null
+  if (hasDot) {
+    const lastColon = text.lastIndexOf(':')
+    const v4 = parseIpv4Number(text.slice(lastColon + 1))
+    if (v4 === null) return null
+    v4Tail = [(v4 >>> 16) & 0xffff, v4 & 0xffff]
+    text = text.slice(0, lastColon)
+  }
+  const halves = text.split('::')
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(':') : []
+  const right = halves[1] ? halves[1].split(':') : []
+  const words: number[] = []
+  const parsePart = (list: string[]) => {
+    const out: number[] = []
+    for (const part of list) {
+      if (!/^[0-9a-f]{1,4}$/i.test(part)) return null
+      out.push(Number.parseInt(part, 16))
+    }
+    return out
+  }
+  const leftWords = parsePart(left)
+  const rightWords = parsePart(right)
+  if (!leftWords || !rightWords) return null
+  const tailLen = v4Tail ? 2 : 0
+  if (halves.length === 2) {
+    const missing = 8 - (leftWords.length + rightWords.length + tailLen)
+    if (missing < 1) return null
+    words.push(...leftWords, ...Array<number>(missing).fill(0), ...rightWords)
+  } else {
+    if (leftWords.length + tailLen !== 8) return null
+    words.push(...leftWords)
+  }
+  if (v4Tail) words.push(v4Tail[0], v4Tail[1])
+  if (words.length !== 8) return null
+  const bytes = new Uint8Array(16)
+  for (let i = 0; i < 8; i++) {
+    bytes[i * 2] = (words[i]! >>> 8) & 0xff
+    bytes[i * 2 + 1] = words[i]! & 0xff
+  }
+  return bytes
+}
+
+function formatCanonicalIpv6(bytes: Uint8Array): string {
+  const words: string[] = []
+  for (let i = 0; i < 16; i += 2) {
+    words.push(((bytes[i]! << 8) | bytes[i + 1]!).toString(16))
+  }
+  let bestStart = -1
+  let bestLen = 0
+  let curStart = -1
+  let curLen = 0
+  for (let i = 0; i < 8; i++) {
+    if (words[i] === '0') {
+      if (curStart === -1) curStart = i
+      curLen++
+      if (curLen > bestLen) {
+        bestStart = curStart
+        bestLen = curLen
+      }
+    } else {
+      curStart = -1
+      curLen = 0
+    }
+  }
+  if (bestLen >= 2) {
+    const before = words.slice(0, bestStart).join(':')
+    const after = words.slice(bestStart + bestLen).join(':')
+    return `${before}::${after}`
+  }
+  return words.join(':')
+}
+
+function matchIpCidr(ip: string, isV6: boolean, cidr: string): boolean {
+  const [addrRaw, prefixRaw, ...rest] = cidr.trim().split('/')
+  if (!addrRaw || rest.length > 0) return false
+  if (!isV6) {
+    const ipNum = parseIpv4Number(ip)
+    const netNum = parseIpv4Number(addrRaw)
+    if (ipNum === null || netNum === null) return false
+    const prefix = prefixRaw === undefined ? 32 : Number(prefixRaw)
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false
+    if (prefix === 0) return true
+    const mask = prefix === 32 ? 0xffffffff : (~0 << (32 - prefix)) >>> 0
+    return (ipNum & mask) === (netNum & mask)
+  }
+  const ipBytes = parseIpv6Bytes(ip)
+  const netBytes = parseIpv6Bytes(addrRaw)
+  if (!ipBytes || !netBytes) return false
+  const prefix = prefixRaw === undefined ? 128 : Number(prefixRaw)
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return false
+  const fullBytes = Math.floor(prefix / 8)
+  const remBits = prefix % 8
+  for (let i = 0; i < fullBytes; i++) {
+    if (ipBytes[i] !== netBytes[i]) return false
+  }
+  if (remBits > 0) {
+    const mask = (0xff << (8 - remBits)) & 0xff
+    if ((ipBytes[fullBytes]! & mask) !== (netBytes[fullBytes]! & mask)) return false
+  }
+  return true
+}
+
+function validateDemoDomain(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\.+$/, '')
+  if (!trimmed || trimmed.length > 253) return null
+  const lower = trimmed.toLowerCase()
+  const labels = lower.split('.')
+  if (labels.length === 0) return null
+  for (const label of labels) {
+    if (!label || label.length > 63) return null
+    if (label.startsWith('-') || label.endsWith('-')) return null
+    if (!/^[a-z0-9_-]+$/i.test(label)) return null
+  }
+  if (/^\d+$/.test(labels[labels.length - 1]!)) return null
+  return lower
+}
+
+function parseDemoRuleTarget(input: RuleMatchInput): ParsedDemoRuleTarget {
+  if (input.dst_port != null) {
+    if (!Number.isInteger(input.dst_port) || input.dst_port < 1 || input.dst_port > 65535) {
+      throw new Error('目标端口无效（应为 1-65535）')
+    }
+  }
+  const raw = input.target.trim()
+  if (!raw) throw new Error('请输入要测试的域名或 IP')
+  if (/\s/.test(raw)) throw new Error('目标地址格式无效')
+
+  const schemeIdx = raw.indexOf('://')
+  const withoutScheme = schemeIdx >= 0 ? raw.slice(schemeIdx + 3) : raw
+  let authority = withoutScheme.split(/[/?#]/)[0]?.trim() ?? ''
+  const atIdx = authority.lastIndexOf('@')
+  if (atIdx >= 0) authority = authority.slice(atIdx + 1)
+  if (!authority) throw new Error('目标地址格式无效')
+
+  let extractedPort: number | null = null
+  let host: string | null = null
+  let ip: string | null = null
+  let isV6 = false
+
+  if (authority.startsWith('[')) {
+    const close = authority.indexOf(']')
+    if (close < 0) throw new Error('目标地址格式无效')
+    const ipPart = authority.slice(1, close)
+    const after = authority.slice(close + 1)
+    const bytes = parseIpv6Bytes(ipPart)
+    if (!bytes) throw new Error('目标地址格式无效')
+    if (after.startsWith(':')) extractedPort = parseDemoPortStr(after.slice(1))
+    else if (after) throw new Error('目标地址格式无效')
+    ip = formatCanonicalIpv6(bytes)
+    isV6 = true
+  } else {
+    const v6Bytes = parseIpv6Bytes(authority)
+    if (v6Bytes) {
+      ip = formatCanonicalIpv6(v6Bytes)
+      isV6 = true
+    } else {
+      const colons = authority.split(':').length - 1
+      if (colons > 1) throw new Error('目标地址格式无效')
+      let hostPart = authority
+      if (colons === 1) {
+        const idx = authority.indexOf(':')
+        hostPart = authority.slice(0, idx)
+        extractedPort = parseDemoPortStr(authority.slice(idx + 1))
+      }
+      const v4 = parseIpv4Number(hostPart)
+      if (v4 !== null) {
+        ip = `${(v4 >>> 24) & 255}.${(v4 >>> 16) & 255}.${(v4 >>> 8) & 255}.${v4 & 255}`
+      } else {
+        const domain = validateDemoDomain(hostPart)
+        if (!domain) throw new Error('目标地址格式无效')
+        host = domain
+      }
+    }
+  }
+
+  return {
+    host,
+    ip,
+    isV6,
+    port: input.dst_port ?? extractedPort,
+    process: input.process?.trim() || null,
+  }
+}
+
+function matchDemoPortExpr(port: number, expr: string): boolean {
+  for (const rawPart of expr.split('/')) {
+    const part = rawPart.trim()
+    if (!part) continue
+    const dash = part.indexOf('-')
+    if (dash > 0) {
+      const start = Number(part.slice(0, dash).trim())
+      const end = Number(part.slice(dash + 1).trim())
+      if (Number.isInteger(start) && Number.isInteger(end) && port >= start && port <= end) return true
+    } else if (Number(part) === port) {
+      return true
+    }
+  }
+  return false
+}
+
+function matchDemoDomainWildcard(host: string, pattern: string): boolean {
+  const pat = pattern.trim().replace(/\.+$/, '').toLowerCase()
+  if (!pat || !host) return false
+  if (pat.startsWith('+.')) {
+    const suffix = pat.slice(2)
+    return host === suffix || host.endsWith(`.${suffix}`)
+  }
+  if (pat.startsWith('.')) {
+    return host.endsWith(pat)
+  }
+  const escaped = pat
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '[^.]+')
+  return new RegExp(`^${escaped}$`, 'i').test(host)
+}
+
+function demoProcessBasename(value: string): string {
+  const normalized = value.replace(/\\/g, '/')
+  const idx = normalized.lastIndexOf('/')
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized
+}
+
+function evaluateDemoExplicitRule(
+  kind: string,
+  payload: string,
+  target: ParsedDemoRuleTarget,
+  modifiers: { noResolve?: boolean; src?: boolean } = {},
+): DemoRuleEval {
+  const norm = kind.replace(/[^a-z0-9]/gi, '').toLowerCase()
+  const trimmed = payload.trim()
+  switch (norm) {
+    case 'match':
+    case 'final':
+      return { state: 'matched', subRule: null }
+    case 'domain':
+      return target.host && target.host === trimmed.replace(/\.+$/, '').toLowerCase()
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainsuffix': {
+      if (!target.host) return { state: 'not_matched' }
+      const suffix = trimmed.replace(/^\.+/, '').replace(/\.+$/, '').toLowerCase()
+      return suffix && (target.host === suffix || target.host.endsWith(`.${suffix}`))
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    }
+    case 'domainkeyword':
+      return target.host && trimmed && target.host.includes(trimmed.toLowerCase())
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainwildcard':
+      return target.host && matchDemoDomainWildcard(target.host, trimmed)
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainregex':
+      if (!target.host) return { state: 'not_matched' }
+      try {
+        return new RegExp(trimmed, 'i').test(target.host)
+          ? { state: 'matched', subRule: null }
+          : { state: 'not_matched' }
+      } catch {
+        return { state: 'not_matched' }
+      }
+    case 'ipcidr':
+    case 'ipcidr6':
+      if (modifiers.src) {
+        return { state: 'uncertain', reason: '源地址 IP 规则需结合实际来源 IP 判断', providerName: null, needsDns: false }
+      }
+      if (target.ip) {
+        return matchIpCidr(target.ip, target.isV6, trimmed)
+          ? { state: 'matched', subRule: null }
+          : { state: 'not_matched' }
+      }
+      if (modifiers.noResolve) return { state: 'not_matched' }
+      return {
+        state: 'uncertain',
+        reason: 'IP-CIDR 规则未设置 no-resolve，域名需先解析 DNS 才能判定',
+        providerName: null,
+        needsDns: true,
+      }
+    case 'dstport':
+      if (target.port == null) {
+        return { state: 'uncertain', reason: '未提供目标端口，无法排除前置端口规则', providerName: null, needsDns: false }
+      }
+      return matchDemoPortExpr(target.port, trimmed) ? { state: 'matched', subRule: null } : { state: 'not_matched' }
+    case 'processname':
+      if (!target.process) {
+        return { state: 'uncertain', reason: '未提供进程信息，无法排除前置进程规则', providerName: null, needsDns: false }
+      }
+      return demoProcessBasename(target.process).toLowerCase() === trimmed.toLowerCase() ||
+        target.process.toLowerCase() === trimmed.toLowerCase()
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'processpath': {
+      if (!target.process) {
+        return { state: 'uncertain', reason: '未提供进程信息，无法排除前置进程规则', providerName: null, needsDns: false }
+      }
+      const normInput = target.process.replace(/\\/g, '/')
+      const normRule = trimmed.replace(/\\/g, '/')
+      if (normInput.toLowerCase() === normRule.toLowerCase()) return { state: 'matched', subRule: null }
+      if (!normInput.includes('/') && demoProcessBasename(normRule).toLowerCase() === normInput.toLowerCase()) {
+        return { state: 'uncertain', reason: '仅提供了进程名，无法完全验证进程路径规则', providerName: null, needsDns: false }
+      }
+      return { state: 'not_matched' }
+    }
+    case 'geosite':
+      if (!target.host) return { state: 'not_matched' }
+      return { state: 'uncertain', reason: `GEOSITE,${trimmed} 需内核查询 GeoSite 数据库判定`, providerName: null, needsDns: false }
+    case 'geoip':
+      if (modifiers.src) {
+        return { state: 'uncertain', reason: '源地址 GEOIP 规则需结合实际来源 IP 判断', providerName: null, needsDns: false }
+      }
+      if (target.ip) {
+        return { state: 'uncertain', reason: `GEOIP,${trimmed} 需内核查询 GeoIP 数据库判定`, providerName: null, needsDns: false }
+      }
+      if (modifiers.noResolve) return { state: 'not_matched' }
+      return {
+        state: 'uncertain',
+        reason: `GEOIP,${trimmed} 未设置 no-resolve，域名需先解析 DNS 并查询 GeoIP 数据库`,
+        providerName: null,
+        needsDns: true,
+      }
+    default:
+      return { state: 'uncertain', reason: `规则 ${kind} 依赖运行时连接上下文，无法静态排除`, providerName: null, needsDns: false }
+  }
+}
+
+function evaluateDemoRuleProvider(
+  name: string,
+  providerRows: ProviderRow[],
+  target: ParsedDemoRuleTarget,
+): DemoRuleEval {
+  const provider = providerRows.find((item) => item.kind === 'rule' && item.name === name)
+  if (!provider) {
+    return {
+      state: 'uncertain',
+      reason: `当前配置里没有找到规则集 ${name} 的定义`,
+      providerName: name,
+      needsDns: false,
+    }
+  }
+  const behavior = provider.behavior.toLowerCase()
+  if (provider.vehicle === 'Inline' || name === 'private') {
+    const inlineRules = [
+      'DOMAIN-SUFFIX,local',
+      'DOMAIN-SUFFIX,lan',
+      'IP-CIDR,10.0.0.0/8',
+      'IP-CIDR,172.16.0.0/12',
+      'IP-CIDR,192.168.0.0/16',
+      'IP-CIDR,127.0.0.0/8',
+    ]
+    let uncertain: DemoRuleEval | null = null
+    for (const line of inlineRules) {
+      const [subKind, subPayload] = line.split(',')
+      if (!subKind || !subPayload) continue
+      const res = evaluateDemoExplicitRule(subKind, subPayload, target)
+      if (res.state === 'matched') return { state: 'matched', subRule: line }
+      if (res.state === 'uncertain' && !uncertain) {
+        uncertain = { ...res, providerName: name }
+      }
+    }
+    return uncertain ?? { state: 'not_matched' }
+  }
+  if (behavior === 'domain' && provider.format === 'MrsRule') {
+    if (!target.host) return { state: 'not_matched' }
+    const match = /^(?:.+\.)?site(\d{6})\.cn$/i.exec(target.host)
+    if (match) {
+      const idx = Number(match[1])
+      if (Number.isInteger(idx) && idx >= 0 && idx < provider.count) {
+        const subRule = `${idx % 3 ? '+.' : ''}site${match[1]}.cn`
+        if (idx % 3 !== 0 || target.host === `site${match[1]}.cn`) {
+          return { state: 'matched', subRule }
+        }
+      }
+    }
+    return { state: 'not_matched' }
+  }
+  if (behavior === 'ipcidr') {
+    if (!target.ip) {
+      return {
+        state: 'uncertain',
+        reason: `规则集 ${name} 为 IP 规则集且未设置 no-resolve，域名需先解析 DNS 才能判定`,
+        providerName: name,
+        needsDns: true,
+      }
+    }
+    for (let i = 0; i < provider.count; i++) {
+      const cidr = `91.108.${4 + i}.0/22`
+      if (matchIpCidr(target.ip, target.isV6, cidr)) {
+        return { state: 'matched', subRule: cidr }
+      }
+    }
+    return { state: 'not_matched' }
+  }
+  return {
+    state: 'uncertain',
+    reason: `规则集 ${name} 尚未下载或无法读取本地缓存，请先在外部资源页更新`,
+    providerName: name,
+    needsDns: false,
+  }
+}
+
+function evaluateDemoRuleMatch(
+  rows: RuleRow[],
+  disabledRules: Set<string>,
+  providerRows: ProviderRow[],
+  input: RuleMatchInput,
+): RuleMatchResult {
+  const target = parseDemoRuleTarget(input)
+  let matched: RuleMatchHit | null = null
+  const skipped_disabled: RuleMatchCandidate[] = []
+  const preceding_uncertain: RuleMatchUncertain[] = []
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex]!
+    const disabled = row.key !== null && disabledRules.has(row.key)
+    const normKind = row.kind.replace(/[^a-z0-9]/gi, '').toLowerCase()
+    const evalResult =
+      normKind === 'ruleset'
+        ? evaluateDemoRuleProvider(row.payload, providerRows, target)
+        : evaluateDemoExplicitRule(row.kind, row.payload, target)
+
+    if (disabled) {
+      if (evalResult.state === 'matched') {
+        skipped_disabled.push({
+          row_index: rowIndex,
+          rule_key: row.key,
+          kind: row.kind,
+          payload: row.payload,
+          proxy: row.proxy,
+          sub_rule: evalResult.subRule,
+        })
+      }
+      continue
+    }
+
+    if (evalResult.state === 'matched') {
+      matched = {
+        row_index: rowIndex,
+        rule_key: row.key,
+        kind: row.kind,
+        payload: row.payload,
+        proxy: row.proxy,
+        sub_rule: evalResult.subRule,
+      }
+      break
+    }
+
+    if (evalResult.state === 'uncertain') {
+      preceding_uncertain.push({
+        row_index: rowIndex,
+        rule_key: row.key,
+        kind: row.kind,
+        payload: row.payload,
+        proxy: row.proxy,
+        reason: evalResult.reason,
+        provider_name: evalResult.providerName,
+        needs_dns: evalResult.needsDns,
+      })
+    }
+  }
+
+  return {
+    normalized_host: target.host,
+    normalized_ip: target.ip,
+    effective_port: target.port,
+    effective_process: target.process,
+    matched,
+    skipped_disabled,
+    preceding_uncertain,
+  }
 }

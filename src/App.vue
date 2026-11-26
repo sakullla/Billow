@@ -121,21 +121,26 @@ function isTabCurrent(id: PageId): boolean {
 const hasConnectionReturn = computed(
   () => Boolean(store.connectionReturn.value && store.page.value === store.connectionReturn.value.targetPage),
 )
+const hasRuleReturn = computed(
+  () => Boolean(store.ruleReturn.value && store.page.value === store.ruleReturn.value.targetPage),
+)
 /** Phones reach tool pages from Settings, so they get a visible way back besides the system gesture. */
 const showBack = computed(
-  () => compact.value && (TOOL_PAGES.includes(store.page.value) || hasConnectionReturn.value),
+  () => compact.value && (TOOL_PAGES.includes(store.page.value) || hasConnectionReturn.value || hasRuleReturn.value),
 )
-/** Desktop shows a contextual return bar only when drilling from connection detail into a group or rule-set (R4). */
+/** Desktop shows a contextual return bar only when drilling from connection detail or rules into another page (R4, R5). */
 const showDesktopConnectionReturn = computed(() => !compact.value && hasConnectionReturn.value)
+const showDesktopRuleReturn = computed(() => !compact.value && !hasConnectionReturn.value && hasRuleReturn.value)
 /** The page a back press returns to; mirrors the top of the non-reactive page stack. */
 const backTo = ref<PageId | null>(null)
 const backLabel = computed(() => {
   if (hasConnectionReturn.value) return tr('返回连接')
+  if (hasRuleReturn.value) return tr('返回规则')
   return PAGES.find((page) => page.id === backTo.value)?.label ?? tr('设置')
 })
 
 function goBack() {
-  const previous = backTo.value ?? (hasConnectionReturn.value ? 'connections' : null)
+  const previous = backTo.value ?? (hasConnectionReturn.value ? 'connections' : hasRuleReturn.value ? 'rules' : null)
   if (historyReady && previous != null && guardActive && layerDepth() === 0) {
     window.history.back()
     return
@@ -148,6 +153,7 @@ function goBack() {
   store.go(previous ?? 'settings')
 }
 provide('connectionBack', goBack)
+provide('ruleBack', goBack)
 
 // ── System bars & theme-color meta follow the effective theme & palette ──
 const prefersDark = ref(typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
@@ -852,6 +858,7 @@ defineExpose({ store })
           class="back-btn"
           data-testid="page-back"
           :data-connection-return="hasConnectionReturn ? 'true' : undefined"
+          :data-rule-return="hasRuleReturn ? 'true' : undefined"
           @click="goBack"
         >
           <Icon name="chevron-left" :size="18" />
@@ -862,6 +869,12 @@ defineExpose({ store })
         <button type="button" class="back-btn" data-testid="connection-return" @click="goBack">
           <Icon name="chevron-left" :size="18" />
           <span>{{ tr('返回连接') }}</span>
+        </button>
+      </div>
+      <div v-else-if="showDesktopRuleReturn" class="back-bar context-return-bar">
+        <button type="button" class="back-btn" data-testid="rule-return" @click="goBack">
+          <Icon name="chevron-left" :size="18" />
+          <span>{{ tr('返回规则') }}</span>
         </button>
       </div>
       <component :is="view" v-if="store.loaded.value" :compact="compact" />

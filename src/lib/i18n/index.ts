@@ -84,6 +84,21 @@ const UI_PATTERNS: { pattern: RegExp; render: (match: RegExpMatchArray) => strin
   { pattern: /^下载写入失败：(.*)$/, render: (m) => `Could not write the download: ${m[1]}` },
   { pattern: /^还没有找到可读取的规则文件（(.*)）；连接并更新这个规则集后再查看$/, render: (m) => `No readable rule file yet (${m[1]}); connect and update this rule set first` },
   { pattern: /^(.+)（请求超时）$/, render: (m) => `${m[1]} (request timed out)` },
+  { pattern: /^当前配置里没有找到规则集 (.+) 的定义$/, render: (m) => `Rule set ${m[1]} is not defined in the active profile` },
+  { pattern: /^规则集 (.+) 带 src 修饰符，需结合实际来源 IP 判断$/, render: (m) => `Rule set ${m[1]} uses src and requires the actual source IP` },
+  { pattern: /^规则集 (.+) 为 IP 规则集且未设置 no-resolve，域名需先解析 DNS 才能判定$/, render: (m) => `Rule set ${m[1]} is an IP rule set without no-resolve; domain needs DNS resolution first` },
+  { pattern: /^规则集 (.+) 尚未下载或无法读取本地缓存，请先在外部资源页更新$/, render: (m) => `Rule set ${m[1]} is not downloaded or unreadable locally; update it on the Resources page first` },
+  { pattern: /^规则集 (.+) 体积超过 8 MiB，已跳过静态穿透$/, render: (m) => `Rule set ${m[1]} exceeds 8 MiB; static inspection skipped` },
+  { pattern: /^规则集 (.+) 解码失败：(.*)$/, render: (m) => `Failed to decode rule set ${m[1]}: ${m[2]}` },
+  { pattern: /^GEOSITE,(.+) 需内核查询 GeoSite 数据库判定$/, render: (m) => `GEOSITE,${m[1]} requires the kernel GeoSite database` },
+  { pattern: /^GEOIP,(.+) 需内核查询 GeoIP 数据库判定$/, render: (m) => `GEOIP,${m[1]} requires the kernel GeoIP database` },
+  { pattern: /^GEOIP,(.+) 未设置 no-resolve，域名需先解析 DNS 并查询 GeoIP 数据库$/, render: (m) => `GEOIP,${m[1]} has no no-resolve flag; domain needs DNS resolution and GeoIP lookup` },
+  { pattern: /^IP-ASN,(.+) 未设置 no-resolve，域名需先解析 DNS 并查询 ASN 数据库$/, render: (m) => `IP-ASN,${m[1]} has no no-resolve flag; domain needs DNS resolution and ASN lookup` },
+  { pattern: /^IP-ASN,(.+) 需内核查询 ASN 数据库判定$/, render: (m) => `IP-ASN,${m[1]} requires the kernel ASN database` },
+  { pattern: /^正则进程规则（(.+)）需内核运行时评估$/, render: (m) => `Regex process rule (${m[1]}) requires kernel runtime evaluation` },
+  { pattern: /^复合规则（(.+)）需内核运行时评估$/, render: (m) => `Logical rule (${m[1]}) requires kernel runtime evaluation` },
+  { pattern: /^规则 (.+) 需内核运行时评估$/, render: (m) => `Rule ${m[1]} requires kernel runtime evaluation` },
+  { pattern: /^规则 (.+) 依赖运行时连接上下文，无法静态排除$/, render: (m) => `Rule ${m[1]} depends on runtime connection context and cannot be statically ruled out` },
 ]
 
 /**

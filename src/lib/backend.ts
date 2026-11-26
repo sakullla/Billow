@@ -6,6 +6,7 @@ import {
   normalizeKernel,
   normalizePalette,
   normalizeParseNodesResult,
+  normalizeRuleMatchResult,
   normalizeRuleRow,
   normalizeSnapshot,
   normalizeTrafficHistory,
@@ -34,6 +35,8 @@ import {
   type ProviderDetail,
   type GeoFile,
   type RemoteBackup,
+  type RuleMatchInput,
+  type RuleMatchResult,
   type RulesResult,
   type SaveCustomNodeInput,
   type ShellState,
@@ -164,6 +167,8 @@ export interface Backend {
   clearTrafficHistory(): Promise<void>
   rules(): Promise<RulesSnapshot>
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
+  /** Read-only static rule match evaluation against live rules and cached rule-sets. */
+  matchRule(input: RuleMatchInput): Promise<RuleMatchResult>
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
   upgradeGeo(key?: string): Promise<GeoFile[]>
@@ -405,6 +410,16 @@ function createTauriBackend(): Backend {
     rules: () => rules('kernel_rules'),
     setRuleDisabled: (key, disabled) =>
       rules('set_rule_disabled', { command: { key, disabled } }),
+    matchRule: async (input) =>
+      normalizeRuleMatchResult(
+        await call<unknown>('match_rule', {
+          input: {
+            target: input.target,
+            dst_port: input.dst_port ?? null,
+            process: input.process ?? null,
+          },
+        }),
+      ),
     providers: async () => {
       const raw = await call<ProvidersResult>('kernel_providers')
       return { providers: Array.isArray(raw.providers) ? raw.providers : [], error: raw.error ?? null }

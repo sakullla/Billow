@@ -1765,5 +1765,18 @@ export const UI_EN: Record<string, string> = {
   '标签': 'Tags',
   '分组': 'Groups',
   '与明暗模式自由组合，采用柔和中性底板与克制主色': 'Combine freely with light or dark mode using calm neutral surfaces and refined accents',
+  '返回规则': 'Back to rules',
+  '连接已断开，规则返回上下文已重置': 'Disconnected; rule return context was cleared',
+  '配置已切换，规则返回上下文已重置': 'Profile switched; rule return context was cleared',
+  '目标端口无效（应为 1-65535）': 'Invalid target port (must be 1–65535)',
+  '请输入要测试的域名或 IP': 'Enter a domain or IP to test',
+  '目标地址格式无效': 'Invalid target address',
+  '源地址 IP 规则需结合实际来源 IP 判断': 'Source IP rules require the actual source IP',
+  'IP-CIDR 规则未设置 no-resolve，域名需先解析 DNS 才能判定': 'IP-CIDR rule has no no-resolve flag; domain needs DNS resolution first',
+  'IP-SUFFIX 规则未设置 no-resolve，域名需先解析 DNS 才能判定': 'IP-SUFFIX rule has no no-resolve flag; domain needs DNS resolution first',
+  '未提供目标端口，无法排除前置端口规则': 'No target port provided; preceding port rule cannot be ruled out',
+  '未提供进程信息，无法排除前置进程规则': 'No process provided; preceding process rule cannot be ruled out',
+  '仅提供了进程名，无法完全验证进程路径规则': 'Only a process name was provided; process path rule cannot be fully verified',
+  '源地址 GEOIP 规则需结合实际来源 IP 判断': 'Source GEOIP rules require the actual source IP',
 }
 

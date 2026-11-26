@@ -814,6 +814,56 @@ export interface RulesResult {
   error: string | null
 }
 
+/** Input for read-only static rule match evaluation (`match_rule` IPC). */
+export interface RuleMatchInput {
+  target: string
+  dst_port?: number | null
+  process?: string | null
+}
+
+/** Confirmed rule hit aligned with `RulesView` row indexing. */
+export interface RuleMatchHit {
+  row_index: number
+  rule_key: string | null
+  kind: string
+  payload: string
+  proxy: string
+  sub_rule: string | null
+}
+
+/** A rule that would have matched but was skipped because it is temporarily disabled. */
+export interface RuleMatchCandidate {
+  row_index: number
+  rule_key: string | null
+  kind: string
+  payload: string
+  proxy: string
+  sub_rule: string | null
+}
+
+/** A rule ahead of `matched` that cannot be statically ruled out (zero false positives). */
+export interface RuleMatchUncertain {
+  row_index: number
+  rule_key: string | null
+  kind: string
+  payload: string
+  proxy: string
+  reason: string
+  provider_name: string | null
+  needs_dns: boolean
+}
+
+/** Full result of read-only static rule match evaluation. */
+export interface RuleMatchResult {
+  normalized_host: string | null
+  normalized_ip: string | null
+  effective_port: number | null
+  effective_process: string | null
+  matched: RuleMatchHit | null
+  skipped_disabled: RuleMatchCandidate[]
+  preceding_uncertain: RuleMatchUncertain[]
+}
+
 export interface UwpApp {
   name: string
   display_name: string
@@ -1141,6 +1191,54 @@ export function normalizeRuleRow(raw: unknown): RuleRow {
     last_hit: optStr(rule.last_hit),
     key: optStr(rule.key),
     disabled: Boolean(rule.disabled),
+  }
+}
+
+function normalizeRuleMatchHit(raw: unknown): RuleMatchHit | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const item = raw as Record<string, unknown>
+  const rowIndex = num(item.row_index)
+  return {
+    row_index: rowIndex != null ? Math.max(0, Math.floor(rowIndex)) : 0,
+    rule_key: optStr(item.rule_key),
+    kind: str(item.kind),
+    payload: str(item.payload),
+    proxy: str(item.proxy),
+    sub_rule: optStr(item.sub_rule),
+  }
+}
+
+function normalizeRuleMatchUncertain(raw: unknown): RuleMatchUncertain | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const item = raw as Record<string, unknown>
+  const rowIndex = num(item.row_index)
+  return {
+    row_index: rowIndex != null ? Math.max(0, Math.floor(rowIndex)) : 0,
+    rule_key: optStr(item.rule_key),
+    kind: str(item.kind),
+    payload: str(item.payload),
+    proxy: str(item.proxy),
+    reason: str(item.reason),
+    provider_name: optStr(item.provider_name),
+    needs_dns: Boolean(item.needs_dns),
+  }
+}
+
+export function normalizeRuleMatchResult(raw: unknown): RuleMatchResult {
+  const value = obj(raw)
+  const port = optPort(value.effective_port)
+  return {
+    normalized_host: optStr(value.normalized_host),
+    normalized_ip: optStr(value.normalized_ip),
+    effective_port: port != null && port >= 1 ? port : null,
+    effective_process: optStr(value.effective_process),
+    matched: normalizeRuleMatchHit(value.matched),
+    skipped_disabled: list(value.skipped_disabled)
+      .map(normalizeRuleMatchHit)
+      .filter((item): item is RuleMatchCandidate => item !== null),
+    preceding_uncertain: list(value.preceding_uncertain)
+      .map(normalizeRuleMatchUncertain)
+      .filter((item): item is RuleMatchUncertain => item !== null),
   }
 }
 
