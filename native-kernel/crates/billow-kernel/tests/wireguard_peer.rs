@@ -29,7 +29,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use billow_kernel::keys::Secret;
 use billow_kernel::outbound::wireguard::{
-    connect_stack, derive_public_key, encode_key, WireguardError, WireguardPeer, WireguardTunnel,
+    connect_carrier, connect_stack, derive_public_key, encode_key, WireguardError, WireguardPeer,
+    WireguardTunnel,
 };
 use billow_kernel::proxies::{WireguardOutbound, WireguardPeerOutbound};
 
@@ -410,4 +411,97 @@ async fn tcp_round_trip_through_the_locked_peer_and_l3_stack() {
         .expect("echo within 3s")
         .expect("read echo");
     assert_eq!(&echo, payload);
+}
+
+/// One live peer and one dead endpoint: building the stack and using the live
+/// peer must both succeed, while a dial routed to the dead peer fails by name.
+/// This is the lazy per-peer handshake contract: no eager handshake of every
+/// configured peer, and no stack-wide failure when one peer is down.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn a_dead_peer_does_not_block_the_live_peer_or_allow_fallback() {
+    let Some(live) = start_peer(&client_public_key()) else {
+        return skip("a_dead_peer_does_not_block_the_live_peer_or_allow_fallback");
+    };
+    let dead = "127.0.0.1:1".parse::<SocketAddr>().expect("dead endpoint");
+    let outbound = wireguard_outbound(&[
+        (live.endpoint, &live.public_key, "10.13.13.1/32"),
+        // A public key that is syntactically valid but belongs to nobody; the
+        // endpoint is closed too.
+        (dead, &client_public_key(), "10.14.14.1/32"),
+    ]);
+    // Building the carrier must not touch the dead peer.
+    let carrier = connect_carrier(&outbound, Duration::from_secs(3))
+        .await
+        .expect("stack with one dead peer");
+    let stack = carrier.stack();
+
+    // UDP to the live peer starts that peer's handshake lazily.
+    let socket = stack.udp_socket().expect("udp socket");
+    let live_target = SocketAddr::from(([10, 13, 13, 1], 5353));
+    socket.send(live_target, b"lazy-live").await.expect("send");
+    let mut buffer = [0u8; 1500];
+    let (from, read) = tokio::time::timeout(Duration::from_secs(3), socket.recv(&mut buffer))
+        .await
+        .expect("live reply within 3s")
+        .expect("recv");
+    assert_eq!(from, live_target);
+    assert_eq!(&buffer[..read], b"lazy-live");
+
+    // A TCP dial to the live peer (already connected) succeeds.
+    let target = billow_kernel::outbound::Target {
+        host: "10.13.13.1".to_string(),
+        port: 8080,
+    };
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(3),
+        billow_kernel::outbound::wireguard::dial(&outbound, &target, Duration::from_secs(3)),
+    )
+    .await
+    .expect("live dial within 3s")
+    .expect("live dial");
+    assert_eq!(stream.server, live.endpoint, "Dialed.server is the resolved peer");
+    stream.stream.write_all(b"live-tcp").await.expect("write");
+    let mut echo = [0u8; 8];
+    stream
+        .stream
+        .read_exact(&mut echo)
+        .await
+        .expect("live tcp echo");
+    assert_eq!(&echo, b"live-tcp");
+
+    // The dead peer is selected by allowed-ips but its handshake fails; the
+    // error is a WireGuard handshake failure and it does not fall back.
+    let dead_target = billow_kernel::outbound::Target {
+        host: "10.14.14.1".to_string(),
+        port: 8080,
+    };
+    let error = billow_kernel::outbound::wireguard::dial(
+        &outbound,
+        &dead_target,
+        Duration::from_millis(700),
+    )
+    .await
+    .err()
+    .expect("dead peer must fail");
+    let text = error.to_string();
+    assert!(text.contains("wireguard"), "{text}");
+    assert!(text.contains("handshake"), "{text}");
+
+    // The live peer is unaffected by the dead peer's failure.
+    let mut again = tokio::time::timeout(
+        Duration::from_secs(3),
+        billow_kernel::outbound::wireguard::dial(&outbound, &target, Duration::from_secs(3)),
+    )
+    .await
+    .expect("second live dial")
+    .expect("second live dial");
+    again.stream.write_all(b"still").await.expect("write");
+    let mut echo = [0u8; 5];
+    again
+        .stream
+        .read_exact(&mut echo)
+        .await
+        .expect("second echo");
+    assert_eq!(&echo, b"still");
 }

@@ -60,6 +60,10 @@ const PEER_ID_UNSET: u32 = 0x00ff_ffff;
 const MAX_CONTROL_PAYLOAD: usize = 1000;
 const RELIABLE_WINDOW: u32 = 64;
 const RETRANSMIT: Duration = Duration::from_millis(500);
+/// One blocking link read. `recv_data` loops over it until its own caller
+/// timeout, so a 10 ms data-path poll actually blocks at most 50 ms on a
+/// silent link; tests and evidence use this value.
+const LINK_READ_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// OpenVPN's data-channel keepalive payload (`PING_STRING`).
 pub const PING_PAYLOAD: [u8; 16] = [
@@ -84,6 +88,8 @@ pub enum OpenVpnError {
     Push(String),
     #[error("openvpn data channel: {0}")]
     Data(String),
+    #[error("openvpn replay: {0}")]
+    Replay(String),
     #[error("openvpn unsupported configuration: {0}")]
     Unsupported(String),
     #[error("openvpn PUSH_REPLY carries no ifconfig/ifconfig-ipv6: the userspace IP stack has no local address")]
@@ -109,6 +115,15 @@ pub struct PushReply {
     pub dns: Vec<std::net::IpAddr>,
     pub redirect_gateway: bool,
     pub block_outside_dns: bool,
+    pub block_ipv6: bool,
+    pub push_continuation: bool,
+    /// An `auth-token` record was seen. The token is not retained (it is
+    /// session credential material) and is not used by this client yet.
+    pub auth_token_seen: bool,
+    /// `ping` interval pushed by the server (seconds).
+    pub ping: Option<u16>,
+    /// `ping-restart` timeout pushed by the server (seconds).
+    pub ping_restart: Option<u16>,
     pub raw: String,
 }
 
@@ -269,7 +284,9 @@ impl OpenVpnTunnel {
             recv_key,
             send_iv,
             recv_iv,
-            send_id: 0,
+            // OpenVPN reserves packet-id 0 ("no id"); the first data packet
+            // is id 1, as the real server's replay check expects.
+            send_id: 1,
             recv_highest: 0,
             recv_seen: false,
             recv_window: 0,
@@ -332,7 +349,7 @@ impl OpenVpnTunnel {
             if start.elapsed() >= timeout {
                 return Ok(None);
             }
-            let packet = match self.control.link.recv(Duration::from_millis(50)) {
+            let packet = match self.control.link.recv(LINK_READ_TIMEOUT) {
                 Ok(packet) => packet,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) if error.kind() == io::ErrorKind::TimedOut => continue,
@@ -356,7 +373,13 @@ impl OpenVpnTunnel {
             if opcode != OPCODE_DATA_V1 && opcode != OPCODE_DATA_V2 {
                 continue;
             }
-            let plaintext = self.decrypt_payload(&packet)?;
+            let plaintext = match self.decrypt_payload(&packet) {
+                Ok(plaintext) => plaintext,
+                // The pinned client drops a replayed/out-of-window packet and
+                // keeps the session instead of tearing it down.
+                Err(OpenVpnError::Replay(_)) => continue,
+                Err(error) => return Err(error),
+            };
             if plaintext == PING_PAYLOAD {
                 return Ok(Some(DataPacket::Keepalive));
             }
@@ -406,7 +429,7 @@ impl OpenVpnTunnel {
         let plaintext = aead_decrypt(&self.cipher, &self.recv_key, &nonce, &aad, &combined)
             .map_err(|_| OpenVpnError::Data("data packet authentication failed".to_string()))?;
         if !self.accept_packet_id(id) {
-            return Err(OpenVpnError::Data(format!(
+            return Err(OpenVpnError::Replay(format!(
                 "replayed or out-of-window data packet id {id}"
             )));
         }
@@ -456,7 +479,41 @@ impl OpenVpnTunnel {
 
 enum Link {
     Udp(UdpSocket),
-    Tcp { stream: TcpStream, buffer: Vec<u8> },
+    Tcp {
+        stream: TcpStream,
+        /// Complete frames plus any bytes of a frame whose read timed out.
+        /// Keeping the partial bytes is what prevents a half frame from
+        /// desynchronising the next length prefix.
+        frames: FrameBuffer,
+    },
+}
+
+/// Length-prefixed TCP frame reassembly that survives read timeouts.
+struct FrameBuffer {
+    bytes: Vec<u8>,
+}
+
+impl FrameBuffer {
+    fn new() -> FrameBuffer {
+        FrameBuffer { bytes: Vec::new() }
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        self.bytes.extend_from_slice(data);
+    }
+
+    fn next_frame(&mut self) -> Option<Vec<u8>> {
+        if self.bytes.len() < 2 {
+            return None;
+        }
+        let length = u16::from_be_bytes([self.bytes[0], self.bytes[1]]) as usize;
+        if self.bytes.len() < 2 + length {
+            return None;
+        }
+        let frame = self.bytes[2..2 + length].to_vec();
+        self.bytes.drain(..2 + length);
+        Some(frame)
+    }
 }
 
 impl Link {
@@ -473,7 +530,7 @@ impl Link {
                 .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
             Ok(Link::Tcp {
                 stream,
-                buffer: Vec::new(),
+                frames: FrameBuffer::new(),
             })
         } else {
             let bind: SocketAddr = if address.is_ipv4() {
@@ -519,15 +576,34 @@ impl Link {
                 buffer.truncate(length);
                 Ok(buffer)
             }
-            Link::Tcp { stream, buffer } => {
-                stream.set_read_timeout(Some(timeout))?;
-                buffer.clear();
-                let mut length = [0u8; 2];
-                stream.read_exact(&mut length)?;
-                let length = u16::from_be_bytes(length) as usize;
-                buffer.resize(length, 0);
-                stream.read_exact(buffer)?;
-                Ok(std::mem::take(buffer))
+            Link::Tcp { stream, frames } => {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    if let Some(frame) = frames.next_frame() {
+                        return Ok(frame);
+                    }
+                    stream.set_read_timeout(Some(timeout))?;
+                    match stream.read(&mut chunk) {
+                        Ok(0) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "openvpn TCP link closed mid-frame",
+                            ))
+                        }
+                        Ok(read) => frames.push(&chunk[..read]),
+                        // A partial frame stays in the buffer; the next call
+                        // continues from the exact byte offset.
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            return Err(error)
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
             }
         }
     }
@@ -572,6 +648,10 @@ pub(crate) fn stack_fingerprint(option: &OpenVpnOutbound) -> String {
         option.password.as_ref().map(|value| value.expose().to_string()).unwrap_or_default(),
         option.mtu.to_string(),
         option.ping.to_string(),
+        option.ping_restart.to_string(),
+        option.tran_window.to_string(),
+        option.handshake_timeout.to_string(),
+        option.dev.clone(),
     ];
     for (key, value) in &option.peer_info {
         parts.push(format!("{key}={value}"));
@@ -607,10 +687,12 @@ pub async fn connect_stack(
     use crate::outbound::l3;
 
     let fingerprint = stack_fingerprint(option);
-    let _guard = l3::registry_lock().lock().await;
     if let Some(stack) = l3::lookup(&fingerprint) {
         return Ok(stack);
     }
+    // Network resolution, the blocking data-path thread, and the one-shot
+    // handoff all happen outside the registry lock; only the final
+    // lookup/publish pair is serialised.
     let addresses = crate::outbound::resolve_all(&option.server, option.port)
         .await
         .map_err(|error| {
@@ -627,6 +709,8 @@ pub async fn connect_stack(
     })?;
     let mtu = if option.mtu == 0 { 1500 } else { option.mtu as usize };
     let option_for_thread = option.clone();
+    let ping = option.ping;
+    let ping_restart = option.ping_restart;
     let (init_tx, init_rx) = tokio::sync::oneshot::channel::<Result<OpenVpnInit, OpenVpnError>>();
     let (stack_tx, stack_rx) =
         std::sync::mpsc::channel::<Arc<crate::outbound::l3::Stack>>();
@@ -651,7 +735,10 @@ pub async fn connect_stack(
             // The async side builds the stack (it needs the same local
             // addresses) and hands it back; if it dies the thread exits.
             if let Ok(stack) = stack_rx.recv_timeout(Duration::from_secs(10)) {
-                run_datapath(tunnel, stack);
+                let push = tunnel.push_reply();
+                let ping = push.ping.unwrap_or(ping);
+                let ping_restart = push.ping_restart.unwrap_or(ping_restart);
+                run_datapath(tunnel, stack, ping, ping_restart);
             }
         })
         .map_err(|error| OpenVpnError::Connect(address.to_string(), error))?;
@@ -668,34 +755,112 @@ pub async fn connect_stack(
     };
     let config = l3::StackConfig::new(init.ipv4, init.ipv6, mtu, fingerprint.clone());
     let stack = l3::Stack::new(config).map_err(|error| OpenVpnError::Stack(error.to_string()))?;
-    stack_tx
-        .send(stack.clone())
-        .map_err(|_| OpenVpnError::Control("openvpn data-path thread is gone".to_string()))?;
-    l3::publish(fingerprint, &stack);
+    let published = {
+        let _guard = l3::registry_lock().lock().await;
+        // Double-check: a concurrent dial may have published first. Dropping
+        // `stack_tx` on return disconnects the receiver, so the loser's
+        // data-path thread stops immediately (its tunnel is dropped).
+        if let Some(existing) = l3::lookup(&fingerprint) {
+            return Ok(existing);
+        }
+        l3::publish(fingerprint.clone(), &stack)
+    };
+    if !published {
+        return Err(OpenVpnError::Stack(format!(
+            "the userspace stack registry already holds the maximum of {} active stacks",
+            l3::MAX_STACKS
+        )));
+    }
+    // The thread handoff is outside the registry lock; the thread is blocked on
+    // this channel, so a failed send means it already exited.
+    if stack_tx.send(stack.clone()).is_err() {
+        l3::forget(&fingerprint);
+        return Err(OpenVpnError::Control(
+            "openvpn data-path thread is gone".to_string(),
+        ));
+    }
     Ok(stack)
 }
 
-fn run_datapath(mut tunnel: OpenVpnTunnel, stack: Arc<crate::outbound::l3::Stack>) {
+/// What the data-path loop must do when it looks at its timers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeepaliveAction {
+    None,
+    SendPing,
+    Restart,
+}
+
+/// `ping` keeps the client's keepalive flowing; `ping-restart` tears the
+/// session down when nothing arrived from the server for that long. Both are
+/// the pushed values when the server sends them (`PUSH_REPLY`), otherwise the
+/// configured ones.
+fn keepalive_action(
+    now: Instant,
+    last_inbound: Instant,
+    last_sent: Instant,
+    ping: u16,
+    ping_restart: u16,
+) -> KeepaliveAction {
+    if ping_restart != 0
+        && now.duration_since(last_inbound) >= Duration::from_secs(u64::from(ping_restart))
+    {
+        return KeepaliveAction::Restart;
+    }
+    if ping != 0 && now.duration_since(last_sent) >= Duration::from_secs(u64::from(ping)) {
+        return KeepaliveAction::SendPing;
+    }
+    KeepaliveAction::None
+}
+
+fn run_datapath(
+    mut tunnel: OpenVpnTunnel,
+    stack: Arc<crate::outbound::l3::Stack>,
+    ping: u16,
+    ping_restart: u16,
+) {
     let weak = Arc::downgrade(&stack);
+    let mut last_inbound = Instant::now();
+    let mut last_sent = Instant::now();
     loop {
         let Some(stack) = weak.upgrade() else {
             return;
         };
+        let now = Instant::now();
+        match keepalive_action(now, last_inbound, last_sent, ping, ping_restart) {
+            KeepaliveAction::Restart => {
+                stack.fail(format!(
+                    "openvpn ping-restart: no inbound data for {ping_restart}s"
+                ));
+                return;
+            }
+            KeepaliveAction::SendPing => {
+                if let Err(error) = tunnel.send_keepalive() {
+                    stack.fail(format!("openvpn keepalive send: {error}"));
+                    return;
+                }
+                last_sent = Instant::now();
+            }
+            KeepaliveAction::None => {}
+        }
         while let Some(packet) = stack.take_tx_packet() {
             if let Err(error) = tunnel.send_data(&packet) {
                 stack.fail(format!("openvpn data send: {error}"));
                 return;
             }
+            last_sent = Instant::now();
         }
         match tunnel.recv_data(Duration::from_millis(10)) {
             Ok(Some(DataPacket::Data(packet))) => {
+                last_inbound = Instant::now();
                 stack.push_rx_packet(&packet);
             }
             Ok(Some(DataPacket::Keepalive)) => {
+                last_inbound = Instant::now();
                 if let Err(error) = tunnel.send_keepalive() {
                     stack.fail(format!("openvpn keepalive send: {error}"));
                     return;
                 }
+                last_sent = Instant::now();
             }
             Ok(None) => {}
             Err(error) => {
@@ -704,6 +869,13 @@ fn run_datapath(mut tunnel: OpenVpnTunnel, stack: Arc<crate::outbound::l3::Stack
             }
         }
     }
+}
+
+/// Stop/reload hook for one configured OpenVPN outbound: removes the shared
+/// stack entry; the data-path thread sees the last strong reference go away
+/// and exits.
+pub fn forget(option: &OpenVpnOutbound) {
+    crate::outbound::l3::forget(&stack_fingerprint(option));
 }
 
 fn dial_error(error: OpenVpnError) -> crate::outbound::DialError {
@@ -1408,8 +1580,26 @@ fn parse_push_field(field: &str, reply: &mut PushReply) {
                 }
             }
         }
+        Some("dhcp-option") => {
+            // `dhcp-option DNS 10.8.0.1` is the common pushed DNS form.
+            let kind = parts.next().unwrap_or_default();
+            if kind.eq_ignore_ascii_case("DNS") {
+                if let Some(value) = parts.next() {
+                    if let Ok(addr) = value.parse() {
+                        reply.dns.push(addr);
+                    }
+                }
+            }
+        }
         Some("redirect-gateway") => reply.redirect_gateway = true,
         Some("block-outside-dns") => reply.block_outside_dns = true,
+        Some("block-ipv6") => reply.block_ipv6 = true,
+        Some("push-continuation") => reply.push_continuation = true,
+        Some("auth-token") => reply.auth_token_seen = true,
+        Some("ping") => reply.ping = parts.next().and_then(|value| value.parse().ok()),
+        Some("ping-restart") => {
+            reply.ping_restart = parts.next().and_then(|value| value.parse().ok())
+        }
         _ => {}
     }
 }
@@ -1847,6 +2037,77 @@ mod tests {
         );
         assert!(reply.redirect_gateway);
         assert!(reply.block_outside_dns);
+    }
+
+    #[test]
+    fn push_reply_reads_the_pinned_timer_and_dhcp_records() {
+        let reply = parse_push_reply(
+            "PUSH_REPLY,dhcp-option DNS 10.8.0.1,dhcp-option DNS 10.8.0.2,block-ipv6,push-continuation,auth-token session-1,ping 10,ping-restart 60,ifconfig 10.8.0.2 255.255.255.0",
+        )
+        .expect("parse");
+        assert_eq!(reply.dns.len(), 2);
+        assert_eq!(
+            reply.dns[0],
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 1))
+        );
+        assert!(reply.block_ipv6);
+        assert!(reply.push_continuation);
+        assert!(reply.auth_token_seen);
+        assert_eq!(reply.ping, Some(10));
+        assert_eq!(reply.ping_restart, Some(60));
+    }
+
+    #[test]
+    fn keepalive_timers_produce_ping_and_restart_actions() {
+        let start = Instant::now();
+        assert_eq!(
+            keepalive_action(start, start, start, 10, 60),
+            KeepaliveAction::None
+        );
+        assert_eq!(
+            keepalive_action(
+                start + Duration::from_secs(10),
+                start + Duration::from_secs(1),
+                start,
+                10,
+                60
+            ),
+            KeepaliveAction::SendPing
+        );
+        assert_eq!(
+            keepalive_action(
+                start + Duration::from_secs(60),
+                start,
+                start + Duration::from_secs(59),
+                10,
+                60
+            ),
+            KeepaliveAction::Restart,
+            "ping-restart wins over an outgoing keepalive"
+        );
+        assert_eq!(
+            keepalive_action(start + Duration::from_secs(600), start, start, 0, 0),
+            KeepaliveAction::None,
+            "zero disables both timers"
+        );
+    }
+
+    #[test]
+    fn tcp_frame_buffer_reassembles_across_partial_reads() {
+        let mut frames = FrameBuffer::new();
+        // Length prefix only, then half of the payload: no frame yet.
+        frames.push(&[0, 5, 1]);
+        assert_eq!(frames.next_frame(), None);
+        frames.push(&[2]);
+        assert_eq!(frames.next_frame(), None);
+        frames.push(&[3, 4, 5, 0, 2, 9, 8]);
+        assert_eq!(frames.next_frame(), Some(vec![1, 2, 3, 4, 5]));
+        assert_eq!(frames.next_frame(), Some(vec![9, 8]));
+        assert_eq!(frames.next_frame(), None);
+        // A zero-length frame is valid and consumed atomically.
+        frames.push(&[0, 0, 0, 1, 7]);
+        assert_eq!(frames.next_frame(), Some(Vec::new()));
+        assert_eq!(frames.next_frame(), Some(vec![7]));
     }
 
     #[test]

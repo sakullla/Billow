@@ -7,21 +7,23 @@
 //!
 //! Every operation is bounded and every refusal is named:
 //!
-//! * at most [`TCP_SOCKETS`] TCP sockets, each with [`TCP_BUFFER_BYTES`] per
-//!   direction;
+//! * at most [`TCP_SOCKETS`] concurrent TCP sockets, each with
+//!   [`TCP_BUFFER_BYTES`] per direction; extra dials wait for a slot in a
+//!   [`MAX_TCP_WAITERS`]-bounded queue;
 //! * at most [`UDP_SOCKETS`] UDP sockets, each with [`UDP_QUEUE_PACKETS`]
 //!   packets of [`UDP_PACKET_BYTES`];
 //! * the carrier queues in [`super::device`] are bounded too;
 //! * a stack that stays unused for [`IDLE_RECLAIM`] and owns no socket stops
-//!   its poller and is removed from the registry (the registry only holds
-//!   `Weak` references, so the last stream drop frees it as well).
+//!   its poller and is removed from the strong registry by the reaper;
+//!   [`forget`] is the explicit stop/reload hook. The active-stack count is
+//!   capped at [`MAX_STACKS`].
 
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -38,18 +40,30 @@ use tokio::sync::Notify;
 use super::device::MemDevice;
 use crate::outbound::BoxStream;
 
-/// TCP sockets one stack may own.
+/// TCP sockets one stack may own. A dial that arrives while all slots are busy
+/// waits for one to be released (bounded by [`MAX_TCP_WAITERS`]) instead of
+/// failing at once.
 pub const TCP_SOCKETS: usize = 16;
+/// Dialers that may wait for a TCP slot at the same time. Beyond this the
+/// admission is refused with [`StackError::TooManySockets`].
+pub const MAX_TCP_WAITERS: usize = 64;
 /// UDP sockets one stack may own.
 pub const UDP_SOCKETS: usize = 32;
 /// Bytes buffered per TCP direction.
 pub const TCP_BUFFER_BYTES: usize = 32 * 1024;
 /// Datagrams one UDP socket may queue in each direction.
 pub const UDP_QUEUE_PACKETS: usize = 32;
-/// Payload capacity of one queued UDP datagram.
+/// Payload capacity of one queued UDP datagram. Datagrams larger than this are
+/// refused even when the tunnel MTU is larger, which is what keeps the
+/// per-stack UDP memory at 32 × 2 × 32 × 2048 = 4 MiB.
 pub const UDP_PACKET_BYTES: usize = 2048;
 /// A stack with no socket and no traffic for this long is reclaimed.
 pub const IDLE_RECLAIM: Duration = Duration::from_secs(60);
+/// Strong-registry cap: at most this many active stacks exist at once. Each
+/// stack's worst-case memory is bounded (see `l3` module docs); a configuration
+/// that activates more proxies at the same time is refused by name instead of
+/// growing without a limit.
+pub const MAX_STACKS: usize = 64;
 /// Poll cadence of the stack actor. The carriers wake it on ingress with
 /// [`Stack::push_rx_packet`]; this is the fallback for timers and egress.
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -67,8 +81,12 @@ pub enum StackError {
     NoFamily(&'static str),
     #[error("the userspace IP stack already owns the maximum of {0} sockets")]
     TooManySockets(usize),
+    #[error("the userspace TCP admission queue already holds the maximum of {0} waiters")]
+    TooManyWaiters(usize),
     #[error("the userspace IP stack datagram queue is full")]
     QueueFull,
+    #[error("the userspace IP stack registry already holds {0} active stacks")]
+    TooManyStacks(usize),
     #[error("the userspace IP stack failed: {0}")]
     Failed(String),
 }
@@ -76,7 +94,10 @@ pub enum StackError {
 impl StackError {
     pub fn to_io(&self) -> io::Error {
         match self {
-            StackError::TooManySockets(_) | StackError::QueueFull => {
+            StackError::TooManySockets(_)
+            | StackError::TooManyWaiters(_)
+            | StackError::TooManyStacks(_)
+            | StackError::QueueFull => {
                 io::Error::new(io::ErrorKind::OutOfMemory, self.to_string())
             }
             StackError::NoLocalAddress
@@ -89,12 +110,28 @@ impl StackError {
     }
 }
 
+/// Result of one non-blocking TCP admission attempt.
+enum TcpAdmission {
+    /// All slots are busy; the dial may wait.
+    Full,
+    Failed(io::Error),
+}
+
 /// Everything one stack needs to build its interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackConfig {
     pub ipv4: Option<Ipv4Addr>,
     pub ipv6: Option<Ipv6Addr>,
     pub mtu: usize,
+    /// Abort a TCP connection when the peer is silent this long (RFC 6298
+    /// style, smoltcp `set_timeout`).
+    pub tcp_timeout: Duration,
+    /// Keepalive interval that keeps an idle connection observable and lets the
+    /// timeout reclaim a dead peer (`set_keep_alive`).
+    pub tcp_keepalive: Duration,
+    /// A stack with no socket and no use for this long is reaped from the
+    /// registry (60 s in production; tests shorten it).
+    pub idle_reclaim: Duration,
     /// Registry key: equal fingerprints share one stack.
     pub fingerprint: String,
 }
@@ -110,8 +147,25 @@ impl StackConfig {
             ipv4,
             ipv6,
             mtu: mtu.clamp(68, 65535),
+            tcp_timeout: Duration::from_secs(60),
+            tcp_keepalive: Duration::from_secs(30),
+            idle_reclaim: IDLE_RECLAIM,
             fingerprint: fingerprint.into(),
         }
+    }
+
+    /// Override the TCP idle timeout and keepalive interval (tests use short
+    /// values; production keeps the defaults).
+    pub fn with_tcp_timers(mut self, timeout: Duration, keepalive: Duration) -> StackConfig {
+        self.tcp_timeout = timeout;
+        self.tcp_keepalive = keepalive;
+        self
+    }
+
+    /// Shorten the idle-reclaim window (tests).
+    pub fn with_idle_reclaim(mut self, idle_reclaim: Duration) -> StackConfig {
+        self.idle_reclaim = idle_reclaim;
+        self
     }
 }
 
@@ -138,6 +192,9 @@ pub struct Stack {
     change: Notify,
     /// Wakes the stack poller when a carrier queues a received packet.
     ingress: Notify,
+    /// Wakes dials waiting for a free TCP slot.
+    tcp_slot: Notify,
+    tcp_waiters: AtomicUsize,
     poller_running: AtomicBool,
     last_used: AtomicU64,
 }
@@ -159,6 +216,10 @@ fn monotonic_millis() -> u64 {
 
 fn smoltcp_now() -> SmolInstant {
     SmolInstant::from_millis(monotonic_millis() as i64)
+}
+
+fn smol_duration(duration: Duration) -> smoltcp::time::Duration {
+    smoltcp::time::Duration::from_micros(duration.as_micros().min(u128::from(u64::MAX)) as u64)
 }
 
 fn make_endpoint(addr: SocketAddr) -> IpEndpoint {
@@ -242,10 +303,13 @@ impl Stack {
             config,
             change: Notify::new(),
             ingress: Notify::new(),
+            tcp_slot: Notify::new(),
+            tcp_waiters: AtomicUsize::new(0),
             poller_running: AtomicBool::new(false),
             last_used: AtomicU64::new(monotonic_millis()),
         });
         stack.ensure_poller();
+        spawn_reaper();
         Ok(stack)
     }
 
@@ -270,9 +334,9 @@ impl Stack {
             .store(monotonic_millis(), Ordering::Relaxed);
     }
 
-    fn idle(&self) -> bool {
+    pub(crate) fn idle(&self) -> bool {
         monotonic_millis().saturating_sub(self.last_used.load(Ordering::Relaxed))
-            >= IDLE_RECLAIM.as_millis() as u64
+            >= self.config.idle_reclaim.as_millis() as u64
     }
 
     /// Live TCP and UDP socket counts (zombies still count: their port is
@@ -311,8 +375,10 @@ impl Stack {
         self.lock().fatal.clone()
     }
 
-    /// Queue one IP packet received by the carrier.
-    pub fn push_rx_packet(&self, packet: &[u8]) -> bool {
+    /// Queue one IP packet received by the carrier. Restarts the poller if it
+    /// had stopped after an idle period.
+    pub fn push_rx_packet(self: &Arc<Self>, packet: &[u8]) -> bool {
+        self.ensure_poller();
         let accepted = {
             let mut core = self.lock();
             let accepted = core.device.push_rx(packet);
@@ -355,8 +421,8 @@ impl Stack {
                 };
                 stack.poll_once();
                 if stack.idle() && stack.socket_counts() == (0, 0) && !stack.has_tx_packets() {
-                    // Let the registry (Weak only) and every stream drop the
-                    // stack; a later dial starts a fresh one.
+                    // Let the reaper/forget remove the registry entry; a later
+                    // dial starts a fresh poller or stack.
                     stack.poller_running.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -378,6 +444,7 @@ impl Stack {
         let now = smoltcp_now();
         let this = &mut *core;
         let mut changed = this.iface.poll(now, &mut this.device, &mut this.sockets);
+        let mut freed = false;
         // Retire dropped sockets once their FIN/RST is no longer owed.
         let mut index = 0;
         while index < core.zombies.len() {
@@ -391,12 +458,16 @@ impl Stack {
                 core.sockets.remove(handle);
                 core.tcp.remove(&port);
                 changed = true;
+                freed = true;
             } else {
                 index += 1;
             }
         }
         let wakers = std::mem::take(&mut core.wakers);
         drop(core);
+        if freed {
+            self.tcp_slot.notify_waiters();
+        }
         // Readiness can change without `poll` returning true (a reader waiting
         // for data that arrived without a state transition), so every tick
         // wakes the registered waiters. The set is only populated by socket
@@ -428,24 +499,31 @@ impl Stack {
 
     /// Dial one TCP connection through the tunnel. The returned stream
     /// implements half-close: `poll_shutdown` sends a FIN, and a remote FIN is
-    /// reported as EOF.
+    /// reported as EOF. When all [`TCP_SOCKETS`] slots are busy the dial waits
+    /// for one to free (up to [`MAX_TCP_WAITERS`] waiters); the wait and the
+    /// connect share the caller's `timeout`.
     pub async fn dial_tcp(
         self: &Arc<Stack>,
         remote: SocketAddr,
         timeout: Duration,
     ) -> io::Result<BoxStream> {
+        self.ensure_poller();
         if !self.family_supported(remote.ip()) {
             return Err(StackError::NoFamily(if remote.is_ipv4() { "IPv4" } else { "IPv6" })
                 .to_io());
         }
-        let (handle, local_port) = self.create_tcp(remote)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let (handle, local_port) = self.admit_tcp(remote, deadline).await?;
         let stream = L3TcpStream {
             stack: self.clone(),
             handle,
             local_port,
             active: true,
         };
-        match tokio::time::timeout(timeout, self.wait_established(handle, local_port)).await {
+        let remaining = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .unwrap_or(Duration::ZERO);
+        match tokio::time::timeout(remaining, self.wait_established(handle, local_port)).await {
             Ok(Ok(())) => {
                 self.touch();
                 Ok(Box::new(stream))
@@ -464,18 +542,89 @@ impl Stack {
         }
     }
 
-    fn create_tcp(&self, remote: SocketAddr) -> io::Result<(SocketHandle, u16)> {
+    async fn admit_tcp(
+        &self,
+        remote: SocketAddr,
+        deadline: tokio::time::Instant,
+    ) -> io::Result<(SocketHandle, u16)> {
+        loop {
+            match self.try_create_tcp(remote) {
+                Ok(slot) => return Ok(slot),
+                Err(TcpAdmission::Full) => self.wait_tcp_slot(deadline).await?,
+                Err(TcpAdmission::Failed(error)) => return Err(error),
+            }
+        }
+    }
+
+    async fn wait_tcp_slot(&self, deadline: tokio::time::Instant) -> io::Result<()> {
+        struct Waiter<'a>(&'a AtomicUsize);
+        impl Drop for Waiter<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        if self.tcp_waiters.fetch_add(1, Ordering::AcqRel) >= MAX_TCP_WAITERS {
+            // The guard is not created yet; undo the increment explicitly.
+            self.tcp_waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(StackError::TooManyWaiters(MAX_TCP_WAITERS).to_io());
+        }
+        let _waiter = Waiter(&self.tcp_waiters);
+        loop {
+            // `enable` registers this waiter before the slot check. A release
+            // between the check and the await then has a permit (or wakes the
+            // registered waiter), so it cannot be lost; `notify_waiters` alone
+            // would only wake already-registered futures.
+            let notified = self.tcp_slot.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.lock().tcp.len() < TCP_SOCKETS {
+                return Ok(());
+            }
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "userspace TCP admission timed out waiting for one of {TCP_SOCKETS} slots"
+                    ),
+                ));
+            }
+            match tokio::time::timeout(remaining, notified).await {
+                Ok(()) => continue,
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "userspace TCP admission timed out waiting for one of {TCP_SOCKETS} slots"
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn try_create_tcp(&self, remote: SocketAddr) -> Result<(SocketHandle, u16), TcpAdmission> {
         let mut core = self.lock();
         if core.tcp.len() >= TCP_SOCKETS {
-            return Err(StackError::TooManySockets(TCP_SOCKETS).to_io());
+            return Err(TcpAdmission::Full);
         }
-        let local_port = Self::allocate_port(&mut core)
-            .ok_or_else(|| StackError::TooManySockets(u16::MAX as usize).to_io())?;
+        let local_port = match Self::allocate_port(&mut core) {
+            Some(port) => port,
+            None => {
+                return Err(TcpAdmission::Failed(
+                    StackError::TooManySockets(u16::MAX as usize).to_io(),
+                ))
+            }
+        };
         let mut socket = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER_BYTES]),
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER_BYTES]),
         );
         socket.set_nagle_enabled(false);
+        socket.set_timeout(Some(smol_duration(self.config.tcp_timeout)));
+        socket.set_keep_alive(Some(smol_duration(self.config.tcp_keepalive)));
         let handle = core.sockets.add(socket);
         let endpoint = IpListenEndpoint {
             addr: None,
@@ -489,10 +638,10 @@ impl Stack {
         };
         if let Err(error) = result {
             core.sockets.remove(handle);
-            return Err(io::Error::new(
+            return Err(TcpAdmission::Failed(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("userspace TCP connect to {remote}: {error}"),
-            ));
+            )));
         }
         core.tcp.insert(local_port, handle);
         self.touch();
@@ -543,25 +692,27 @@ impl Stack {
         core.sockets.remove(handle);
         core.tcp.remove(&port);
         core.zombies.retain(|(known, _, _)| *known != handle);
+        drop(core);
+        self.tcp_slot.notify_waiters();
     }
 
     /// Open a UDP association bound to one ephemeral local port. The socket is
     /// unconnected: one association carries every destination of its flow.
     pub fn udp_socket(self: &Arc<Stack>) -> io::Result<L3UdpSocket> {
+        self.ensure_poller();
         let mut core = self.lock();
         if core.udp.len() >= UDP_SOCKETS {
             return Err(StackError::TooManySockets(UDP_SOCKETS).to_io());
         }
         let local_port = Self::allocate_port(&mut core)
             .ok_or_else(|| StackError::TooManySockets(u16::MAX as usize).to_io())?;
-        let packet_bytes = UDP_PACKET_BYTES.max(self.config.mtu + 16);
         let rx = udp::PacketBuffer::new(
             vec![udp::PacketMetadata::EMPTY; UDP_QUEUE_PACKETS],
-            vec![0u8; packet_bytes * UDP_QUEUE_PACKETS],
+            vec![0u8; UDP_PACKET_BYTES * UDP_QUEUE_PACKETS],
         );
         let tx = udp::PacketBuffer::new(
             vec![udp::PacketMetadata::EMPTY; UDP_QUEUE_PACKETS],
-            vec![0u8; packet_bytes * UDP_QUEUE_PACKETS],
+            vec![0u8; UDP_PACKET_BYTES * UDP_QUEUE_PACKETS],
         );
         let mut socket = udp::Socket::new(rx, tx);
         socket
@@ -769,11 +920,13 @@ impl L3UdpSocket {
                 .to_io());
         }
         let overhead = if remote.is_ipv4() { 28 } else { 48 };
-        if payload.len() + overhead > self.stack.mtu() {
+        let mtu_limit = self.stack.mtu().saturating_sub(overhead);
+        let limit = mtu_limit.min(UDP_PACKET_BYTES);
+        if payload.len() > limit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "UDP datagram of {} bytes does not fit the tunnel MTU {}",
+                    "UDP datagram of {} bytes exceeds the stack limit {limit} (tunnel MTU {}, per-socket buffer {UDP_PACKET_BYTES})",
                     payload.len(),
                     self.stack.mtu()
                 ),
@@ -851,8 +1004,8 @@ impl Drop for L3UdpSocket {
 // Registry
 // ---------------------------------------------------------------------------
 
-fn registry() -> &'static Mutex<HashMap<String, Weak<Stack>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, Weak<Stack>>>> = OnceLock::new();
+fn registry() -> &'static Mutex<HashMap<String, Arc<Stack>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, Arc<Stack>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -863,35 +1016,72 @@ pub fn registry_lock() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// The live stack for `fingerprint`, if one is still alive and not idle with
-/// no sockets.
+/// The live stack for `fingerprint`. Fatal or idle-and-empty stacks are
+/// forgotten here; the background reaper handles the passive case.
 pub fn lookup(fingerprint: &str) -> Option<Arc<Stack>> {
     let mut map = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let stack = map.get(fingerprint)?.upgrade()?;
-    if stack.idle() && stack.socket_counts() == (0, 0) {
+    let stack = map.get(fingerprint)?.clone();
+    if stack.fatal_error().is_some() || (stack.idle() && stack.socket_counts() == (0, 0)) {
         map.remove(fingerprint);
         return None;
     }
     Some(stack)
 }
 
-/// Publish a new stack. Dead entries are pruned first.
-pub fn publish(fingerprint: impl Into<String>, stack: &Arc<Stack>) {
+/// Publish a new stack. The registry holds a strong reference; `forget` and
+/// the idle reaper are the ways an entry leaves it. Returns `false` when the
+/// active-stack cap is already reached (a named refusal at the caller).
+pub fn publish(fingerprint: impl Into<String>, stack: &Arc<Stack>) -> bool {
     let mut map = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    map.retain(|_, weak| weak.strong_count() > 0);
-    map.insert(fingerprint.into(), Arc::downgrade(stack));
+    let fingerprint = fingerprint.into();
+    if !map.contains_key(&fingerprint) && map.len() >= MAX_STACKS {
+        return false;
+    }
+    map.insert(fingerprint, stack.clone());
+    true
 }
 
-/// Remove one entry (the caller found it unusable).
+/// Remove one entry (stop/reload or a caller that found it unusable).
 pub fn forget(fingerprint: &str) {
     let mut map = registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     map.remove(fingerprint);
+}
+
+/// Drop every fatal, idle-and-socket-less stack. Returns how many were
+/// removed. Safe to call from tests and the background reaper.
+pub fn reap_idle() -> usize {
+    let mut map = registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = map.len();
+    map.retain(|_, stack| {
+        stack.fatal_error().is_none() && !(stack.idle() && stack.socket_counts() == (0, 0))
+    });
+    before - map.len()
+}
+
+/// One process-wide reaper. The poller of a live stack runs at 500 Hz
+/// (`POLL_INTERVAL` 2 ms); this sweep only decides when a whole idle stack may
+/// leave the registry, so 5 s is enough.
+fn spawn_reaper() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            reap_idle();
+        }
+    });
 }
 
 /// Stable registry key for a set of configuration fields. The input may hold
@@ -926,7 +1116,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_shares_one_stack_per_fingerprint_and_drops_it() {
+    async fn registry_shares_a_strong_entry_until_forget() {
         let config = StackConfig::new(
             Some(Ipv4Addr::new(10, 0, 0, 2)),
             None,
@@ -939,8 +1129,29 @@ mod tests {
         assert!(Arc::ptr_eq(&stack, &same));
         drop(same);
         drop(stack);
-        // The entry is Weak: it cannot keep the stack alive.
+        // The registry keeps a strong reference; an idle-and-empty stack is
+        // what the reaper/explicit forget removes, not the last stream drop.
+        let kept = lookup("registry-test").expect("registry keeps the stack");
+        forget("registry-test");
+        drop(kept);
         assert!(lookup("registry-test").is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_reap_removes_a_socket_less_stack() {
+        let config = StackConfig::new(
+            Some(Ipv4Addr::new(10, 0, 0, 3)),
+            None,
+            1408,
+            "idle-reap-test",
+        )
+        .with_idle_reclaim(Duration::from_millis(50));
+        let stack = Stack::new(config).expect("stack");
+        publish("idle-reap-test", &stack);
+        drop(stack);
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(reap_idle() >= 1, "the idle stack must be reaped");
+        assert!(lookup("idle-reap-test").is_none());
     }
 
     #[test]

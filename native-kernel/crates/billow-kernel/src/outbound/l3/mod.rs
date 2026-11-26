@@ -7,8 +7,9 @@
 //!
 //! Design facts worth keeping in mind:
 //!
-//! * one stack per proxy-configuration fingerprint, kept in a `Weak` registry
-//!   ([`lookup`], [`publish`]) so a stopped proxy leaves nothing behind;
+//! * one stack per proxy-configuration fingerprint, kept in a strong registry
+//!   ([`lookup`], [`publish`], [`forget`]) capped at [`MAX_STACKS`]; idle
+//!   stacks are reaped after 60 s and stop/reload can call [`forget`];
 //! * `smoltcp` owns the TCP state machine; the module never reimplements RFC
 //!   793;
 //! * the carrier is swappable: it pushes received IP packets with
@@ -30,7 +31,9 @@ pub use device::{
     MemDevice, RX_QUEUE_PACKETS, TX_QUEUE_PACKETS,
 };
 pub use stack::{
-    fingerprint, forget, lookup, publish, registry_lock, L3TcpStream, L3UdpSocket, Stack,
-    StackConfig, StackError, IDLE_RECLAIM, TCP_BUFFER_BYTES, TCP_SOCKETS, UDP_PACKET_BYTES,
-    UDP_QUEUE_PACKETS, UDP_SOCKETS,
+    fingerprint, forget, lookup, publish, reap_idle, registry_lock, L3TcpStream, L3UdpSocket,
+    Stack,
+    StackConfig, StackError, IDLE_RECLAIM, MAX_STACKS, MAX_TCP_WAITERS, TCP_BUFFER_BYTES,
+    TCP_SOCKETS,
+    UDP_PACKET_BYTES, UDP_QUEUE_PACKETS, UDP_SOCKETS,
 };

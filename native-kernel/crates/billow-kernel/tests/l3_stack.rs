@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use billow_kernel::outbound::ipstack;
-use billow_kernel::outbound::l3::{Stack, StackConfig, TCP_SOCKETS};
+use billow_kernel::outbound::l3::{Stack, StackConfig, MAX_TCP_WAITERS, TCP_SOCKETS};
 use billow_kernel::outbound::tcp::{parse_segment, FLAG_SYN};
 use billow_kernel::tunnel::tcp_server::{ServerConfig, ServerTcp};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -272,7 +272,7 @@ async fn tcp_ipv6_and_large_payloads_stay_within_the_mtu() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_socket_limit_and_drop_reclaim() {
+async fn tcp_admission_waits_for_a_released_slot() {
     let stack = stack(1408, false);
     let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);
     let remote = SocketAddr::new(IpAddr::V4(PEER_V4), 80);
@@ -284,17 +284,97 @@ async fn tcp_socket_limit_and_drop_reclaim() {
             .unwrap_or_else(|error| panic!("dial {index}: {error}"));
         streams.push(stream);
     }
-    let error = match stack.dial_tcp(remote, Duration::from_secs(2)).await {
-        Ok(_) => panic!("17th socket must be refused"),
+    // The 17th dial must wait for a slot instead of failing at once.
+    let waiter = tokio::spawn({
+        let stack = stack.clone();
+        async move { stack.dial_tcp(remote, Duration::from_secs(3)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!waiter.is_finished(), "17th dial must wait for a slot");
+    // Releasing one connection frees the slot after FIN delivery.
+    drop(streams.pop());
+    let mut stream = tokio::time::timeout(Duration::from_secs(3), waiter)
+        .await
+        .expect("waiter completes within 3s")
+        .expect("wait task")
+        .expect("17th dial after a slot is released");
+    stream.write_all(b"after-wait").await.expect("write");
+    let mut echo = [0u8; 10];
+    stream.read_exact(&mut echo).await.expect("read");
+    assert_eq!(&echo, b"after-wait");
+    drop(stream);
+    drop(streams);
+    peer.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_waiting_queue_is_bounded_and_named() {
+    let stack = stack(1408, false);
+    let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);
+    let remote = SocketAddr::new(IpAddr::V4(PEER_V4), 80);
+    let mut streams = Vec::new();
+    for _ in 0..TCP_SOCKETS {
+        streams.push(
+            stack
+                .dial_tcp(remote, Duration::from_secs(2))
+                .await
+                .expect("dial"),
+        );
+    }
+    let mut waiters = Vec::new();
+    for _ in 0..MAX_TCP_WAITERS {
+        let stack = stack.clone();
+        waiters.push(tokio::spawn(async move {
+            stack.dial_tcp(remote, Duration::from_secs(5)).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let error = match stack.dial_tcp(remote, Duration::from_secs(5)).await {
+        Ok(_) => panic!("the waiting queue must be bounded"),
         Err(error) => error,
     };
     assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
-    assert!(error.to_string().contains("maximum"));
+    assert!(
+        error.to_string().contains("maximum"),
+        "unexpected error: {error}"
+    );
+    for waiter in waiters {
+        waiter.abort();
+    }
     drop(streams);
     peer.abort();
-    let weak = Arc::downgrade(&stack);
-    drop(stack);
-    wait_until(|| weak.upgrade().is_none()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_timeout_reclaims_a_dead_connection() {
+    let stack = Stack::new(
+        StackConfig::new(
+            Some(LOCAL_V4),
+            None,
+            1408,
+            "l3-timeout-test",
+        )
+        .with_tcp_timers(Duration::from_millis(200), Duration::from_millis(200)),
+    )
+    .expect("stack");
+    let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);
+    let mut stream = stack
+        .dial_tcp(
+            SocketAddr::new(IpAddr::V4(PEER_V4), 80),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("dial");
+    // The peer stops answering; keepalive + timeout must abort the socket and
+    // release its slot.
+    peer.abort();
+    let mut buffer = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buffer))
+        .await
+        .expect("dead connection is observed within 3s");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    drop(stream);
+    wait_until(|| stack.socket_counts() == (0, 0)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -318,5 +398,45 @@ async fn unsupported_family_and_oversized_udp_are_named() {
         .await
         .expect_err("payload exceeds MTU");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("MTU"));
+    assert!(error.to_string().contains("limit"));
+
+    // Even a large tunnel MTU keeps the per-socket datagram buffer at 2048
+    // bytes (the 4 MiB UDP bound).
+    let large = stack_with_mtu(9000);
+    let socket = large.udp_socket().expect("udp");
+    let error = socket
+        .send(SocketAddr::new(IpAddr::V4(PEER_V4), 53), &vec![0u8; 3000])
+        .await
+        .expect_err("per-socket UDP buffer is bounded");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("2048"), "{error}");
+}
+
+fn stack_with_mtu(mtu: usize) -> Arc<Stack> {
+    Stack::new(StackConfig::new(
+        Some(LOCAL_V4),
+        None,
+        mtu,
+        "l3-large-mtu",
+    ))
+    .expect("stack")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_stack_leaves_no_task_or_socket() {
+    let stack = stack(1408, false);
+    let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);
+    let mut stream = stack
+        .dial_tcp(
+            SocketAddr::new(IpAddr::V4(PEER_V4), 80),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("dial");
+    stream.write_all(b"x").await.expect("write");
+    let weak = Arc::downgrade(&stack);
+    drop(stream);
+    peer.abort();
+    drop(stack);
+    wait_until(|| weak.upgrade().is_none()).await;
 }

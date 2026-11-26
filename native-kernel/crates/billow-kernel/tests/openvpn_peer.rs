@@ -21,7 +21,7 @@
 //! never pass.
 
 use std::io::Write;
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -161,14 +161,30 @@ fn free_udp_port() -> u16 {
         .port()
 }
 
+fn free_tcp_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 fn start_server() -> Option<Server> {
+    start_server_proto("udp4")
+}
+
+fn start_server_proto(proto: &str) -> Option<Server> {
     let bin = openvpn_bin()?;
     let dir = std::env::temp_dir().join(format!("billow-openvpn-peer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("cert dir");
     certificates(&dir);
 
-    let port = free_udp_port();
+    let port = if proto.starts_with("tcp") {
+        free_tcp_port()
+    } else {
+        free_udp_port()
+    };
     let child = Command::new(bin)
         .args([
             "--dev",
@@ -185,7 +201,7 @@ fn start_server() -> Option<Server> {
             "--dh",
             "none",
             "--proto",
-            "udp4",
+            proto,
             "--local",
             "127.0.0.1",
             "--port",
@@ -398,4 +414,37 @@ async fn connect_stack_uses_the_pushed_ifconfig() {
     // The server is `--dev null`: the datagram is discarded, but it must leave
     // the stack without an error.
     socket.send(remote, b"wiring").await.expect("send");
+}
+
+
+/// OpenVPN over its TCP framing: the control channel, TLS, key-method 2,
+/// PUSH_REPLY and the AEAD data channel must work with length-prefixed TCP
+/// frames, including the buffered reassembly that survives read timeouts.
+#[test]
+#[ignore]
+fn tcp_control_channel_pushes_and_decrypts_a_keepalive() {
+    if skip("tcp_control_channel_pushes_and_decrypts_a_keepalive") {
+        return;
+    }
+    let server = start_server_proto("tcp4-server").expect("tcp server");
+    let ca = std::fs::read_to_string(server.dir.join("server-ca.pem")).unwrap();
+    let cert = std::fs::read_to_string(server.dir.join("client.pem")).unwrap();
+    let key = std::fs::read_to_string(server.dir.join("client.key")).unwrap();
+    let yaml = config_yaml(&server, &ca, Some(&cert), Some(&key))
+        .replace("proto: udp", "proto: tcp");
+    let option = openvpn_option(&yaml);
+    assert_eq!(option.proto, "tcp");
+    let mut tunnel = match OpenVpnTunnel::connect(&option, Duration::from_secs(15)) {
+        Ok(tunnel) => tunnel,
+        Err(error) => {
+            let log = std::fs::read_to_string(server.dir.join("server.log")).unwrap_or_default();
+            panic!("tcp connect: {error}\nserver log:\n{log}");
+        }
+    };
+    assert!(tunnel.push_reply().raw.starts_with("PUSH_REPLY"));
+    assert!(tunnel.push_reply().ifconfig.is_some());
+    if let Err(error) = tunnel.exchange_keepalive(Duration::from_secs(5)) {
+        let log = std::fs::read_to_string(server.dir.join("server.log")).unwrap_or_default();
+        panic!("tcp keepalive: {error}\nserver log:\n{log}");
+    }
 }

@@ -68,11 +68,15 @@ planet/moon parsing, VL1 armor and HELLO/OK/WHOIS/ECHO, VL2 frame payload).
 T35 wires both packet families into a shared userspace L3 stack
 (`src/outbound/l3/`, smoltcp over a bounded IP-packet device): `dial()` returns
 a real TCP stream and the TUN/UDP paths get a real UDP association. WireGuard
-TCP and UDP round trips are verified against the locked `wireguard-go` device,
-including two peers selected by `allowed-ips`. The OpenVPN data path is
-verified against OpenVPN 2.7.9 only with `--dev null`, so its stack wiring and
-`PUSH_REPLY` local address are covered but end-to-end payload delivery is not
-claimed. Device/TUN ownership stays with the device layer. T20 translates EasyTier's locked LGPL-3.0-or-later source for the
+peers handshake lazily (the first packet or the selected dial), so one dead
+peer does not block another; TCP dials over the 16-socket limit wait in a
+bounded queue and sockets carry a 60 s timeout/30 s keepalive. TCP and UDP
+round trips are verified against the locked `wireguard-go` device, including
+two peers selected by `allowed-ips` and a live/dead peer pair. OpenVPN is
+verified against 2.7.9 over both UDP and TCP framing, with `PUSH_REPLY`
+timers/DNS and `ping`/`ping-restart`; that server runs `--dev null`, so stack
+wiring and the local address are covered but payload delivery through a real
+tunnel is not claimed. Device/TUN ownership stays with the device layer. T20 translates EasyTier's locked LGPL-3.0-or-later source for the
 cleartext host/discovery path: the real `DefaultHasher`-based
 `network_secret_digest`, peer-manager frame, `HandshakeRequest`,
 `PeerManagerHeader` and PingPong are implemented and verified against the
@@ -847,10 +851,11 @@ The pinned parser lists 28 outbound types, matching the status recorded in
   `tuic`, `hysteria` and
   `hysteria2` (their T10 gaps), `shadowquic` (TCP/UDP, JLS and the private
   Brutal/congestion options, but `zero-rtt` and QUIC `v2` are rejected), and
-  `wireguard` (TCP/UDP through the shared smoltcp stack, verified against the
-  locked device; AmneziaWG and mips/gVisor stack modes rejected) and `openvpn`
-  (TCP/UDP through the same stack; the controlled server runs `--dev null`, so
-  end-to-end payload delivery through a real OpenVPN tunnel is not verified);
+  `wireguard` (TCP/UDP through the shared smoltcp stack, lazy peers, verified
+  against the locked device; AmneziaWG and mips/gVisor stack modes rejected)
+  and `openvpn` (TCP/UDP through the same stack, UDP and TCP framing verified;
+  the controlled server runs `--dev null`, so payload delivery through a real
+  tunnel is not verified);
 - **partial (2 more)**: `tailscale` (control/DERP protocol halves; the tunnel
   still needs T6/T7 and registration-only options are rejected) and `zerotier`
   (identity/planet/VL1/VL2 protocol halves; the controller membership exchange
