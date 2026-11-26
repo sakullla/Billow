@@ -22,7 +22,7 @@ import {
   resolveChain,
 } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
-import { useStore } from '../lib/store'
+import { useStore, type ConnectionProtocolFilter, type ConnectionRouteFilter } from '../lib/store'
 import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
 import type { ClosedConnectionRow, ConnectionRow } from '../lib/types'
@@ -32,7 +32,7 @@ const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
 type ConnTab = 'active' | 'closed'
-type RouteFilter = 'all' | 'proxy' | 'direct'
+type RouteFilter = ConnectionRouteFilter
 type SortKey = 'time' | 'speed' | 'download' | 'upload' | 'host'
 const SORTS: { id: SortKey; label: string }[] = [
   { id: 'time', get label() { return tr('时间') } },
@@ -49,7 +49,24 @@ const CLOSED_SORTS: { id: SortKey; label: string }[] = [
 ]
 
 const TABLE_ROW = 40
-const CARD_ROW = 100
+const CARD_ROW = 124
+const CONN_FILTERS_OPEN_KEY = 'billow:conn-filters-open'
+
+function readConnFiltersOpen(): boolean {
+  try {
+    return localStorage.getItem(CONN_FILTERS_OPEN_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeConnFiltersOpen(open: boolean) {
+  try {
+    localStorage.setItem(CONN_FILTERS_OPEN_KEY, open ? 'true' : 'false')
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 const connCols = useColumnResize('connections', [
   { id: 'host', defaultWidth: 214, minWidth: 120, maxWidth: 680 },
@@ -79,9 +96,19 @@ const connTableStyle = computed(() => {
 
 const tab = ref<ConnTab>('active')
 const routeFilter = ref<RouteFilter>('all')
+const protocolFilter = ref<ConnectionProtocolFilter>('all')
+const activeOnly = ref(false)
+const quickProcess = ref<string | null>(null)
+const quickHost = ref<string | null>(null)
+const filtersOpen = ref<boolean>(readConnFiltersOpen())
 const query = ref('')
 const sortKey = ref<SortKey>('time')
 const sortDir = ref<'asc' | 'desc'>('desc')
+
+function toggleFiltersDrawer() {
+  filtersOpen.value = !filtersOpen.value
+  writeConnFiltersOpen(filtersOpen.value)
+}
 
 function setTab(next: ConnTab) {
   if (tab.value === next) return
@@ -242,36 +269,143 @@ function isDirectRow(row: ConnectionRow): boolean {
   return exit === 'DIRECT'
 }
 
+function isRejectRow(row: ConnectionRow): boolean {
+  const hops = hopsOf(row)
+  const exit = (hops[hops.length - 1] ?? row.outbound ?? '').toUpperCase()
+  return exit === 'REJECT' || exit === 'REJECT-DROP'
+}
+
 function isProxyRow(row: ConnectionRow): boolean {
   const hops = hopsOf(row)
   const exit = (hops[hops.length - 1] ?? row.outbound ?? '').toUpperCase()
   return !['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'].includes(exit)
 }
 
+function networkOf(row: ConnectionRow): string {
+  return (row.network || 'tcp').trim().toLowerCase()
+}
+
 const routeCounts = computed(() => {
   let proxy = 0
   let direct = 0
+  let reject = 0
   for (const row of sourceRows.value) {
     if (isDirectRow(row)) direct += 1
+    else if (isRejectRow(row)) reject += 1
     else if (isProxyRow(row)) proxy += 1
   }
-  return { proxy, direct }
+  return { proxy, direct, reject }
 })
 
 const routeOptions = computed<{ id: RouteFilter; label: string }[]>(() => [
   { id: 'all', label: tr('全部') },
   { id: 'proxy', label: routeCounts.value.proxy ? tr('代理 {0}', { 0: routeCounts.value.proxy }) : tr('代理') },
   { id: 'direct', label: routeCounts.value.direct ? tr('直连 {0}', { 0: routeCounts.value.direct }) : tr('直连') },
+  { id: 'reject', label: routeCounts.value.reject ? tr('拦截 {0}', { 0: routeCounts.value.reject }) : tr('拦截') },
 ])
 
-const isFiltered = computed(() => Boolean(query.value.trim()) || routeFilter.value !== 'all')
+const protocolCounts = computed(() => {
+  let tcp = 0
+  let udp = 0
+  for (const row of sourceRows.value) {
+    const net = networkOf(row)
+    if (net === 'tcp') tcp += 1
+    else if (net === 'udp') udp += 1
+  }
+  return { tcp, udp }
+})
+
+const activeTransferCount = computed(() => {
+  if (tab.value !== 'active') return 0
+  let count = 0
+  for (const row of sourceRows.value) {
+    const r = rateOf(row)
+    if (r.down + r.up >= 1) count += 1
+  }
+  return count
+})
+
+function topBuckets(counts: Map<string, number>, selected: string | null, max = 4): { name: string; count: number }[] {
+  const sorted = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || compareText(a[0], b[0]))
+    .slice(0, max)
+    .map(([name, count]) => ({ name, count }))
+  if (selected && !sorted.some((item) => item.name === selected)) {
+    sorted.unshift({ name: selected, count: counts.get(selected) ?? 0 })
+    if (sorted.length > max) sorted.pop()
+  }
+  return sorted
+}
+
+const topProcesses = computed(() => {
+  const counts = new Map<string, number>()
+  for (const row of sourceRows.value) {
+    const name = processBasename(row.process).trim()
+    if (!name) continue
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  return topBuckets(counts, quickProcess.value)
+})
+
+const topHosts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const row of sourceRows.value) {
+    const host = (row.host || '').trim()
+    if (!host) continue
+    counts.set(host, (counts.get(host) ?? 0) + 1)
+  }
+  return topBuckets(counts, quickHost.value)
+})
+
+const hasQuickFilter = computed(
+  () =>
+    protocolFilter.value !== 'all' ||
+    (tab.value === 'active' && activeOnly.value) ||
+    quickProcess.value !== null ||
+    quickHost.value !== null,
+)
+
+const quickFilterCount = computed(() => {
+  let count = 0
+  if (protocolFilter.value !== 'all') count += 1
+  if (tab.value === 'active' && activeOnly.value) count += 1
+  if (quickProcess.value !== null) count += 1
+  if (quickHost.value !== null) count += 1
+  return count
+})
+
+const hasAvailableQuickFilters = computed(
+  () =>
+    protocolCounts.value.tcp > 0 ||
+    protocolCounts.value.udp > 0 ||
+    tab.value === 'active' ||
+    topProcesses.value.length > 0 ||
+    topHosts.value.length > 0 ||
+    hasQuickFilter.value,
+)
+
+const isFiltered = computed(
+  () => Boolean(query.value.trim()) || routeFilter.value !== 'all' || hasQuickFilter.value,
+)
 
 const rows = computed(() => {
   const tokens = queryTokens.value
   const route = routeFilter.value
+  const protocol = protocolFilter.value
+  const onlyActive = tab.value === 'active' && activeOnly.value
+  const proc = quickProcess.value
+  const host = quickHost.value
   const list = sourceRows.value.filter((row) => {
     if (route === 'proxy' && !isProxyRow(row)) return false
     if (route === 'direct' && !isDirectRow(row)) return false
+    if (route === 'reject' && !isRejectRow(row)) return false
+    if (protocol !== 'all' && networkOf(row) !== protocol) return false
+    if (onlyActive) {
+      const r = rateOf(row)
+      if (r.down + r.up < 1) return false
+    }
+    if (proc && processBasename(row.process).trim() !== proc) return false
+    if (host && (row.host || '').trim() !== host) return false
     if (!tokens.length) return true
     return matchesTokens(
       `${row.host} ${row.destination} ${row.process} ${row.rule} ${row.rule_payload} ${hopsOf(row).join(' ')} ${row.network} ${row.conn_type}`,
@@ -317,7 +451,7 @@ function coarsePointer(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true
 }
 
-function saveReturnContext(targetPage: 'proxies' | 'resources', includeDetail = true) {
+function saveReturnContext(targetPage: 'proxies' | 'resources' | 'rules', includeDetail = true) {
   const listEl = props.compact ? cardScroll.value : tableScroll.value
   const fallbackScroll = props.compact ? cards.scrollTop.value : table.scrollTop.value
   store.connectionReturn.value = {
@@ -326,6 +460,10 @@ function saveReturnContext(targetPage: 'proxies' | 'resources', includeDetail = 
     tab: tab.value,
     query: query.value,
     routeFilter: routeFilter.value,
+    protocolFilter: protocolFilter.value,
+    activeOnly: activeOnly.value,
+    quickProcess: quickProcess.value,
+    quickHost: quickHost.value,
     sortKey: sortKey.value,
     sortDir: sortDir.value,
     listScrollTop: listEl ? listEl.scrollTop : fallbackScroll,
@@ -342,9 +480,22 @@ function saveReturnContext(targetPage: 'proxies' | 'resources', includeDetail = 
   }
 }
 
+function applyDiagnosticTarget() {
+  const target = store.diagnosticTarget.value
+  if (!target || target.kind !== 'connection-search') return
+  store.diagnosticTarget.value = null
+  query.value = target.query
+  routeFilter.value = 'all'
+  protocolFilter.value = 'all'
+  activeOnly.value = false
+  quickProcess.value = null
+  quickHost.value = null
+}
+
 async function restoreReturnContext() {
   const saved = store.connectionReturn.value
   if (!saved) {
+    applyDiagnosticTarget()
     table.measure(tableScroll.value)
     cards.measure(cardScroll.value)
     return
@@ -362,6 +513,10 @@ async function restoreReturnContext() {
     tab.value = 'active'
     query.value = saved.query
     routeFilter.value = saved.routeFilter
+    protocolFilter.value = saved.protocolFilter ?? 'all'
+    activeOnly.value = Boolean(saved.activeOnly)
+    quickProcess.value = saved.quickProcess ?? null
+    quickHost.value = saved.quickHost ?? null
     sortKey.value = saved.sortKey
     sortDir.value = saved.sortDir
     await nextTick()
@@ -385,6 +540,10 @@ async function restoreReturnContext() {
   tab.value = saved.tab
   query.value = saved.query
   routeFilter.value = saved.routeFilter
+  protocolFilter.value = saved.protocolFilter ?? 'all'
+  activeOnly.value = Boolean(saved.activeOnly)
+  quickProcess.value = saved.quickProcess ?? null
+  quickHost.value = saved.quickHost ?? null
   sortKey.value = saved.sortKey
   sortDir.value = saved.sortDir
   rulePolicy.value = saved.rulePolicy
@@ -460,11 +619,18 @@ onMounted(() => {
   void nextTick(() => restoreReturnContext())
 })
 
+watch(
+  () => store.diagnosticTarget.value,
+  () => {
+    applyDiagnosticTarget()
+  },
+)
+
 // Empty/error states unmount the list, so a remount must not reuse the old offset
 // or window index; a filter, sort or tab change returns to the first row (R31).
 watch(tableScroll, (el) => table.measure(el))
 watch(cardScroll, (el) => cards.measure(el))
-watch([query, routeFilter, sortKey, sortDir, tab], () => {
+watch([query, routeFilter, protocolFilter, activeOnly, quickProcess, quickHost, sortKey, sortDir, tab], () => {
   if (restoringContext) return
   returnNotice.value = null
   table.reset(tableScroll.value)
@@ -500,7 +666,8 @@ const showToolbar = computed(
       Boolean(returnNotice.value) ||
       tab.value === 'closed' ||
       Boolean(query.value) ||
-      routeFilter.value !== 'all'),
+      routeFilter.value !== 'all' ||
+      hasQuickFilter.value),
 )
 
 const detailRow = computed(() => {
@@ -536,7 +703,13 @@ watch(detailRow, (row) => {
   selectedAt.value = Date.now()
 })
 
-const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; row?: ConnectionRow & { closed_at_ms?: number } } | null>(null)
+const ctxMenu = ref<{
+  x: number
+  y: number
+  items: MenuItem[]
+  row?: ConnectionRow & { closed_at_ms?: number }
+  trigger?: HTMLElement | null
+} | null>(null)
 
 // A dropped session or a restarted kernel invalidates the frozen rows and the open detail (R31).
 watch(
@@ -545,6 +718,10 @@ watch(
     if (connected) return
     tab.value = 'active'
     routeFilter.value = 'all'
+    protocolFilter.value = 'all'
+    activeOnly.value = false
+    quickProcess.value = null
+    quickHost.value = null
     returnNotice.value = null
     ctxMenu.value = null
     resume()
@@ -618,6 +795,35 @@ function openConnectionGroup(group: string) {
   saveReturnContext('proxies', true)
   closeDetail(false)
   store.go('proxies', group)
+}
+
+function extractPort(endpoint: string): number | null {
+  const trimmed = endpoint.trim()
+  if (!trimmed) return null
+  const ipv6 = trimmed.match(/^\[[^\]]+\]:(\d+)$/)
+  if (ipv6) {
+    const port = Number(ipv6[1])
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null
+  }
+  const idx = trimmed.lastIndexOf(':')
+  if (idx > 0 && trimmed.indexOf(':') === idx) {
+    const port = Number(trimmed.slice(idx + 1))
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null
+  }
+  return null
+}
+
+function openConnectionRuleMatch(row: ConnectionRow, fromDetail = false) {
+  const target = (row.host || '').trim() || extractEndpointIp(row.destination)?.ip || row.destination.trim()
+  if (!target) return
+  saveReturnContext('rules', fromDetail)
+  if (fromDetail) closeDetail(false)
+  store.openRuleMatch({
+    target,
+    dstPort: extractPort(row.destination) ?? extractPort(row.host),
+    process: row.process?.trim() || null,
+    fromConnections: true,
+  })
 }
 
 interface DetailStat {
@@ -767,6 +973,10 @@ async function disconnectAll() {
 function resetFilters() {
   query.value = ''
   routeFilter.value = 'all'
+  protocolFilter.value = 'all'
+  activeOnly.value = false
+  quickProcess.value = null
+  quickHost.value = null
 }
 
 function filterBy(value: string) {
@@ -785,9 +995,7 @@ function openHeadMenu(event: MouseEvent) {
   }
 }
 
-function openRowMenu(row: ConnectionRow & { closed_at_ms?: number }, event: MouseEvent) {
-  if (props.compact) return
-  event.preventDefault()
+function buildRowActions(row: ConnectionRow & { closed_at_ms?: number }): MenuItem[] {
   const entry = entryGroupOf(row)
   const rset = ruleSetOf(row)
   const directRule = connectionRules(row, 'DIRECT')[0]
@@ -803,6 +1011,9 @@ function openRowMenu(row: ConnectionRow & { closed_at_ms?: number }, event: Mous
       icon: 'filter',
     })
   }
+  if (row.host || row.destination) {
+    items.push({ id: 'match-rule', get label() { return tr('前往规则页匹配核验') }, icon: 'route' })
+  }
   if (entry) items.push({ id: 'open-group', label: tr('前往「{0}」', { 0: entry }), icon: 'globe' })
   if (rset) items.push({ id: 'open-ruleset', label: tr('查看规则集「{0}」', { 0: rset }), icon: 'database' })
   if (directRule) {
@@ -814,7 +1025,31 @@ function openRowMenu(row: ConnectionRow & { closed_at_ms?: number }, event: Mous
   if (tab.value === 'active' && !row.closed_at_ms) {
     items.push({ id: 'close', get label() { return tr('断开此连接') }, icon: 'x', danger: true })
   }
-  ctxMenu.value = { x: event.clientX, y: event.clientY, items, row }
+  return items
+}
+
+function openRowMenu(row: ConnectionRow & { closed_at_ms?: number }, event: MouseEvent) {
+  if (props.compact) return
+  event.preventDefault()
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items: buildRowActions(row), row }
+}
+
+function openCardMenu(row: ConnectionRow & { closed_at_ms?: number }, event: MouseEvent) {
+  const trigger = event.currentTarget as HTMLElement | null
+  const rect = trigger?.getBoundingClientRect()
+  const x = rect && (rect.width || rect.height) ? rect.right : event.clientX
+  const y = rect && (rect.width || rect.height) ? rect.bottom + 4 : event.clientY
+  ctxMenu.value = { x, y, items: buildRowActions(row), row, trigger }
+}
+
+function closeContextMenu(restoreFocus = true) {
+  const trigger = ctxMenu.value?.trigger ?? null
+  ctxMenu.value = null
+  if (restoreFocus && trigger && !coarsePointer()) {
+    void nextTick(() => {
+      if (document.contains(trigger)) trigger.focus({ preventScroll: true })
+    })
+  }
 }
 
 function onContextSelect(item: MenuItem) {
@@ -830,6 +1065,7 @@ function onContextSelect(item: MenuItem) {
   else if (item.id === 'copy-host') void store.copyText(row.host || row.destination, tr('已复制目标主机'))
   else if (item.id === 'filter-host') filterBy(row.host)
   else if (item.id === 'filter-process') filterBy(row.process)
+  else if (item.id === 'match-rule') openConnectionRuleMatch(row, false)
   else if (item.id === 'open-group') {
     const entry = entryGroupOf(row)
     if (entry) {
@@ -946,7 +1182,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       </div>
     </header>
 
-    <div v-if="showToolbar" class="toolbar conn-toolbar">
+    <div v-if="showToolbar" class="toolbar conn-toolbar" data-testid="connection-toolbar">
       <Segmented
         :model-value="tab"
         :options="tabOptions"
@@ -958,7 +1194,13 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" :placeholder="tr('按主机、进程、规则或节点筛选')" data-testid="connection-search" data-page-search />
-        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
+        <span
+          v-if="isFiltered"
+          class="toolbar-count search-match-count small mono"
+          data-testid="connection-match-count"
+          aria-live="polite"
+        >{{ rows.length }}/{{ sourceRows.length }}</span>
+        <kbd v-if="!compact && !query && !isFiltered" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
           type="button"
@@ -978,6 +1220,23 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         data-testid="connection-route-filter"
       />
       <button
+        v-if="hasAvailableQuickFilters"
+        type="button"
+        class="btn ghost sm tool-btn filter-drawer-toggle conn-filter-toggle"
+        :class="{ active: filtersOpen || hasQuickFilter }"
+        :aria-expanded="filtersOpen"
+        :aria-pressed="filtersOpen"
+        aria-controls="conn-filter-drawer"
+        :aria-label="filtersOpen ? tr('收起快捷筛选') : tr('展开快捷筛选')"
+        :title="filtersOpen ? tr('收起快捷筛选') : tr('展开快捷筛选')"
+        data-testid="toggle-conn-filters"
+        @click="toggleFiltersDrawer"
+      >
+        <Icon name="filter" :size="14" />
+        <span class="filter-toggle-label">{{ tr('筛选') }}</span>
+        <span v-if="quickFilterCount" class="proxy-quick-count mono" data-testid="conn-quick-filter-badge">{{ quickFilterCount }}</span>
+      </button>
+      <button
         v-if="isFiltered"
         type="button"
         class="btn ghost sm"
@@ -996,6 +1255,116 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
         data-testid="connection-sort"
         @update:model-value="(key) => setSort(key as SortKey)"
       />
+    </div>
+
+    <div
+      v-if="showToolbar && filtersOpen && hasAvailableQuickFilters"
+      id="conn-filter-drawer"
+      class="conn-filter-drawer"
+      role="region"
+      :aria-label="tr('快捷筛选')"
+      data-testid="conn-filter-drawer"
+    >
+      <div class="conn-quick-row">
+        <div
+          v-if="protocolCounts.tcp > 0 || protocolFilter === 'tcp' || protocolCounts.udp > 0 || protocolFilter === 'udp' || tab === 'active'"
+          class="conn-quick-group"
+          role="group"
+          :aria-label="tr('协议与状态')"
+        >
+          <button
+            v-if="protocolCounts.tcp > 0 || protocolFilter === 'tcp'"
+            type="button"
+            class="chip-btn conn-quick-chip"
+            :class="{ active: protocolFilter === 'tcp' }"
+            :aria-pressed="protocolFilter === 'tcp'"
+            data-testid="conn-filter-tcp"
+            @click="protocolFilter = protocolFilter === 'tcp' ? 'all' : 'tcp'"
+          >
+            <span>TCP</span>
+            <span class="proxy-quick-count mono">{{ protocolCounts.tcp }}</span>
+          </button>
+          <button
+            v-if="protocolCounts.udp > 0 || protocolFilter === 'udp'"
+            type="button"
+            class="chip-btn conn-quick-chip"
+            :class="{ active: protocolFilter === 'udp' }"
+            :aria-pressed="protocolFilter === 'udp'"
+            data-testid="conn-filter-udp"
+            @click="protocolFilter = protocolFilter === 'udp' ? 'all' : 'udp'"
+          >
+            <span>UDP</span>
+            <span class="proxy-quick-count mono">{{ protocolCounts.udp }}</span>
+          </button>
+          <button
+            v-if="tab === 'active'"
+            type="button"
+            class="chip-btn conn-quick-chip"
+            :class="{ active: activeOnly }"
+            :aria-pressed="activeOnly"
+            data-testid="conn-filter-active"
+            @click="activeOnly = !activeOnly"
+          >
+            <span>{{ tr('活动传输中') }}</span>
+            <span v-if="activeTransferCount" class="proxy-quick-count mono">{{ activeTransferCount }}</span>
+          </button>
+        </div>
+
+        <div
+          v-if="topProcesses.length"
+          class="conn-quick-group"
+          role="group"
+          :aria-label="tr('高频进程')"
+        >
+          <span class="drawer-row-label">{{ tr('进程') }}</span>
+          <button
+            v-for="item in topProcesses"
+            :key="item.name"
+            type="button"
+            class="chip-btn conn-quick-chip"
+            :class="{ active: quickProcess === item.name }"
+            :aria-pressed="quickProcess === item.name"
+            :data-testid="`conn-filter-process-${item.name}`"
+            @click="quickProcess = quickProcess === item.name ? null : item.name"
+          >
+            <span class="ellipsis">{{ item.name }}</span>
+            <span class="proxy-quick-count mono">{{ item.count }}</span>
+          </button>
+        </div>
+
+        <div
+          v-if="topHosts.length"
+          class="conn-quick-group"
+          role="group"
+          :aria-label="tr('高频主机')"
+        >
+          <span class="drawer-row-label">{{ tr('主机') }}</span>
+          <button
+            v-for="item in topHosts"
+            :key="item.name"
+            type="button"
+            class="chip-btn conn-quick-chip"
+            :class="{ active: quickHost === item.name }"
+            :aria-pressed="quickHost === item.name"
+            :data-testid="`conn-filter-host-${item.name}`"
+            @click="quickHost = quickHost === item.name ? null : item.name"
+          >
+            <span class="ellipsis">{{ item.name }}</span>
+            <span class="proxy-quick-count mono">{{ item.count }}</span>
+          </button>
+        </div>
+
+        <button
+          v-if="hasQuickFilter"
+          type="button"
+          class="btn ghost sm conn-quick-reset"
+          data-testid="reset-conn-quick-filters"
+          @click="resetFilters"
+        >
+          <Icon name="x" :size="13" />
+          {{ tr('重置筛选') }}
+        </button>
+      </div>
     </div>
 
     <div
@@ -1324,6 +1693,28 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
                 <Icon name="x" :size="14" />
               </button>
             </template>
+            <button
+              type="button"
+              class="icon-btn sm conn-card-menu"
+              :aria-label="tr('更多操作')"
+              :title="tr('快捷操作')"
+              data-testid="conn-card-actions"
+              @click.stop="openCardMenu(row, $event)"
+            >
+              <Icon name="more" :size="15" />
+            </button>
+          </div>
+          <div v-if="row.rule" class="conn-meta conn-card-rule small" data-testid="connection-card-rule">
+            <span class="tag sm conn-rule-kind">
+              <template v-for="(part, partIdx) in highlight(row.rule)" :key="partIdx">
+                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+              </template>
+            </span>
+            <span v-if="row.rule_payload" class="ellipsis mono muted conn-rule-payload" :title="row.rule_payload">
+              <template v-for="(part, partIdx) in highlight(row.rule_payload)" :key="partIdx">
+                <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+              </template>
+            </span>
           </div>
           <div class="conn-meta small muted">
             <ChainPath :hops="hopsOf(row)" :groups="groupNames" pill fold />
@@ -1403,6 +1794,15 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           @click="openConnectionRuleSet(detailRuleSet)"
         >
           <Icon name="database" :size="13" />{{ tr('查看规则集「') }}{{ detailRuleSet }}」
+        </button>
+        <button
+          v-if="detailSource.host || detailSource.destination"
+          type="button"
+          class="chip"
+          data-testid="match-conn-rule"
+          @click="openConnectionRuleMatch(detailSource, true)"
+        >
+          <Icon name="route" :size="13" />{{ tr('匹配规则核验') }}
         </button>
         <button
           type="button"
@@ -1510,7 +1910,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
       :items="ctxMenu?.items ?? []"
       :label="tr('连接操作')"
       @select="onContextSelect"
-      @close="ctxMenu = null"
+      @close="closeContextMenu()"
     />
   </div>
 </template>
