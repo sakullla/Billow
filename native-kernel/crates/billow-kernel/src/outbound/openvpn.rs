@@ -116,7 +116,9 @@ pub struct PushReply {
     pub redirect_gateway: bool,
     pub block_outside_dns: bool,
     pub block_ipv6: bool,
-    pub push_continuation: bool,
+    /// Pinned `push-continuation` value: 2 means more segments follow,
+    /// 1 or absent is the final segment, 0 is treated as final.
+    pub push_continuation: u8,
     /// An `auth-token` record was seen. The token is not retained (it is
     /// session credential material) and is not used by this client yet.
     pub auth_token_seen: bool,
@@ -247,14 +249,16 @@ impl OpenVpnTunnel {
             &mut push_bytes,
         )?;
         let mut segments = 0;
-        while reply.push_continuation {
+        // Pinned semantics: 2 means an intermediate segment; 1 or absent is
+        // final. The server writes the continuation records on the same TLS
+        // stream, so do not send another PUSH_REQUEST here.
+        while reply.push_continuation == 2 {
             segments += 1;
             if segments > 8 {
                 return Err(OpenVpnError::Unsupported(
                     "multi-segment PUSH_REPLY exceeds 8 segments".to_string(),
                 ));
             }
-            control.write_app(&mut tls, b"PUSH_REQUEST\0")?;
             let next = read_push_record(
                 &mut control,
                 &mut tls,
@@ -1540,7 +1544,7 @@ fn parse_push_reply(text: &str) -> Result<PushReply, OpenVpnError> {
             // `PUSH_REPLY` may itself carry a first option in the same record.
             let value = value.trim_start_matches(' ');
             if !value.is_empty() {
-                parse_push_field(value, &mut reply);
+                parse_push_field(value, &mut reply)?;
             }
         } else if let Some(value) = field.strip_prefix("cipher ") {
             reply.cipher = Some(value.trim().to_string());
@@ -1554,9 +1558,9 @@ fn parse_push_reply(text: &str) -> Result<PushReply, OpenVpnError> {
             reply.peer_id = value.trim().parse().ok();
         } else if let Some(value) = field.strip_prefix("ifconfig ") {
             reply.ifconfig = Some(value.trim().to_string());
-            parse_push_field(field, &mut reply);
+            parse_push_field(field, &mut reply)?;
         } else {
-            parse_push_field(field, &mut reply);
+            parse_push_field(field, &mut reply)?;
         }
     }
     if reply.ifconfig.is_none() && !text.starts_with("PUSH_REPLY") {
@@ -1634,7 +1638,7 @@ fn merge_push_reply(into: &mut PushReply, next: PushReply) {
     into.raw.push_str(&next.raw);
 }
 
-fn parse_push_field(field: &str, reply: &mut PushReply) {
+fn parse_push_field(field: &str, reply: &mut PushReply) -> Result<(), OpenVpnError> {
     let mut parts = field.split_whitespace();
     match parts.next() {
         Some("ifconfig") => {
@@ -1677,11 +1681,18 @@ fn parse_push_field(field: &str, reply: &mut PushReply) {
         Some("block-outside-dns") => reply.block_outside_dns = true,
         Some("block-ipv6") => reply.block_ipv6 = true,
         Some("push-continuation") => {
-            reply.push_continuation = parts
+            let value = parts
                 .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .map(|value| value != 0)
-                .unwrap_or(true)
+                .ok_or_else(|| OpenVpnError::Push("push-continuation needs a value".to_string()))?;
+            let n: u8 = value
+                .parse()
+                .map_err(|_| OpenVpnError::Push(format!("invalid push-continuation {value:?}")))?;
+            if n > 2 {
+                return Err(OpenVpnError::Push(format!(
+                    "invalid push-continuation {value:?} (expected 0, 1 or 2)"
+                )));
+            }
+            reply.push_continuation = n;
         }
         Some("auth-token") => reply.auth_token_seen = true,
         Some("ping") => reply.ping = parts.next().and_then(|value| value.parse().ok()),
@@ -1690,6 +1701,7 @@ fn parse_push_field(field: &str, reply: &mut PushReply) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// `ifconfig <local> <netmask-or-peer>` / `ifconfig-ipv6 <local/len> <peer>`.
@@ -2130,7 +2142,7 @@ mod tests {
     #[test]
     fn push_reply_reads_the_pinned_timer_and_dhcp_records() {
         let reply = parse_push_reply(
-            "PUSH_REPLY,dhcp-option DNS 10.8.0.1,dhcp-option DNS 10.8.0.2,block-ipv6,push-continuation,auth-token session-1,ping 10,ping-restart 60,ifconfig 10.8.0.2 255.255.255.0",
+            "PUSH_REPLY,dhcp-option DNS 10.8.0.1,dhcp-option DNS 10.8.0.2,block-ipv6,push-continuation 1,auth-token session-1,ping 10,ping-restart 60,ifconfig 10.8.0.2 255.255.255.0",
         )
         .expect("parse");
         assert_eq!(reply.dns.len(), 2);
@@ -2139,7 +2151,7 @@ mod tests {
             std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 1))
         );
         assert!(reply.block_ipv6);
-        assert!(reply.push_continuation);
+        assert_eq!(reply.push_continuation, 1);
         assert!(reply.auth_token_seen);
         assert_eq!(reply.ping, Some(10));
         assert_eq!(reply.ping_restart, Some(60));
@@ -2148,16 +2160,16 @@ mod tests {
     #[test]
     fn multi_segment_push_reply_accumulates_options() {
         let mut first = parse_push_reply(
-            "PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,push-continuation 1",
+            "PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,push-continuation 2",
         )
         .expect("first segment");
-        assert!(first.push_continuation);
+        assert_eq!(first.push_continuation, 2);
         let second = parse_push_reply(
-            "PUSH_REPLY,route 10.9.0.0 255.255.255.0,dhcp-option DNS 10.8.0.1,ping 10,ping-restart 60,block-ipv6,push-continuation 0",
+            "PUSH_REPLY,route 10.9.0.0 255.255.255.0,dhcp-option DNS 10.8.0.1,ping 10,ping-restart 60,block-ipv6,push-continuation 1",
         )
         .expect("second segment");
         merge_push_reply(&mut first, second);
-        assert!(!first.push_continuation);
+        assert_eq!(first.push_continuation, 1);
         assert_eq!(
             first.prefixes,
             vec![(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 2)), 24)]

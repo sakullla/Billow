@@ -33,15 +33,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const IMAGE: &str = "billow-openvpn-docker-t35:local";
 
-fn skip(case: &str, reason: &str) {
-    eprintln!("SKIP {case}: {reason}");
-}
-
 fn docker(args: &[&str]) -> std::process::Output {
     Command::new("docker")
         .args(args)
         .output()
-        .expect("run docker")
+        .unwrap_or_else(|error| panic!("docker CLI is not available: {error}"))
 }
 
 fn docker_ok(args: &[&str]) -> bool {
@@ -217,7 +213,10 @@ fn indent(pem: &str, spaces: usize) -> String {
 async fn openvpn_tun_payload_tcp_and_udp_echo() {
     const CASE: &str = "openvpn_tun_payload_tcp_and_udp_echo";
     if std::env::var("KC_OPENVPN_DOCKER").as_deref() != Ok("1") {
-        return skip(CASE, "KC_OPENVPN_DOCKER is not set");
+        // This case is `#[ignore]` in the normal suite. If it is explicitly
+        // selected with `--ignored` but the opt-in is absent, fail instead of
+        // reporting a pass without the real payload.
+        panic!("{CASE}: set KC_OPENVPN_DOCKER=1 to run the Docker TUN payload case");
     }
     if !Command::new("openssl")
         .arg("version")
@@ -225,10 +224,10 @@ async fn openvpn_tun_payload_tcp_and_udp_echo() {
         .map(|output| output.status.success())
         .unwrap_or(false)
     {
-        return skip(CASE, "openssl is not available");
+        panic!("{CASE}: openssl is not available");
     }
     if !docker_ok(&["version"]) {
-        return skip(CASE, "docker daemon is not available");
+        panic!("{CASE}: docker daemon is not available");
     }
 
     let context = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -271,12 +270,9 @@ async fn openvpn_tun_payload_tcp_and_udp_echo() {
         "test -c /dev/net/tun",
     ]);
     if !tun.status.success() {
-        return skip(
-            CASE,
-            &format!(
-                "/dev/net/tun is not available to the daemon: {}",
-                String::from_utf8_lossy(&tun.stderr).trim()
-            ),
+        panic!(
+            "{CASE}: /dev/net/tun is not available to the daemon: {}",
+            String::from_utf8_lossy(&tun.stderr).trim()
         );
     }
 
@@ -294,6 +290,10 @@ async fn openvpn_tun_payload_tcp_and_udp_echo() {
         .join(format!("{name}-certs"));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).expect("certificate directory");
+    let cleanup = Cleanup {
+        name: name.clone(),
+        directory: directory.clone(),
+    };
     certificates(&directory);
 
     let _ = Command::new("docker")
@@ -322,10 +322,6 @@ async fn openvpn_tun_payload_tcp_and_udp_echo() {
             String::from_utf8_lossy(&created.stderr)
         );
     }
-    let cleanup = Cleanup {
-        name: name.clone(),
-        directory: directory.clone(),
-    };
     // Copy the generated certificates into the created container instead of a
     // host bind mount: Docker Desktop's file sharing does not cover every
     // temporary directory, while `docker cp` is independent of it.

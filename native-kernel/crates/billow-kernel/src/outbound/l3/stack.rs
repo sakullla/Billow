@@ -461,12 +461,16 @@ impl Stack {
                 };
                 stack.poll_once();
                 if stack.should_stop() {
-                    // Publish the stop. Every socket creator calls
-                    // `ensure_poller` again after insertion (and ingress only
-                    // matters while a socket exists, which makes `should_stop`
-                    // false under the same lock), so a racing dial starts a new
-                    // poller instead of leaving a socket unpolled.
+                    // Publish the stop before the final socket re-check. A dial
+                    // that inserted a socket before this store is seen by the
+                    // second `should_stop`; a dial that inserts after it calls
+                    // `ensure_poller` and observes `false`, starting a new
+                    // poller. This closes the store/insert ordering window.
                     stack.poller_running.store(false, Ordering::SeqCst);
+                    if !stack.should_stop() {
+                        stack.poller_running.store(true, Ordering::SeqCst);
+                        continue;
+                    }
                     return;
                 }
             }
