@@ -1590,8 +1590,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             data-testid="connection-row"
             @click="openDetail(row)"
             @contextmenu="openRowMenu(row, $event)"
-            @keydown.enter.prevent="openDetail(row)"
-            @keydown.space.prevent="openDetail(row)"
+            @keydown.self.enter.prevent="openDetail(row)"
+            @keydown.self.space.prevent="openDetail(row)"
           >
             <td>
               <div class="cell-host">
@@ -1667,8 +1667,8 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           tabindex="0"
           data-testid="connection-row"
           @click="openDetail(row)"
-          @keydown.enter.prevent="openDetail(row)"
-          @keydown.space.prevent="openDetail(row)"
+          @keydown.self.enter.prevent="openDetail(row)"
+          @keydown.self.space.prevent="openDetail(row)"
         >
           <div class="conn-top">
             <span class="net" :class="row.network">{{ row.network.toUpperCase() || 'TCP' }}</span>
