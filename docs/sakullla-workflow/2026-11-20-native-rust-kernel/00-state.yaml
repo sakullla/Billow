@@ -3,10 +3,10 @@ workflow_id: 2026-11-20-native-rust-kernel
 requirement_ref: docs/requirements/2026-11-20-native-rust-kernel.md
 requirement_version: sha256:aa0f5410f9097c8b8cb30a481039c5e1b8cde2d2646c354fd27a99cf981b038b
 requirement_ids: [R1, R2, R3, R4]
-requirement_revision: 17
+requirement_revision: 19
 revision_fence:
-  from_revision: 16
-  to_revision: 17
+  from_revision: 18
+  to_revision: 19
   status: reconciled
   preserved_active_task_ids: []
   preserved_result_task_ids: []
@@ -44,10 +44,12 @@ revision_fence:
     - T29
     - T30
     - T31
-  stale_task_ids: [T32]
-  revision_attempt_task_ids: [T32]
-  rebuilt_task_ids: []
-status: blocked
+    - T32
+    - T33
+  stale_task_ids: []
+  revision_attempt_task_ids: []
+  rebuilt_task_ids: [T34, T35]
+status: active
 stages:
   exploration: completed
   solution: completed
@@ -1307,13 +1309,124 @@ tasks:
         review_digest: sha256:72b48bdb9c0a5e13765eb233820641687786a2df8b61c5116ff9e0d0fdd7b911
     history_head_ref: evidence/history/88.json
     history_count: 5
-blocker:
-  reason: "delivery verification failed: native_kernel"
-  owner: deliver
-  resume_action: delivery.prepare
+  - id: T33
+    status: completed
+    task_run_ref: task-runs/T33-run.md
+    recipe_digest: sha256:cb7ea4cabfa11e5fec02ec2dbbb2b2f4531174810e1b31de76c14355fd84e86d
+    recipe_snapshot:
+      id: T33
+      goal: 补齐 masque、mieru、sudoku、trojan、trusttunnel 与 gost 的剩余选项
+      depends_on: [T32]
+      covers: [R2]
+      outcomes:
+        - masque：network h2、h3-l4proxy、ip-stack.mode gvisor 与 bbr-profile 逐项实现或按名登记（h2/h3-l4proxy 可基于现有 h3 CONNECT 与 QUIC 层实现或明确依赖缺口）；
+        - mieru：UDP association、multiplexing levels、traffic-pattern；sudoku：UoT 与 http-mask-mode stream/poll/auto/ws（可复用现有 sudoku 翻译）；
+        - trojan：shadow-tls-opts、jls-opts（复用 T31 anytls 的 JLS/ShadowTLS 实现）与 client-fingerprint；trusttunnel：UDP 与 client-fingerprint；gost-relay：client-fingerprint；
+        - 以 pinned Mihomo 对端验证，更新 option-matrix 使这些族 rust=reject 行清零或逐项登记；默认套件、pinned peer、差分与 runner 不回归。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 18
+    review_base_ref: 0c8f69d3632430c794811f12f717e4428e0e47fa
+    attempts:
+      - attempt_id: T33-A2
+        message_id: T33-A2-M1
+        recipe_digest: sha256:cb7ea4cabfa11e5fec02ec2dbbb2b2f4531174810e1b31de76c14355fd84e86d
+        owner_mode: worker
+        baseline_ref: 46a99744eb607651e4c609bee38a47bf337ec7c5
+        checkpoint_ref: b56c1d45d7df826a62e575aba5b00e7e76631645
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 3
+        path_count: 9
+        review_evidence_refs: [evidence/reviews/174.json]
+        scope_ref: evidence/history/90.json#Attempt-History/T33-A2/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/90.json#Attempt-History/T33-A2/execution
+        execution_digest: sha256:a8da681b9e9e7c58ccd5626fe2d464cf108ab31f0dd1f6498d0f23eaa056020b
+        review_ref: evidence/history/90.json#Attempt-History/T33-A2/review
+        review_digest: sha256:b4eb2ea7de2f7e830d784d82d4a7615a3a36ed2c36f4282533475984180af479
+    history_head_ref: evidence/history/90.json
+    history_count: 2
+  - id: T34
+    status: completed
+    task_run_ref: task-runs/T34-run.md
+    recipe_digest: sha256:002d47ea5256c5befa5af0c491bd89a6fac8b23004839fe60b1d0b5dcd4ed3bf
+    recipe_snapshot:
+      id: T34
+      goal: 桌面 Rust 内核创建并承载 TUN/IP 数据面
+      depends_on: [T2, T7]
+      covers: [R1, R2, R4]
+      outcomes:
+        - 内核新增桌面 TUN 设备与配置：解析 enable/device/stack/mtu/auto-route/auto-detect-interface/strict-route/dns-hijack/route-address/route-exclude-address；macOS 使用 utun、Linux 使用 /dev/net/tun、Windows 使用 Wintun；--check 只校验不创建设备；不支持的形状按名拒绝。
+        - 复用 T7 用户态 IP 栈承载 TCP/UDP、DNS 劫持、规则/组/出站；auto-route 建立与回收路由/DNS，auto-detect-interface 使出站绑定物理接口避免环路；启动、重载、停止和切回 Mihomo 均回收设备与路由；无权限/驱动缺失具名失败。
+        - 宿主桌面 Rust 不再剥离 tun；设置 enable 并以 --tun 启动，保留既有提权授权、失败回退与状态；只有真实接管成功后界面才显示 TUN。
+        - 验证配置严格性、路由/DNS 命令规划、fd 泵与 socketpair 双向 IP、失败与回收路径；macOS 实际 utun 需提权，无权限环境只记录入口不写通过；Linux/Windows 代码路径与平台条件如实登记。
+      test: new
+      scope: [native-kernel, src-tauri/src, src-tauri/Cargo.toml, src-tauri/Cargo.lock, tool]
+    requirement_revision: 19
+    review_base_ref: b56c1d45d7df826a62e575aba5b00e7e76631645
+    attempts:
+      - attempt_id: T34-A4
+        message_id: T34-A4-M1
+        recipe_digest: sha256:002d47ea5256c5befa5af0c491bd89a6fac8b23004839fe60b1d0b5dcd4ed3bf
+        owner_mode: worker
+        baseline_ref: aaff6f1162d5042264e1f0894c5cd3adc1c88daf
+        checkpoint_ref: 1f342492ba45ec22d9152d66caefeec02b6e6a06
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 0
+        path_count: 5
+        review_evidence_refs: [evidence/reviews/182.json]
+        scope_ref: evidence/history/94.json#Attempt-History/T34-A4/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/94.json#Attempt-History/T34-A4/execution
+        execution_digest: sha256:0ec1ae8db238abb68ae342b79820a6c4429ab1df6bad00c493d8d63ec52a1c60
+        review_ref: evidence/history/94.json#Attempt-History/T34-A4/review
+        review_digest: sha256:ffb3d446ebadac7266e38a2f8f76f839d610f23aeb21f0dfc9c3a1518f8e7536
+    history_head_ref: evidence/history/94.json
+    history_count: 4
+  - id: T35
+    status: completed
+    task_run_ref: task-runs/T35-run.md
+    recipe_digest: sha256:dd8661e9a80fae7d78e6c2fb7a6c1840fc97509eb4b2b8f9a421f9c619e6e9cc
+    recipe_snapshot:
+      id: T35
+      goal: WireGuard/OpenVPN 经用户态 IP 栈提供真实 TCP/UDP 出站
+      depends_on: [T34]
+      covers: [R2, R4]
+      outcomes:
+        - 建立共享 L3 客户端栈（TCP/UDP）与每出站设备生命周期；WireGuard 完成握手/数据/allowed-ips/keepalive/mtu/IPv4/IPv6；OpenVPN 完成 AEAD 数据收发/PUSH_REPLY ifconfig/keepalive/IPv4/IPv6。
+        - 规则/组选中这些出站时，TUN 与应用流经该栈真实出站，不回落 DIRECT/OS；并发与队列有界，停止/重载回收；错误按协议具名。
+        - 用受控对端验证 TCP/UDP 双向、域名/IP 目的、错误与回收，并与 pinned 对照；Tailscale/ZeroTier/EasyTier 的控制面/成员交换缺口按名登记，不声称整族兼容；出站 ip-stack.mode 等选项按实际支持接受或具名拒绝。
+        - 更新 option 矩阵、rust-mapping 与证据；默认套件、pinned peer、差分与 runner 不回归。
+      test: extend
+      scope: [native-kernel, tool/kernel-compat]
+    requirement_revision: 19
+    review_base_ref: 1f342492ba45ec22d9152d66caefeec02b6e6a06
+    attempts:
+      - attempt_id: T35-A3
+        message_id: T35-A3-M1
+        recipe_digest: sha256:dd8661e9a80fae7d78e6c2fb7a6c1840fc97509eb4b2b8f9a421f9c619e6e9cc
+        owner_mode: worker
+        baseline_ref: aa4355b3b15b839c1ab6c9b4ccd9d802074ca276
+        checkpoint_ref: 1141c9e156f9e403c2964a2964160fb7b7a6124e
+        execution_status: completed_with_concerns
+        review_decision: passed
+        finding_count: 4
+        path_count: 12
+        review_evidence_refs: [evidence/reviews/188.json]
+        scope_ref: evidence/history/97.json#Attempt-History/T35-A3/scope_delta
+        scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+        execution_ref: evidence/history/97.json#Attempt-History/T35-A3/execution
+        execution_digest: sha256:a2fa26c0f971d09b0fca9c560386a9167235f8d8dcbe1b4302caa97dfd0aae05
+        review_ref: evidence/history/97.json#Attempt-History/T35-A3/review
+        review_digest: sha256:a6632a78fb00e656d56014d3f6b604d374325f66ff8a345eee354a9e0cfe32da
+    history_head_ref: evidence/history/97.json
+    history_count: 3
+blocker: null
 delivery:
   status: pending
-plan_input_digest: sha256:7660e77b9fd9b95f3b2c4fdc3c1f95893b2d3894e20dd28bcf7ac38f09bf5d62
+plan_input_digest: sha256:4347cf1887187cdd63cf035c4412ecf3dc3bd5291f52d716cd2b3ae8bb13cfaf
 scheduling:
   capacities: {}
   capabilities: {}
@@ -2011,5 +2124,86 @@ scheduling:
       status: released
       evidence_ref: docs/sakullla-workflow/2026-11-20-native-rust-kernel/evidence/t32-a5-invocation.json
       admission_evidence_ref: ""
+    - lease_id: task:T33-A1
+      invocation_id: ses_deb47fa80ffeAJ1WUl4BsyeBMS
+      task_id: T33
+      attempt_id: T33-A1
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T33-A2
+      invocation_id: ses_deb47fa80ffeAJ1WUl4BsyeBMS
+      task_id: T33
+      attempt_id: T33-A2
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T34-A1
+      invocation_id: ses_deaf6c200ffeJoHfTbQa61GOzM
+      task_id: T34
+      attempt_id: T34-A1
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T34-A2
+      invocation_id: ses_deaf6c200ffeJoHfTbQa61GOzM
+      task_id: T34
+      attempt_id: T34-A2
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T34-A3
+      invocation_id: ses_deaf6c200ffeJoHfTbQa61GOzM
+      task_id: T34
+      attempt_id: T34-A3
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T34-A4
+      invocation_id: ses_deaf6c200ffeJoHfTbQa61GOzM
+      task_id: T34
+      attempt_id: T34-A4
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T35-A1
+      invocation_id: ses_dea1fcbd7ffeZCtA6RfUXDhH79
+      task_id: T35
+      attempt_id: T35-A1
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T35-A2
+      invocation_id: ses_dea1fcbd7ffeZCtA6RfUXDhH79
+      task_id: T35
+      attempt_id: T35-A2
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
+    - lease_id: task:T35-A3
+      invocation_id: ses_dea1fcbd7ffeZCtA6RfUXDhH79
+      task_id: T35
+      attempt_id: T35-A3
+      resources: {}
+      purpose: implementation
+      status: held
+      evidence_ref: ""
+      admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/586.json
+result_inbox_ref: evidence/results/640.json

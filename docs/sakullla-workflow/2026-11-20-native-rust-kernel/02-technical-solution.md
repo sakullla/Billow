@@ -23,7 +23,17 @@ summary: "Rust 转发库与 Mihomo 复用有效配置。桌面和 Android 使用
 
 设备型协议按层交付：`wireguard`/`openvpn` 的传输与认证由协议任务完成，设备/TUN 归属仍由平台接管任务负责；`tailscale`/`zerotier` 的 mesh 协议层由协议任务交付，设备/TUN 与完整控制面仍由平台任务承接；`easytier` 的 pinned wasm core 在内部派生 `network_secret_digest`，离线无法复现，因此整族显式拒绝并由单独任务记录该材料缺口，不能当作可用出站。
 
+### Owner TUN/IP 交付决策（2026-11-26）
+
+Owner 明确要求 TUN/IP 数据面首版完整交付，不再归入“设备层后续”或由 Mihomo 兜底。执行范围：
+
+- **T34 桌面 TUN/IP**：Rust 内核在桌面直接创建并承载 TUN，解析 `tun` 配置（`enable`、`device`、`stack`、`mtu`、`auto-route`、`auto-detect-interface`、`strict-route`、`dns-hijack`、`route-address`、`route-exclude-address`），复用 T7 用户态 IP 栈处理 TCP/UDP、DNS 劫持、规则/组/出站；macOS 使用 utun，Linux 使用 `/dev/net/tun`，Windows 使用 Wintun；路由与 DNS 在启动、重载、停止和切回 Mihomo 时建立/回收；提权或驱动缺失时具名失败，不伪装成功。桌面 Rust 不再由宿主剥离 `tun` 块：配置文件保留该块，内核在 `--check` 时不创建设备。
+- **T35 设备型出站接入**：`wireguard` 与 `openvpn` 的 IP 包接入 T34 的用户态栈，`dial()` 不再以“缺设备栈”拒绝；`tailscale`/`zerotier`/`easytier` 的控制面或成员交换缺口按名登记，不以 TUN 完成冒充整族兼容。出站自身的 `ip-stack.mode` 等选项按实际可选项接受或具名拒绝，不能静默忽略。
+- **验证口径**：无 root/管理员/驱动的环境只验证配置、命令规划、fd 泵与受控对端；真实接管和出口需在具备权限的宿主复测，构建成功或模拟器不算通过。桌面 TUN 与设备型出站的结果计入 R2；未实跑部分在 Delivery 明确保留为 blocker。
+
 T9 的职责是把已交付的协议子集与显式拒绝集成到同一候选，保证可构建、证据可复现、CLI 与嵌入库入口一致；R2 的“所有有效配置可用”由最终交付验证（T8/Delivery）在完整候选上判定，T9 不因仍有已登记的 partial 缺口而单独阻断。
+
+Owner 选择在最终交付前继续清纯协议族的剩余选项：masque、mieru、sudoku、trojan、trusttunnel、gost-relay 由 T33 承接；完成后进入最终 Delivery，剩余 R2 与外部环境作为 blocker 如实记录，不出具虚假通过。
 
 ### Owner 范围决策（2026-11-25）
 

@@ -375,6 +375,39 @@ tasks:
       - 已由 Owner 书面接受的收窄：reduce-rtt 行为、shadowquic zero-rtt、QUIC v2、hysteria v1 faketcp、无 pinned hysteria v1 listener；均在 rust-mapping/t32-option-closure 具名登记，Delivery 不计为未登记缺口但不得声称已实现。
     test: extend
     scope: [native-kernel, tool/kernel-compat]
+  - id: T33
+    goal: 补齐 masque、mieru、sudoku、trojan、trusttunnel 与 gost 的剩余选项
+    depends_on: [T32]
+    covers: [R2]
+    outcomes:
+      - masque：network h2、h3-l4proxy、ip-stack.mode gvisor 与 bbr-profile 逐项实现或按名登记（h2/h3-l4proxy 可基于现有 h3 CONNECT 与 QUIC 层实现或明确依赖缺口）；
+      - mieru：UDP association、multiplexing levels、traffic-pattern；sudoku：UoT 与 http-mask-mode stream/poll/auto/ws（可复用现有 sudoku 翻译）；
+      - trojan：shadow-tls-opts、jls-opts（复用 T31 anytls 的 JLS/ShadowTLS 实现）与 client-fingerprint；trusttunnel：UDP 与 client-fingerprint；gost-relay：client-fingerprint；
+      - 以 pinned Mihomo 对端验证，更新 option-matrix 使这些族 rust=reject 行清零或逐项登记；默认套件、pinned peer、差分与 runner 不回归。
+    test: extend
+    scope: [native-kernel, tool/kernel-compat]
+  - id: T34
+    goal: 桌面 Rust 内核创建并承载 TUN/IP 数据面
+    depends_on: [T2, T7]
+    covers: [R1, R2, R4]
+    outcomes:
+      - 内核新增桌面 TUN 设备与配置：解析 enable/device/stack/mtu/auto-route/auto-detect-interface/strict-route/dns-hijack/route-address/route-exclude-address；macOS 使用 utun、Linux 使用 /dev/net/tun、Windows 使用 Wintun；--check 只校验不创建设备；不支持的形状按名拒绝。
+      - 复用 T7 用户态 IP 栈承载 TCP/UDP、DNS 劫持、规则/组/出站；auto-route 建立与回收路由/DNS，auto-detect-interface 使出站绑定物理接口避免环路；启动、重载、停止和切回 Mihomo 均回收设备与路由；无权限/驱动缺失具名失败。
+      - 宿主桌面 Rust 不再剥离 tun；设置 enable 并以 --tun 启动，保留既有提权授权、失败回退与状态；只有真实接管成功后界面才显示 TUN。
+      - 验证配置严格性、路由/DNS 命令规划、fd 泵与 socketpair 双向 IP、失败与回收路径；macOS 实际 utun 需提权，无权限环境只记录入口不写通过；Linux/Windows 代码路径与平台条件如实登记。
+    test: new
+    scope: [native-kernel, src-tauri/src, src-tauri/Cargo.toml, src-tauri/Cargo.lock, tool]
+  - id: T35
+    goal: WireGuard/OpenVPN 经用户态 IP 栈提供真实 TCP/UDP 出站
+    depends_on: [T34]
+    covers: [R2, R4]
+    outcomes:
+      - 建立共享 L3 客户端栈（TCP/UDP）与每出站设备生命周期；WireGuard 完成握手/数据/allowed-ips/keepalive/mtu/IPv4/IPv6；OpenVPN 完成 AEAD 数据收发/PUSH_REPLY ifconfig/keepalive/IPv4/IPv6。
+      - 规则/组选中这些出站时，TUN 与应用流经该栈真实出站，不回落 DIRECT/OS；并发与队列有界，停止/重载回收；错误按协议具名。
+      - 用受控对端验证 TCP/UDP 双向、域名/IP 目的、错误与回收，并与 pinned 对照；Tailscale/ZeroTier/EasyTier 的控制面/成员交换缺口按名登记，不声称整族兼容；出站 ip-stack.mode 等选项按实际支持接受或具名拒绝。
+      - 更新 option 矩阵、rust-mapping 与证据；默认套件、pinned peer、差分与 runner 不回归。
+    test: extend
+    scope: [native-kernel, tool/kernel-compat]
 delivery_verification:
   frontend_tests:
     command: npm test
@@ -388,6 +421,8 @@ delivery_verification:
     command: node --test tool/kernel-compat/runner.test.mjs
   switch_acceptance:
     command: BILLOW_TEST_RESOURCES="$PWD/src-tauri/resources/runtime" cargo test --manifest-path src-tauri/Cargo.toml --locked packaged_engines_switch_both_ways_with_a_marked_request -- --ignored
+  native_kernel_desktop_tun:
+    command: cargo test --manifest-path native-kernel/Cargo.toml --locked --features desktop-tun -- --test-threads=1
 ---
 # 双内核执行计划
 
