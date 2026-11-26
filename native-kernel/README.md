@@ -65,9 +65,10 @@ verified against OpenVPN 2.7.9). T19 added the mesh adapters: `tailscale`
 (control-base Noise IK, the HTTP/2 `/machine/map` control request and the DERP
 greeting/client-info/ping/packet frames) and `zerotier` (identity proof of work,
 planet/moon parsing, VL1 armor and HELLO/OK/WHOIS/ECHO, VL2 frame payload).
-Device/TUN ownership and the userspace IP stack stay with T6/T7, so both
-families load a valid configuration and refuse every `dial()` with that gap
-named. T20 translates EasyTier's locked LGPL-3.0-or-later source for the
+Device/TUN ownership and the userspace IP stack stay with the device layer, so
+both families load a valid configuration and refuse every `dial()` with that
+gap named (the T34 desktop TUN now reuses that stack; wiring these outbounds'
+packets into it remains separate work). T20 translates EasyTier's locked LGPL-3.0-or-later source for the
 cleartext host/discovery path: the real `DefaultHasher`-based
 `network_secret_digest`, peer-manager frame, `HandshakeRequest`,
 `PeerManagerHeader` and PingPong are implemented and verified against the
@@ -90,7 +91,7 @@ delay), `/rules`, `/connections` (list + close), `/providers/proxies` and
 `/providers/rules` (list/update), `/logs`, `/traffic`, `/memory`, `secret`
 auth, CORS, and the TCP/Unix/TLS controller listeners. **Not implemented
 yet** (rejected with
-`[unsupported]`, never ignored): `tun`/`redir`/`tproxy`, the
+`[unsupported]`, never ignored): `redir`/`tproxy`, the
 families listed under
 [Protocol families outside this slice](#protocol-families-outside-this-slice),
 and the protocol options listed in [Not implemented](#not-implemented). T24
@@ -102,9 +103,9 @@ the control API. The remaining configuration-plane ownership is split across
 T22/T25 and is named at each boundary.
 
 T7 added the iOS Packet Tunnel data plane; T26 generalised the same userspace
-stack behind `--features device-vpn`, with `ios-vpn` and `android-vpn` as the
-two device entries (all off by default, so desktop builds and the mixed
-listener are unchanged). `src/ios_vpn.rs` is the `billow_ios_vpn_*` C ABI of
+stack behind `--features device-vpn`, with `ios-vpn`, `android-vpn` and
+`desktop-tun` as the three device entries (all off by default, so other builds
+and the mixed listener are unchanged). `src/ios_vpn.rs` is the `billow_ios_vpn_*` C ABI of
 `src-tauri/gen/apple/network-extension/RustExtension/include/billow_ios_vpn.h`,
 and `src/tunnel/` is the shared userspace IP stack. It terminates the device's TCP
 (passive open in `tunnel/tcp_server.rs`) and UDP (the same outbound
@@ -124,7 +125,7 @@ T26 added the Android VpnService entry behind `--features android-vpn`
 `ParcelFileDescriptor`, clears `FD_CLOEXEC` and reports the fd; the Rust host
 `profile.rs`/`process` launch then passes it as `--tun-fd <fd>` instead of
 writing `tun.file-descriptor` into the YAML (the YAML `tun` block is stripped
-for this engine on every platform). The CLI starts `AndroidVpn`, whose reader
+for this engine on Android/iOS; desktop keeps it, see T34 below). The CLI starts `AndroidVpn`, whose reader
 thread polls the fd and feeds `Tunnel::ingest`, and whose bounded writer queue
 writes emitted IP packets back. `stop`/`Drop` joins both threads, closes the
 fd and stops the engine. The host stops the Android Rust child before it
@@ -145,10 +146,39 @@ the device entry are recorded in
 `tool/kernel-compat/evidence/t26-android-tunnel.{json,md}`, and real-device
 traffic remains pending.
 
-Desktop Rust sessions do **not** take over a TUN device: the `tun` block is
-stripped for `Engine::Rust` on every platform and desktop TUN belongs to the
-T6/Mihomo path. A desktop Rust session serves the mixed listener only, so
-status/snapshots must not be read as desktop Rust TUN support.
+T34 adds the desktop TUN data plane behind `--features desktop-tun` and the
+CLI's `--tun`. The kernel parses `tun` strictly (`enable`, `device`, `stack`,
+`mtu`, `auto-route`, `auto-detect-interface`, `strict-route`, `dns-hijack`,
+`route-address`, `route-exclude-address`); `stack: mips|mixed|gvisor` is
+**recorded but served by this kernel's in-tree userspace IP stack** (not the
+pinned MipsSoft/gVisor implementation), `system` and unknown keys are named
+rejections, and an enabled block is no longer stripped for desktop
+`Engine::Rust`. `src/desktop_tun/` creates macOS `utun` (control socket +
+`UTUN_OPT_IFNAME`, 4-byte big-endian `AF_INET`/`AF_INET6` framing), Linux
+`/dev/net/tun` (`TUNSETIFF`, `IFF_TUN|IFF_NO_PI`, raw IP) or Windows Wintun
+(the shipped `wintun.dll`), assigns the pinned default addresses
+(`198.18.0.1/30`, `fdfe:dcba:9876::1/126`; `tun.mtu` absent means 9000), and
+installs split routes (`0.0.0.0/1` + `128.0.0.0/1`, `::/1` + `8000::/1`) so the
+physical default route is never replaced. `route-address` appends through the
+device and `route-exclude-address` goes through the detected physical gateway;
+`strict-route` requires a detected physical interface or fails by name.
+`auto-detect-interface` parses `route -n get default` / `ip route show default`
+/ the Windows PowerShell route probe and installs that interface as the
+process-wide default bind for kernel-originated sockets (proxy-server dials,
+DIRECT TCP/UDP, DNS queries), so TUN cannot capture the kernel's own traffic
+(mirrors Mihomo's `dialer.DefaultInterfaceFinder`). The reader thread feeds
+`Tunnel::ingest` (the same T7 stack), the bounded device sink/writer thread
+writes replies, and stop (including a partial route apply) removes exactly the
+routes/addresses this process added, clears the bind and closes the device.
+The host writes `tun.enable` from its TUN switch and launches the Rust process
+with `--tun`; `--check` validates the configuration and never creates a
+device. Configuration strictness, utun framing, the fd pump over a
+`UnixDatagram` pair, route/default-route planning and rollback are covered by
+`tests/desktop_tunnel.rs`; `tests/desktop_cli.rs` proves `--check`/`--tun
+--check` do not create a device. Real `utun` creation needs root or the
+`TunGrant` setuid authorization and is an `#[ignore]`d test here; Linux and
+Windows device code compiles by `cfg` but has no run on this host, so their
+real-device acceptance remains pending.
 
 ## License
 
@@ -200,6 +230,9 @@ native-kernel/
     │   ├── src/ios_vpn.rs          # billow_ios_vpn_* C ABI (feature `ios-vpn`)
     │   ├── src/android_vpn.rs      # VpnService fd pump + billow_android_vpn_* ABI
     │   │                           # (feature `android-vpn`, CLI `--tun-fd`)
+    │   ├── src/desktop_tun/        # desktop TUN: utun//dev/net/tun/Wintun device,
+    │   │                           # route planning/rollback and the bounded pump
+    │   │                           # (feature `desktop-tun`, CLI `--tun`)
     │   ├── src/tunnel/             # shared userspace IPv4/IPv6 data plane (feature
     │   │                           # `device-vpn`): passive TCP (tcp_server.rs),
     │   │                           # UDP associations (udp.rs), rule/group/outbound
@@ -230,7 +263,8 @@ trust roots, plus `certificate`/`private-key` for the controller TLS listener),
 (`store-selected`), `rules`, `sub-rules`,
 `rule-providers`, `proxy-providers`, `geodata-mode`, `geodata-loader`,
 `geosite-matcher`, `geo-auto-update` (`false` only), `geo-update-interval`
-(parsed), `hosts` and `dns` (T22), and `ipv6` (general switch, default `true`).
+(parsed), `hosts` and `dns` (T22), `tun` (T34, desktop), and `ipv6` (general
+switch, default `true`).
 A listener
 port of `0` means disabled (Mihomo's meaning); if every listener key is 0 the
 load fails by name instead of binding an ephemeral port.
@@ -243,10 +277,11 @@ loader is tested against. T5 generates that artifact from the real
 `fixtures/t5-billow-profile.json`) and loads it with `--check`: the desktop and
 Android artifacts both name only the enabled `sniffer` (T7); removing that one
 block makes the whole artifact load and register its groups. The launcher keys
-are handled explicitly: the `tun` block is stripped before the kernel sees it
-for the Rust engine (the device route belongs to the launcher and the Android
-fd arrives as `--tun-fd`; a `tun` block reaching the loader is still rejected
-with `enable: true`), `geox-url` is
+are handled explicitly: for the desktop Rust engine the `tun` block is kept
+(T34 creates the device) and loads with `--check`; the Android/iOS artifact has
+it stripped and the Android fd arrives as `--tun-fd`; a `tun` block that reaches
+the loader is validated strictly, and only a launch with `--tun` (feature
+`desktop-tun`) creates a device, `geox-url` is
 recorded with a warning, `port: 0`/`socks-port: 0`/`redir-port: 0`/
 `tproxy-port: 0` are inert disabled listeners, `unified-delay`,
 `tcp-concurrent`, `find-process-mode: off` and the global keep-alive keys are

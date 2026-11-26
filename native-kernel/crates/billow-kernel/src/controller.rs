@@ -1362,11 +1362,14 @@ fn configs_json(config: &Config) -> Value {
     object.insert(
         "tun".into(),
         json!({
-            "enable": false,
-            "device": "",
-            "stack": "",
-            "auto-route": false,
-            "auto-detect-interface": false,
+            "enable": config.tun.enable,
+            "device": config.tun.device,
+            "stack": config.tun.stack,
+            "mtu": config.tun.mtu,
+            "auto-route": config.tun.auto_route,
+            "auto-detect-interface": config.tun.auto_detect_interface,
+            "strict-route": config.tun.strict_route,
+            "dns-hijack": config.tun.dns_hijack,
         }),
     );
     object.insert(
@@ -1507,7 +1510,8 @@ fn patch_configs(request: &Request, state: &ControlState) -> Response {
                         Some(false) => {}
                         Some(true) => {
                             return unsupported(
-                                "tun.enable: true is not implemented (device/TUN is T6/T7)".to_string(),
+                                "tun.enable: true cannot be applied live; restart the kernel with --tun (feature desktop-tun)"
+                                    .to_string(),
                             )
                         }
                         None => return unsupported("tun.enable must be a boolean".to_string()),

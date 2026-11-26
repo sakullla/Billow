@@ -1155,7 +1155,7 @@ impl DnsRoute for EngineRoute {
                 .map_err(io::Error::other)?;
             match selected {
                 Selected::Direct => {
-                    let stream = TcpStream::connect((host, port)).await?;
+                    let stream = crate::outbound::connect_bound_str(&host, port).await?;
                     let _ = stream.set_nodelay(true);
                     let stream: RouteStreamBox = Box::new(stream);
                     Ok(stream)
@@ -1279,18 +1279,18 @@ pub(crate) async fn direct_stream(
     port: u16,
 ) -> Result<TcpStream, String> {
     if let Some(ip) = ip {
-        return TcpStream::connect((ip, port))
+        return crate::outbound::connect_bound(SocketAddr::new(ip, port))
             .await
             .map_err(|e| format!("connect {ip}:{port}: {e}"));
     }
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return TcpStream::connect((ip, port))
+        return crate::outbound::connect_bound(SocketAddr::new(ip, port))
             .await
             .map_err(|e| format!("connect {ip}:{port}: {e}"));
     }
     let hosted = context.runtime.hosts.lookup_ips(host);
     if let Some(ip) = hosted.iter().find(|ip| ip.is_ipv4()).or_else(|| hosted.first()) {
-        return TcpStream::connect((*ip, port))
+        return crate::outbound::connect_bound(SocketAddr::new(*ip, port))
             .await
             .map_err(|e| format!("connect {ip}:{port}: {e}"));
     }
@@ -1302,16 +1302,24 @@ pub(crate) async fn direct_stream(
         ips.sort_by_key(|ip| if ip.is_ipv4() { 0 } else { 1 });
         let mut last = format!("resolve {host}: no address");
         for ip in ips {
-            match TcpStream::connect((ip, port)).await {
+            match crate::outbound::connect_bound(SocketAddr::new(ip, port)).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => last = format!("connect {ip}:{port}: {e}"),
             }
         }
         return Err(last);
     }
-    TcpStream::connect((host, port))
+    let mut addrs = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| format!("connect {host}:{port}: {e}"))
+        .map_err(|e| format!("resolve {host}: {e}"))?;
+    let mut last = format!("resolve {host}: no address");
+    for addr in addrs.by_ref() {
+        match crate::outbound::connect_bound(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = format!("connect {host}:{port}: {error}"),
+        }
+    }
+    Err(last)
 }
 
 /// DIRECT UDP destination (pinned `Direct.ResolveUDP`).

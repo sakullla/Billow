@@ -43,6 +43,7 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "external-controller-tls",
     "external-controller-cors",
     "secret",
+    "tun",
 ];
 /// Top-level keys the pinned `RawConfig` declares but this kernel does not
 /// implement. They fail with `[unsupported]`; a key outside both lists is not a
@@ -55,7 +56,7 @@ pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "external-ui", "external-ui-url", "external-ui-name", "external-doh-server",
     "interface-name", "routing-mark", "tunnels",
     "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
-    "listeners", "ntp", "tun", "tuic-server",
+    "listeners", "ntp", "tuic-server",
     "iptables", "experimental", "geox-url", "sniffer", "clash-for-android"
 ];
 
@@ -861,6 +862,68 @@ impl GeodataRequirements {
     }
 }
 
+/// `tun:` block. The desktop runner (feature `desktop-tun`) creates the device
+/// and routes from it; the config loader only records and validates the shape.
+///
+/// `stack: mips`, `mixed` and `gvisor` are all served by the in-tree userspace
+/// IP stack in [`crate::tunnel`]. The field keeps the requested name so evidence
+/// can state plainly that this is not the pinned MipsSoft/gVisor implementation;
+/// `system` (the OS stack) is rejected by name because this kernel terminates
+/// TCP/UDP itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunConfig {
+    pub enable: bool,
+    /// Interface/adapter name; empty means the platform picks one.
+    pub device: String,
+    /// Accepted `stack` value (`mips`, `mixed` or `gvisor`).
+    pub stack: String,
+    /// Requested MTU; 0 keeps the platform default (1500 for this stack).
+    pub mtu: u32,
+    pub auto_route: bool,
+    pub auto_detect_interface: bool,
+    pub strict_route: bool,
+    /// `dns-hijack` entries. The userspace stack answers UDP/TCP port 53.
+    pub dns_hijack: Vec<String>,
+    pub route_address: Vec<String>,
+    pub route_exclude_address: Vec<String>,
+}
+
+impl Default for TunConfig {
+    fn default() -> Self {
+        // Pinned `RawTun` defaults that matter for the accepted shape.
+        TunConfig {
+            enable: false,
+            device: String::new(),
+            stack: "mips".to_string(),
+            mtu: 0,
+            auto_route: true,
+            auto_detect_interface: true,
+            strict_route: false,
+            dns_hijack: vec!["0.0.0.0:53".to_string()],
+            route_address: Vec::new(),
+            route_exclude_address: Vec::new(),
+        }
+    }
+}
+
+impl TunConfig {
+    /// The MTU the userspace stack advertises. Pinned sing-tun uses 9000 when
+    /// `tun.mtu` is absent (the iOS/Android entries keep their own defaults).
+    pub fn effective_mtu(&self) -> usize {
+        const PINNED_DEFAULT_MTU: usize = 9000;
+        if self.mtu == 0 {
+            PINNED_DEFAULT_MTU
+        } else {
+            self.mtu as usize
+        }
+    }
+
+    /// Whether `dns-hijack` asks the userspace stack to answer `:53`.
+    pub fn hijack_dns(&self) -> bool {
+        !self.dns_hijack.is_empty()
+    }
+}
+
 /// Parsed, validated configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -903,6 +966,8 @@ pub struct Config {
     pub hosts: crate::dns::HostsConfig,
     /// Top-level `ipv6` (pinned default `true`); combined with `dns.ipv6`.
     pub ipv6: bool,
+    /// `tun:` block (desktop TUN data plane, feature `desktop-tun`).
+    pub tun: TunConfig,
     /// Control-API listeners and auth (T25).
     pub controller: ControllerConfig,
     /// Kept so the identity survives a reload that is rejected.
@@ -1067,6 +1132,202 @@ fn block_enabled(
     }
 }
 
+/// Parse the `tun:` block strictly (T34). Unknown keys and behaviour-changing
+/// shapes that this kernel cannot honour fail with their name instead of being
+/// silently ignored.
+fn parse_tun(
+    value: &serde_yaml::Value,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<TunConfig, ConfigError> {
+    let mut tun = TunConfig::default();
+    let mapping = match value {
+        serde_yaml::Value::Null => {
+            warnings.push("'tun' is empty; the block is inert".to_string());
+            return Ok(tun);
+        }
+        serde_yaml::Value::Bool(flag) => {
+            tun.enable = *flag;
+            if *flag {
+                warnings.push(
+                    "tun.enable is true; the desktop runner creates the device only with --tun (feature desktop-tun), and --check still only validates"
+                        .to_string(),
+                );
+            } else {
+                warnings.push("'tun' is disabled; no device is created".to_string());
+            }
+            return Ok(tun);
+        }
+        serde_yaml::Value::Mapping(mapping) => mapping,
+        other => {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: tun must be a mapping or boolean, found {}",
+                kind_of(other)
+            )))
+        }
+    };
+    for (key, item) in mapping {
+        let key = key
+            .as_str()
+            .ok_or_else(|| ConfigError::InvalidValue(format!("{path}: tun keys must be strings")))?;
+        let label = format!("tun.{key}");
+        match key {
+            "enable" => tun.enable = parse_bool(item, path, &label)?,
+            "device" => {
+                let device = parse_string(item, path, &label)?;
+                if device.len() > 15 {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: tun.device '{device}' is longer than the 15-byte interface name limit"
+                    )));
+                }
+                tun.device = device;
+            }
+            "stack" => {
+                let stack = parse_string(item, path, &label)?.to_ascii_lowercase();
+                match stack.as_str() {
+                    "mips" | "mixed" | "gvisor" => {
+                        if stack != "mixed" {
+                            warnings.push(format!(
+                                "tun.stack '{stack}' is served by this kernel's in-tree userspace IP stack, not the pinned {stack} implementation"
+                            ));
+                        }
+                        tun.stack = stack;
+                    }
+                    "system" => {
+                        return Err(ConfigError::Unsupported(format!(
+                            "{path}: tun.stack 'system' is not implemented (this kernel terminates TCP/UDP in userspace; mips/mixed/gvisor all run that stack)"
+                        )))
+                    }
+                    other => {
+                        return Err(ConfigError::Unsupported(format!(
+                            "{path}: tun.stack '{other}' is not a pinned value (accepted: mips, mixed, gvisor)"
+                        )))
+                    }
+                }
+            }
+            "mtu" => {
+                let mtu = match item {
+                    serde_yaml::Value::Number(number) => number.as_u64(),
+                    serde_yaml::Value::String(text) => text.parse::<u64>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    ConfigError::InvalidValue(format!(
+                        "{path}: tun.mtu must be a non-negative integer, found {item:?}"
+                    ))
+                })?;
+                if mtu > 65_535 {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: tun.mtu {mtu} exceeds 65535"
+                    )));
+                }
+                tun.mtu = mtu as u32;
+                if mtu == 0 {
+                    warnings.push("tun.mtu 0 keeps the userspace stack default (9000)".to_string());
+                }
+            }
+            "auto-route" => tun.auto_route = parse_bool(item, path, &label)?,
+            "auto-detect-interface" => tun.auto_detect_interface = parse_bool(item, path, &label)?,
+            "strict-route" => tun.strict_route = parse_bool(item, path, &label)?,
+            "dns-hijack" => {
+                let entries = parse_tun_string_list(item, path, &label)?;
+                for entry in &entries {
+                    if !entry.ends_with(":53") {
+                        warnings.push(format!(
+                            "tun.dns-hijack entry '{entry}' is recorded but the userspace stack answers only UDP/TCP port 53"
+                        ));
+                    }
+                }
+                tun.dns_hijack = entries;
+            }
+            "route-address" => {
+                tun.route_address = parse_tun_prefix_list(item, path, &label)?;
+            }
+            "route-exclude-address" => {
+                tun.route_exclude_address = parse_tun_prefix_list(item, path, &label)?;
+            }
+            "file-descriptor" => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{path}: tun.file-descriptor is a Mihomo launch parameter; the Android host hands the VpnService fd as --tun-fd and desktop TUN is created by the kernel itself"
+                )))
+            }
+            other => {
+                return Err(ConfigError::Unsupported(format!(
+                    "{path}: tun.{other} is not implemented (accepted keys: enable, device, stack, mtu, auto-route, auto-detect-interface, strict-route, dns-hijack, route-address, route-exclude-address)"
+                )))
+            }
+        }
+    }
+    if tun.enable {
+        warnings.push(
+            "tun.enable is true; the desktop runner creates the device only with --tun (feature desktop-tun), and --check still only validates"
+                .to_string(),
+        );
+    } else {
+        warnings.push("'tun' is present but disabled; no device is created".to_string());
+    }
+    if tun.strict_route && !tun.auto_detect_interface {
+        warnings.push(
+            "tun.strict-route is true with auto-detect-interface false; the runner requires a detected physical interface or fails by name"
+                .to_string(),
+        );
+    }
+    Ok(tun)
+}
+
+fn parse_tun_string_list(
+    value: &serde_yaml::Value,
+    path: &str,
+    key: &str,
+) -> Result<Vec<String>, ConfigError> {
+    let sequence = match value {
+        serde_yaml::Value::Sequence(sequence) => sequence,
+        serde_yaml::Value::Null => return Ok(Vec::new()),
+        other => {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: {key} must be a list, found {}",
+                kind_of(other)
+            )))
+        }
+    };
+    let mut out = Vec::with_capacity(sequence.len());
+    for item in sequence {
+        let text = match item {
+            serde_yaml::Value::String(text) => text.clone(),
+            serde_yaml::Value::Number(number) => number.to_string(),
+            other => {
+                return Err(ConfigError::InvalidValue(format!(
+                    "{path}: {key} entries must be strings, found {}",
+                    kind_of(other)
+                )))
+            }
+        };
+        if text.trim().is_empty() {
+            return Err(ConfigError::InvalidValue(format!(
+                "{path}: {key} entries must not be empty"
+            )));
+        }
+        out.push(text);
+    }
+    Ok(out)
+}
+
+fn parse_tun_prefix_list(
+    value: &serde_yaml::Value,
+    path: &str,
+    key: &str,
+) -> Result<Vec<String>, ConfigError> {
+    let entries = parse_tun_string_list(value, path, key)?;
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let network: ipnet_like::IpNet = entry.parse().map_err(|error| {
+            ConfigError::InvalidValue(format!("{path}: {key} '{entry}' is not a CIDR: {error}"))
+        })?;
+        out.push(network.to_string());
+    }
+    Ok(out)
+}
+
 /// Parse and validate `yaml`. `path` is only used for diagnostics.
 pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> {
     let raw: serde_yaml::Value =
@@ -1109,6 +1370,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     let mut dns = crate::dns::DnsConfig::default();
     let mut hosts = crate::dns::HostsConfig::default();
     let mut general_ipv6 = true;
+    let mut tun = TunConfig::default();
     let mut controller = ControllerConfig::default();
 
     for (key, value) in mapping.iter() {
@@ -1321,21 +1583,19 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             "hosts" => hosts = crate::dns::HostsConfig::parse(value, path)?,
             "dns" => dns = crate::dns::DnsConfig::parse(value, path, &mut warnings)?,
             "ipv6" => general_ipv6 = parse_bool(value, path, key)?,
-            // Inert forms of blocks the native kernel does not serve. Billow's
-            // effective YAML commonly carries `tun: {enable: false}`,
-            // `sniffer: {enable: false}` and `geox-url`; accepting the
-            // do-nothing form keeps a valid upstream file loadable, but an
-            // enabled block is a named rejection instead of a silent no-op.
-            "tun" | "sniffer" => {
+            // `tun` is parsed strictly (T34); `sniffer` remains an inert block
+            // because this kernel does not implement sniffing at all.
+            "tun" => tun = parse_tun(value, path, &mut warnings)?,
+            "sniffer" => {
                 if block_enabled(value, path, key)? {
-                    let owner = if key == "tun" { "device/TUN is T6/T7" } else { "sniffing is T7" };
                     return Err(ConfigError::Unsupported(format!(
-                        "top-level key '{key}' with enable: true is not implemented ({owner})"
+                        "top-level key '{key}' with enable: true is not implemented (sniffing is T7)"
                     )));
                 }
-                warnings.push(format!(
-                    "'{key}' is present but disabled; this kernel has no {key} implementation, so the block is inert"
-                ));
+                warnings.push(
+                    "'sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert"
+                        .to_string(),
+                );
             }
             "geox-url" => {
                 let mapping = value.as_mapping().ok_or_else(|| {
@@ -1376,7 +1636,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         Some(port) => port,
         None if listener_disabled => {
             return Err(ConfigError::Unsupported(
-                "no listener port is enabled: mixed-port/port/socks-port are 0 or unset while a 0 value disabled the default (this kernel has no TUN/redirect path yet)"
+                "no listener port is enabled: mixed-port/port/socks-port are 0 or unset while a 0 value disabled the default (the mixed listener is always started; TUN does not replace it)"
                     .to_string(),
             ))
         }
@@ -1493,6 +1753,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         dns,
         hosts,
         ipv6: general_ipv6,
+        tun,
         controller,
         digest,
     };

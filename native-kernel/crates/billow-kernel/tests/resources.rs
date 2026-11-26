@@ -874,13 +874,16 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
         .err()
         .expect("DoQ must be rejected");
     assert!(error.to_string().contains("DoQ"), "{error}");
-    for key in ["sniffer", "tun"] {
-        let yaml = format!("mixed-port: {}\n{key}: {{enable: true}}\n", free_port());
-        let error = billow_kernel::load_config(&yaml, "effective.yaml")
-            .err()
-            .expect("enabled block must be rejected");
-        assert!(error.to_string().contains(key), "{key}: {error}");
-    }
+    // `sniffer` is still a named rejection; T34 `tun` loads strictly instead.
+    let yaml = format!("mixed-port: {}\nsniffer: {{enable: true}}\n", free_port());
+    let error = billow_kernel::load_config(&yaml, "effective.yaml")
+        .err()
+        .expect("enabled sniffer must be rejected");
+    assert!(error.to_string().contains("sniffer"), "{error}");
+    let yaml = format!("mixed-port: {}\ntun: {{enable: true}}\n", free_port());
+    let loaded = billow_kernel::load_config(&yaml, "effective.yaml")
+        .expect("an enabled tun block now loads (desktop runner owns the device)");
+    assert!(loaded.config.tun.enable);
 
     let groups_only = format!(
         "mixed-port: {}\nproxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: 1080}}\nproxy-groups:\n  - {{name: PROXY, type: select, proxies: [node-a]}}\nrules:\n  - MATCH,PROXY\n",

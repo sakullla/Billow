@@ -171,6 +171,9 @@ pub trait SystemProxy: Send {
 pub trait TunGrant: Send {
     fn authorize(&mut self) -> Result<bool, String>;
     fn set_enabled(&mut self, enabled: bool) -> Result<(), String>;
+    /// Authorize this binary. macOS grants setuid root, so the path must be the
+    /// binary the selected engine actually launches.
+    fn set_kernel_path(&mut self, _path: Option<std::path::PathBuf>) {}
 }
 
 /// Android VPN. `authorize` asks the system. `establish` starts the service and returns the TUN fd.
@@ -878,6 +881,10 @@ impl TunGrant for HostTun {
     fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
         self.enabled = enabled;
         Ok(())
+    }
+
+    fn set_kernel_path(&mut self, path: Option<std::path::PathBuf>) {
+        self.kernel_path = path;
     }
 }
 

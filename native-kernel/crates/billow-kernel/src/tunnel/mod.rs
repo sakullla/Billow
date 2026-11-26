@@ -204,7 +204,9 @@ pub(crate) struct Inner {
     kernel: Mutex<Option<Kernel>>,
     config_path: PathBuf,
     options: TunnelOptions,
-    sink: Option<Arc<dyn PacketSink>>,
+    /// Egress callback. A TUN pump installs the device sink after the engine
+    /// has started; polling hosts leave it unset and drain the queue.
+    sink: Mutex<Option<Arc<dyn PacketSink>>>,
     queue: Mutex<VecDeque<Vec<u8>>>,
     tcp: Mutex<HashMap<FlowKey, mpsc::Sender<Vec<u8>>>>,
     udp: Mutex<Option<mpsc::Sender<UdpCommand>>>,
@@ -260,7 +262,12 @@ impl Inner {
             return;
         }
         let bytes = packet.len() as u64;
-        match &self.sink {
+        let sink = self
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        match sink {
             Some(sink) => {
                 if sink.emit(&packet) {
                     self.stats.out_packets.fetch_add(1, Ordering::Relaxed);
@@ -360,7 +367,7 @@ impl Tunnel {
             kernel: Mutex::new(Some(kernel)),
             config_path,
             options,
-            sink,
+            sink: Mutex::new(sink),
             queue: Mutex::new(VecDeque::new()),
             tcp: Mutex::new(HashMap::new()),
             udp: Mutex::new(None),
@@ -612,6 +619,17 @@ impl Tunnel {
             }
             None => Ingest::Dropped("UDP task stopped"),
         }
+    }
+
+    /// Install or replace the egress callback after start. The desktop TUN
+    /// pump builds its bounded device sink around a running [`Tunnel`]; an
+    /// existing sink is replaced and its queued egress is left untouched.
+    pub fn set_sink(&self, sink: Arc<dyn PacketSink>) {
+        *self
+            .inner
+            .sink
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
     }
 
     /// Packets waiting for a polling host, as `[4-byte big-endian
@@ -1394,7 +1412,7 @@ async fn handle_datagram(
             if !direct.contains_key(&key) {
                 let ipv4 = datagram.dst.is_ipv4();
                 let bind = if ipv4 { "0.0.0.0:0" } else { "[::]:0" };
-                match tokio::net::UdpSocket::bind(bind).await {
+                match crate::outbound::bind_udp_str(bind).await {
                     Ok(socket) => {
                         // Connect the socket to the flow's remote: the kernel
                         // then only delivers packets from that remote, and the

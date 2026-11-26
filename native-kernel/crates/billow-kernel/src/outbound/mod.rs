@@ -56,7 +56,7 @@ pub mod ws;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -579,6 +579,40 @@ fn current_dialer() -> Option<DialerOptions> {
     DIALER.try_with(|options| options.clone()).ok()
 }
 
+fn default_interface_slot() -> &'static Mutex<Option<String>> {
+    static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Physical interface kernel-originated sockets must leave through. A desktop
+/// TUN with `auto-detect-interface` installs the detected default interface so
+/// proxy-server dials, DIRECT TCP/UDP and DNS queries cannot be captured by the
+/// TUN again. `None` clears it (tunnel stop).
+pub fn set_default_interface(name: Option<String>) {
+    let mut slot = default_interface_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = name.filter(|name| !name.is_empty());
+}
+
+/// The process-wide physical interface, when one is installed.
+pub fn default_interface() -> Option<String> {
+    default_interface_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Fill `interface-name` from the process-wide physical binding when the proxy
+/// did not configure one itself.
+pub(crate) fn merge_default_interface(options: &DialerOptions) -> DialerOptions {
+    let mut merged = options.clone();
+    if merged.interface_name.is_none() {
+        merged.interface_name = default_interface();
+    }
+    merged
+}
+
 /// Sort (and, for `ipv4`/`ipv6`, filter) addresses the way the pinned
 /// `dialer.WithPreferIPv4`/`WithOnlySingleStack` options do.
 pub(crate) fn order_addresses(addrs: &mut Vec<SocketAddr>, ip_version: IpVersion) {
@@ -679,18 +713,44 @@ async fn connect_resolved(
     addr: SocketAddr,
     options: &DialerOptions,
 ) -> io::Result<TcpStream> {
-    if options == &DialerOptions::default() {
+    let options = merge_default_interface(options);
+    if options == DialerOptions::default() {
         return TcpStream::connect(addr).await;
     }
-    let socket = dial_socket(addr, options)?;
+    let socket = dial_socket(addr, &options)?;
     let stream = socket.connect(addr).await?;
     Ok(stream)
+}
+
+/// DIRECT TCP dial that honours the process-wide physical-interface binding
+/// (the TUN anti-loop path).
+pub(crate) async fn connect_bound(addr: SocketAddr) -> io::Result<TcpStream> {
+    connect_resolved(addr, &DialerOptions::default()).await
+}
+
+/// [`connect_bound`] for a name or literal address.
+pub(crate) async fn connect_bound_str(host: &str, port: u16) -> io::Result<TcpStream> {
+    if let Ok(addr) = host.parse::<SocketAddr>() {
+        return connect_bound(addr).await;
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return connect_bound(SocketAddr::new(ip, port)).await;
+    }
+    let mut addrs = tokio::net::lookup_host((host, port)).await?;
+    let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host} resolved to no address"));
+    for addr in addrs.by_ref() {
+        match connect_bound(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
 }
 
 /// Bind a UDP socket with the in-scope BasicOption knobs (interface-name and
 /// routing-mark; tfo/mptcp are TCP-only).
 pub(crate) async fn bind_udp(addr: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
-    let options = current_dialer().unwrap_or_default();
+    let options = merge_default_interface(&current_dialer().unwrap_or_default());
     if options == DialerOptions::default() {
         return tokio::net::UdpSocket::bind(addr).await;
     }
@@ -708,6 +768,7 @@ pub(crate) async fn bind_udp_str(bind: &str) -> io::Result<tokio::net::UdpSocket
 
 /// The raw bound socket for QUIC endpoints, which need to own the socket.
 pub(crate) fn udp_socket_std(addr: SocketAddr, options: &DialerOptions) -> io::Result<std::net::UdpSocket> {
+    let options = merge_default_interface(options);
     let domain = if addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
@@ -724,6 +785,7 @@ pub(crate) fn udp_socket_std(addr: SocketAddr, options: &DialerOptions) -> io::R
 /// Create a non-blocking TCP socket and apply tfo/mptcp/interface-name/
 /// routing-mark before connecting.
 fn dial_socket(addr: SocketAddr, options: &DialerOptions) -> io::Result<tokio::net::TcpSocket> {
+    let options = merge_default_interface(options);
     let domain = if addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
@@ -835,7 +897,65 @@ fn apply_interface(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "windows")]
+fn apply_interface(
+    socket: &socket2::Socket,
+    addr: SocketAddr,
+    name: Option<&str>,
+) -> io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    let Some(name) = name else {
+        return Ok(());
+    };
+    // Winsock `IP_UNICAST_IF` takes the interface index in network byte order
+    // for IPv4 and host byte order for IPv6.
+    const IPPROTO_IP: i32 = 0;
+    const IPPROTO_IPV6: i32 = 41;
+    const IP_UNICAST_IF: i32 = 31;
+    const IPV6_UNICAST_IF: i32 = 31;
+
+    #[link(name = "iphlpapi")]
+    unsafe extern "system" {
+        fn if_nametoindex(name: *const i8) -> u32;
+    }
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        fn setsockopt(
+            socket: usize,
+            level: i32,
+            option: i32,
+            value: *const i8,
+            length: i32,
+        ) -> i32;
+    }
+
+    let c_name = std::ffi::CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface name has a NUL"))?;
+    let index = unsafe { if_nametoindex(c_name.as_ptr()) };
+    if index == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (level, option, value) = if addr.is_ipv4() {
+        (IPPROTO_IP, IP_UNICAST_IF, index.to_be())
+    } else {
+        (IPPROTO_IPV6, IPV6_UNICAST_IF, index)
+    };
+    let result = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as usize,
+            level,
+            option,
+            (&value as *const u32).cast(),
+            std::mem::size_of::<u32>() as i32,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn apply_interface(
     _socket: &socket2::Socket,
     _addr: SocketAddr,
@@ -846,7 +966,7 @@ fn apply_interface(
         Some(name) => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!(
-                "interface-name '{name}' is not implemented on this platform (Linux SO_BINDTODEVICE and macOS IP_BOUND_IF are the implemented bindings)"
+                "interface-name '{name}' is not implemented on this platform (Linux SO_BINDTODEVICE, macOS IP_BOUND_IF and Windows IP_UNICAST_IF are the implemented bindings)"
             ),
         )),
     }
@@ -1032,5 +1152,42 @@ mod tests {
         });
         assert_eq!(v6[0], 4);
         assert_eq!(v6.len(), 19);
+    }
+
+    #[test]
+    fn default_interface_can_be_installed_and_cleared() {
+        set_default_interface(Some("lo0".to_string()));
+        assert_eq!(default_interface().as_deref(), Some("lo0"));
+        let merged = merge_default_interface(&DialerOptions::default());
+        assert_eq!(merged.interface_name.as_deref(), Some("lo0"));
+        // A per-proxy value wins over the process default.
+        let configured = DialerOptions {
+            interface_name: Some("en0".to_string()),
+            ..DialerOptions::default()
+        };
+        assert_eq!(
+            merge_default_interface(&configured).interface_name.as_deref(),
+            Some("en0")
+        );
+        set_default_interface(None);
+        assert!(default_interface().is_none());
+    }
+
+    /// The TUN anti-loop branch really binds the socket to the interface.
+    /// `IP_BOUND_IF` is available unprivileged on macOS; Linux/Windows policy is
+    /// covered by the cfg implementation and remains platform-acceptance work.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn direct_dial_uses_the_process_interface() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+        set_default_interface(Some("lo0".to_string()));
+        let dialed = connect_bound(addr).await;
+        set_default_interface(None);
+        accept.await.unwrap();
+        assert!(dialed.is_ok(), "{dialed:?}");
     }
 }

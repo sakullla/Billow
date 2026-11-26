@@ -59,6 +59,13 @@ struct Args {
     #[cfg(feature = "android-vpn")]
     #[arg(long, value_name = "FD")]
     tun_fd: Option<i32>,
+    /// Create and carry a desktop TUN device (macOS utun / Linux /dev/net/tun /
+    /// Windows Wintun) instead of only serving the mixed listener. Requires the
+    /// `desktop-tun` build and the host's TUN authorization; `--check` still
+    /// only validates the configuration and never creates a device.
+    #[cfg(feature = "desktop-tun")]
+    #[arg(long)]
+    tun: bool,
 }
 
 fn main() -> ExitCode {
@@ -93,8 +100,17 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         if args.check {
             return Err("--tun-fd and --check cannot be combined".to_string());
         }
+        #[cfg(feature = "desktop-tun")]
+        if args.tun {
+            return Err("--tun-fd and --tun cannot be combined".to_string());
+        }
         install_line_logger(tracing::Level::INFO, billow_kernel::LogBus::new());
         return run_android_tunnel(&args, &yaml, &base_dir, fd);
+    }
+    #[cfg(feature = "desktop-tun")]
+    if args.tun && !args.check {
+        install_line_logger(tracing::Level::INFO, billow_kernel::LogBus::new());
+        return run_desktop_tunnel(&args, &yaml, &base_dir);
     }
     // Validate before starting threads so a rejected configuration exits non-zero with its explicit reason.
     let loaded = billow_kernel::load_config(&yaml, &args.config.display().to_string())
@@ -135,6 +151,16 @@ fn real_main(args: Args) -> Result<ExitCode, String> {
         kernel.stop().map_err(|e| e.to_string())?;
         println!("configuration accepted");
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // A `tun` block that asks for a device must not be silently ignored just
+    // because this launch only serves the mixed listener.
+    if config.tun.enable {
+        return Err(
+            "[unsupported] tun.enable is true but this launch does not create a desktop TUN \
+             (pass --tun on a desktop-tun build; Android uses --tun-fd and iOS uses the Packet Tunnel)"
+                .to_string(),
+        );
     }
 
     // Register the stop handlers before the kernel binds anything, so a signal
@@ -270,6 +296,93 @@ async fn wait_for_android_stop(
             _ = ticker.tick() => {
                 if !vpn.stats().running {
                     return FD_LOST;
+                }
+            }
+        }
+    }
+}
+
+/// Runs the desktop TUN data plane (`--tun`).
+#[cfg(feature = "desktop-tun")]
+fn run_desktop_tunnel(
+    args: &Args,
+    yaml: &str,
+    base_dir: &std::path::Path,
+) -> Result<ExitCode, String> {
+    use billow_kernel::desktop_tun::{DesktopTun, DesktopTunOptions};
+    use billow_kernel::tunnel::TunnelOptions;
+
+    let options = DesktopTunOptions {
+        tunnel: TunnelOptions {
+            limits: Limits {
+                buffer_size: args.buffer_bytes,
+                max_sessions: args.max_sessions,
+                ..Limits::default()
+            },
+            ..TunnelOptions::default()
+        },
+        ..DesktopTunOptions::default()
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut stop = runtime.block_on(StopSignals::install())?;
+    let tun = DesktopTun::start(yaml, base_dir.to_path_buf(), options)?;
+    let identity = tun
+        .identity()
+        .ok_or_else(|| "desktop-tun: the engine did not start".to_string())?;
+    println!("{}", identity.to_line());
+    println!("features: {}", identity.features);
+    println!("tun_device: {}", tun.device_name());
+    if let Some(interface) = tun.bound_interface() {
+        println!("tun_interface: {interface}");
+    }
+
+    let reason = runtime.block_on(wait_for_desktop_stop(&tun, &mut stop));
+    let lost = reason == TUN_LOST;
+    tracing::info!(reason, "stop requested");
+    tun.stop();
+    let (tunnel, pump) = tun.stats();
+    println!(
+        "stopped instance={} accepted={} active={} rejected={} failed={} inPackets={} outPackets={} tunReads={} tunWritten={}",
+        identity.uuid,
+        tunnel.tcp_opened,
+        tunnel.tcp_flows,
+        tunnel.tcp_rejected,
+        tunnel.invalid_packets,
+        tunnel.in_packets,
+        tunnel.out_packets,
+        pump.reads,
+        pump.written
+    );
+    if lost {
+        eprintln!(
+            "error: desktop-tun: the TUN device stopped carrying packets; \
+             exiting so the host can release TUN ownership"
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The desktop pump ending on its own (a revoked authorization or a device
+/// failure) is a data-plane failure, not a stop request.
+#[cfg(feature = "desktop-tun")]
+const TUN_LOST: &str = "tun device lost";
+
+#[cfg(feature = "desktop-tun")]
+async fn wait_for_desktop_stop(
+    tun: &billow_kernel::desktop_tun::DesktopTun,
+    stop: &mut StopSignals,
+) -> &'static str {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    loop {
+        tokio::select! {
+            reason = stop.wait() => return reason,
+            _ = ticker.tick() => {
+                if !tun.running() {
+                    return TUN_LOST;
                 }
             }
         }

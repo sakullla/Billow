@@ -23,6 +23,9 @@ ios-vpn = ["device-vpn"]
 # Android VpnService data plane: the host hands over a TUN file descriptor and
 # `android_vpn` pumps IP packets through it. Off for desktop builds.
 android-vpn = ["device-vpn"]
+# Desktop TUN data plane: the kernel creates a macOS utun / Linux /dev/net/tun /
+# Windows Wintun device and carries it through the shared userspace stack.
+desktop-tun = ["device-vpn"]
 
 [dependencies]
 aes.workspace = true
@@ -79,6 +82,12 @@ required-features = ["ios-vpn"]
 # Android's VpnService does.
 name = "android_tunnel"
 required-features = ["android-vpn"]
+
+[[test]]
+# Desktop TUN: configuration strictness, utun framing, route planning and the
+# fd pump. A real utun creation is #[ignore]d (needs root/TunGrant).
+name = "desktop_tunnel"
+required-features = ["desktop-tun"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "full"] }

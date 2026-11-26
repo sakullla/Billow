@@ -47,7 +47,7 @@ pub mod rules;
 pub use config::{
     load_config, Action, Config, ConfigError, ControllerConfig, CorsConfig, ExpectedStatus,
     GeoSiteDatabase, GroupKind, LoadBalanceStrategy, LoadedConfig, Matcher, NetworkKind, InType,
-    ProfileConfig, ProxyGroup,
+    ProfileConfig, ProxyGroup, TunConfig,
 };
 pub use dns::{
     DnsConfig, DnsError, DnsService, EnhancedMode, FakeIpFilterMode, HostValue, HostsConfig,
@@ -91,3 +91,8 @@ pub mod ios_vpn;
 /// `--features android-vpn`.
 #[cfg(all(feature = "android-vpn", unix))]
 pub mod android_vpn;
+
+/// Desktop TUN data plane: platform device creation, route planning and the
+/// shared packet pump (`--features desktop-tun`).
+#[cfg(feature = "desktop-tun")]
+pub mod desktop_tun;

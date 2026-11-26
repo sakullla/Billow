@@ -935,6 +935,12 @@ pub trait KernelLaunch {
     /// passed as `--tun-fd`, never written into the YAML; `None` clears it.
     fn set_tun_fd(&mut self, _fd: Option<i32>) {}
 
+    /// Binary the currently selected engine launches. The macOS TUN grant
+    /// must authorize that binary (it can be Mihomo or the native kernel).
+    fn executable_path(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// Identity of the process actually started, or `None` while none runs.
     fn identity(&self) -> Option<EngineIdentity> {
         None
@@ -1674,11 +1680,12 @@ impl ProcessRuntime {
             crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
         }
         let priv_now = kernel_file_privileged(&path);
+        let tun_requested = yaml_tun_enabled(config_yaml);
+        // Android stages its `tun` block away before this point, so a Rust
+        // launch with `tun.enable: true` here means the desktop creator path.
+        let desktop_tun = self.engine == Engine::Rust && tun_requested;
         #[cfg(target_os = "windows")]
-        let needs_elevation = self.engine == Engine::Mihomo
-            && serde_yaml::from_str::<Value>(config_yaml).ok()
-            .and_then(|value| value.get("tun")?.get("enable")?.as_bool()) == Some(true)
-            && !crate::elevation::is_admin();
+        let needs_elevation = tun_requested && !crate::elevation::is_admin();
         #[cfg(target_os = "windows")]
         let can_reload = !needs_elevation || self.elevated.is_some();
         #[cfg(not(target_os = "windows"))]
@@ -1820,6 +1827,11 @@ impl ProcessRuntime {
                     None => self.tun_fd = None,
                 }
             }
+            // Desktop: `tun.enable: true` in this launch's YAML means the
+            // native kernel creates the device itself.
+            if desktop_tun {
+                command.arg("--tun");
+            }
         }
         command
             .stdin(Stdio::null())
@@ -1872,14 +1884,14 @@ impl ProcessRuntime {
         #[cfg(target_os = "windows")]
         let streams = if let Some(mut helper) = reused.take() {
             // The helper stops the previous kernel before starting this one.
-            helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
+            helper.start(&path, &self.home_dir, &config_path, self.engine.as_str(), desktop_tun).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
                 format!("{KERNEL_ERROR}：{error}")
             })?;
             self.elevated = Some(helper);
             Vec::new()
         } else if let Some(mut helper) = elevated.take() {
-            helper.start(&path, &self.home_dir, &config_path).map_err(|error| {
+            helper.start(&path, &self.home_dir, &config_path, self.engine.as_str(), desktop_tun).map_err(|error| {
                 let _ = fs::remove_file(&config_path);
                 format!("{KERNEL_ERROR}：{error}")
             })?;
@@ -2005,6 +2017,10 @@ impl KernelLaunch for ProcessRuntime {
 
     fn set_tun_fd(&mut self, fd: Option<i32>) {
         self.tun_fd = fd;
+    }
+
+    fn executable_path(&self) -> Option<PathBuf> {
+        self.engine_path()
     }
 
     fn identity(&self) -> Option<EngineIdentity> {
@@ -3159,6 +3175,7 @@ impl ProfileBook {
         }
         let previous = self.takeover.system_proxy;
         let tun_enable = if self.tun_wanted {
+            tun.set_kernel_path(kernel.executable_path());
             match tun.authorize() {
                 Ok(true) => true,
                 _ => {
@@ -3229,6 +3246,7 @@ impl ProfileBook {
             self.apply_model(model);
             return self.publish(kernel);
         }
+        tun.set_kernel_path(kernel.executable_path());
         let grant = tun.authorize();
         if !matches!(grant, Ok(true)) {
             self.home_failure = Some(grant.err().unwrap_or_else(|| takeover::TUN_DENIED.to_string()));
@@ -3272,6 +3290,7 @@ impl ProfileBook {
     ) -> ProfileSnapshot {
         let previous = self.takeover.system_proxy;
         let tun_enable = if self.tun_wanted {
+            tun.set_kernel_path(kernel.executable_path());
             match tun.authorize() {
                 Ok(true) => true,
                 _ => {
@@ -3529,11 +3548,10 @@ impl ProfileBook {
             .and_then(|(yaml, port)| {
                 // Subscription TUN settings must not replace the authorized session.
                 // In particular, an omitted enable flag disables Mihomo's TUN on reload.
-                // The native kernel never serves a `tun` block: the desktop route
-                // is the launcher's and Android passes the VpnService fd as argv.
-                if desktop && self.engine == Engine::Rust {
-                    strip_tun(&yaml).map(|yaml| (yaml, port))
-                } else if desktop {
+                // Desktop (Mihomo or the native kernel) follows the launcher's TUN
+                // switch; Android passes the VpnService fd as argv and iOS uses its
+                // Packet Tunnel, so their YAML is left untouched here.
+                if desktop {
                     force_tun(&yaml, self.takeover.tun, None).map(|yaml| (yaml, port))
                 } else {
                     Ok((yaml, port))
@@ -3826,13 +3844,12 @@ impl ProfileBook {
             return Err(StartError::Failed("没有本地端口".to_string()));
         };
         let selected = profile.selected.clone();
-        // TUN is a Mihomo launch parameter. The concrete route belongs to the
-        // launcher: desktop TUN for Mihomo, the iOS Packet Tunnel or the
-        // Android VpnService fd for the native kernel. The Rust engine never
-        // reads `tun` from YAML (an enabled block is rejected by name), and on
-        // Android its fd travels as `--tun-fd`, so the block is always
-        // stripped for that engine — including a user-written one.
-        let yaml = if engine == Engine::Rust {
+        // Desktop TUN is a launch parameter for both engines. The native Rust
+        // kernel now creates the device itself (feature `desktop-tun`) and the
+        // host only flips `tun.enable`/adds `--tun`; Android keeps handing its
+        // VpnService fd as `--tun-fd` and has the block stripped. iOS uses the
+        // Packet Tunnel and its own staging.
+        let yaml = if engine == Engine::Rust && self.platform != ClientPlatform::Desktop {
             strip_tun(&prepared.yaml).map_err(StartError::Failed)?
         } else {
             force_tun(&prepared.yaml, tun_enable, fd).map_err(StartError::Failed)?
@@ -6034,6 +6051,14 @@ fn force_mode(yaml: &str, mode: &str) -> Result<String, String> {
         Value::String(mode.to_string()),
     );
     serde_yaml::to_string(&value).map_err(|_| CONTENT_ERROR.to_string())
+}
+
+/// Whether a launch YAML asks for a TUN device (`tun.enable: true`).
+fn yaml_tun_enabled(yaml: &str) -> bool {
+    serde_yaml::from_str::<Value>(yaml)
+        .ok()
+        .and_then(|value| value.get("tun")?.get("enable")?.as_bool())
+        == Some(true)
 }
 
 fn force_tun(yaml: &str, enable: bool, fd: Option<i32>) -> Result<String, String> {
@@ -11092,6 +11117,54 @@ proxy-groups:
         assert!(strip_launcher_tun(yaml, true).unwrap().contains("tun:"));
         assert!(config_has_tun(yaml));
         assert!(!config_has_tun("mixed-port: 7890\n"));
+    }
+
+    #[test]
+    fn desktop_rust_keeps_the_tun_block_and_follows_the_launcher_switch() {
+        let dir = temp_dir("engine-desktop-tun");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Desktop);
+        book.add_local(
+            "tun.yaml",
+            "mixed-port: 7890\ntun:\n  enable: false\n  stack: gvisor\n  device: utun9\nmode: rule\nrules:\n  - MATCH,DIRECT\n",
+        );
+        let mut kernel = EngineKernel::new();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let (on, _) = match book.kernel_yaml_for(Engine::Rust, true, None) {
+            Ok(value) => value,
+            Err(StartError::Idle(message) | StartError::Failed(message)) => panic!("{message}"),
+        };
+        let value: Value = serde_yaml::from_str(&on).unwrap();
+        assert_eq!(value["tun"]["enable"].as_bool(), Some(true), "{on}");
+        assert_eq!(value["tun"]["stack"].as_str(), Some("gvisor"), "{on}");
+        assert_eq!(value["tun"]["device"].as_str(), Some("utun9"), "{on}");
+        assert!(yaml_tun_enabled(&on));
+        // Not stripped when the launcher asks for TUN off either; the switch is
+        // written as `enable: false` so the running process cannot keep it on.
+        let (off, _) = match book.kernel_yaml_for(Engine::Rust, false, None) {
+            Ok(value) => value,
+            Err(StartError::Idle(message) | StartError::Failed(message)) => panic!("{message}"),
+        };
+        assert!(off.contains("tun:"), "{off}");
+        assert!(!yaml_tun_enabled(&off));
+    }
+
+    #[test]
+    fn android_rust_still_strips_the_tun_block_for_the_vpn_fd() {
+        let dir = temp_dir("engine-android-tun-strip");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local(
+            "tun.yaml",
+            "mixed-port: 7890\ntun:\n  enable: true\nmode: rule\nrules:\n  - MATCH,DIRECT\n",
+        );
+        let mut kernel = EngineKernel::new();
+        book.enable("p1", &RejectSource, &mut kernel);
+        let (yaml, _) = match book.kernel_yaml_for(Engine::Rust, true, None) {
+            Ok(value) => value,
+            Err(StartError::Idle(message) | StartError::Failed(message)) => panic!("{message}"),
+        };
+        assert!(!yaml.contains("tun:"), "{yaml}");
     }
 
     #[test]

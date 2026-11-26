@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use serde_yaml::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
 use crate::config::ipnet_like::IpNet;
@@ -3022,7 +3022,7 @@ impl ExchangeContext {
                 .await
                 .map_err(|e| format!("route upstream: {e}"));
         }
-        let stream = TcpStream::connect(addr)
+        let stream = crate::outbound::connect_bound(addr)
             .await
             .map_err(|e| format!("connect {addr}: {e}"))?;
         let _ = stream.set_nodelay(true);
@@ -3036,7 +3036,7 @@ impl ExchangeContext {
         raw: &[u8],
     ) -> Result<Vec<u8>, String> {
         let bind = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-        let socket = UdpSocket::bind(bind)
+        let socket = crate::outbound::bind_udp_str(bind)
             .await
             .map_err(|e| format!("bind UDP: {e}"))?;
         socket
@@ -3155,14 +3155,14 @@ async fn bootstrap_exchange(
     raw: &[u8],
 ) -> Result<Vec<u8>, String> {
     if server.net == NameServerNet::Tcp {
-        let mut stream = TcpStream::connect(addr)
+        let mut stream = crate::outbound::connect_bound(addr)
             .await
             .map_err(|e| format!("connect {addr}: {e}"))?;
         write_dns_stream(&mut stream, raw).await?;
         return read_dns_stream(&mut stream).await;
     }
     let bind = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-    let socket = UdpSocket::bind(bind)
+    let socket = crate::outbound::bind_udp_str(bind)
         .await
         .map_err(|e| format!("bind UDP: {e}"))?;
     socket

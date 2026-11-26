@@ -111,6 +111,14 @@ struct Launch {
     kernel: PathBuf,
     home: PathBuf,
     config: PathBuf,
+    #[serde(default = "default_engine")]
+    engine: String,
+    #[serde(default)]
+    tun: bool,
+}
+
+fn default_engine() -> String {
+    "mihomo".to_string()
 }
 
 pub struct ElevatedKernel {
@@ -194,11 +202,20 @@ impl ElevatedKernel {
 
     /// Sends a launch request. While a kernel already runs under this helper, the helper
     /// stops it first and starts the new one in the same elevated process.
-    pub fn start(&mut self, kernel: &Path, home: &Path, config: &Path) -> io::Result<()> {
+    pub fn start(
+        &mut self,
+        kernel: &Path,
+        home: &Path,
+        config: &Path,
+        engine: &str,
+        tun: bool,
+    ) -> io::Result<()> {
         let launch = Launch {
             kernel: kernel.to_path_buf(),
             home: home.to_path_buf(),
             config: config.to_path_buf(),
+            engine: engine.to_string(),
+            tun,
         };
         let input = self
             .input
@@ -313,11 +330,17 @@ fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result
 }
 
 fn spawn_kernel(launch: &Launch, output: &File) -> io::Result<std::process::Child> {
-    let mut child = Command::new(&launch.kernel)
-        .arg("-d")
-        .arg(&launch.home)
-        .arg("-f")
-        .arg(&launch.config)
+    let mut command = Command::new(&launch.kernel);
+    if launch.engine == "rust" {
+        command.arg(&launch.config);
+        if launch.tun {
+            command.arg("--tun");
+        }
+    } else {
+        command.arg("-d").arg(&launch.home);
+        command.arg("-f").arg(&launch.config);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(output.try_clone()?)
         .stderr(output.try_clone()?)

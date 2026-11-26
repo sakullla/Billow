@@ -52,7 +52,8 @@ export async function prepareRustKernel({ root, target, bundle }) {
     execFileSync('cargo', [
       'build', '--release', '--locked',
       '--manifest-path', resolve(root, 'native-kernel/Cargo.toml'),
-      '-p', 'billow-kernel-cli', '--target', triple, '--target-dir', targetDir,
+      '-p', 'billow-kernel-cli', '--features', 'desktop-tun',
+      '--target', triple, '--target-dir', targetDir,
     ], { cwd: root, stdio: 'inherit' })
     source = resolve(targetDir, triple, 'release', executable)
   }
@@ -61,6 +62,12 @@ export async function prepareRustKernel({ root, target, bundle }) {
   const destination = resolve(bundle, executable)
   await copyFile(source, destination)
   await chmod(destination, 0o755)
+  // Wintun is loaded from the kernel executable's own directory. The Windows
+  // bundle also ships wintun.dll next to Billow.exe for the takeover probe, but
+  // the Rust kernel lives under runtime/, so it needs its own copy.
+  if (target.startsWith('windows')) {
+    await copyFile(resolve(root, 'assets/wintun/wintun.dll'), resolve(bundle, 'wintun.dll'))
+  }
   const version = await rustWorkspaceVersion(root)
   await writeFile(resolve(bundle, 'rust-kernel.json'), JSON.stringify({
     version,

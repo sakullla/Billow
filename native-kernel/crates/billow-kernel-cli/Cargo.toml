@@ -16,6 +16,9 @@ path = "src/main.rs"
 # `--tun-fd` and runs the VpnService data plane instead of only the mixed
 # listener. Desktop builds leave it off.
 android-vpn = ["billow-kernel/android-vpn"]
+# Desktop builds enable the native TUN data plane (`--tun`); the desktop
+# packaging script passes this feature.
+desktop-tun = ["billow-kernel/desktop-tun"]
 
 [dependencies]
 anyhow.workspace = true
@@ -32,3 +35,9 @@ rustls.workspace = true
 rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 tokio = { workspace = true, features = ["full"] }
+
+[[test]]
+# `--check` on a tun-enabled configuration must validate without creating a
+# device; `--tun --check` keeps that meaning too.
+name = "desktop_cli"
+required-features = ["desktop-tun"]

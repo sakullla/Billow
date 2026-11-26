@@ -495,8 +495,33 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
             loaded.warnings
         );
     }
-    assert!(err_tag("tun: {enable: true}\n").starts_with("unsupported"));
     assert!(err_tag("sniffer: {enable: true}\n").starts_with("unsupported"));
+
+    // T34: `tun` is parsed strictly. The pinned default stack name is accepted
+    // (served by the in-tree userspace stack), while `system` and unknown keys
+    // are named rejections.
+    let loaded = load_config(
+        "mixed-port: 1\ntun: {enable: true, stack: gvisor, mtu: 1400, auto-route: false, auto-detect-interface: false, strict-route: true, dns-hijack: ['any:53'], route-address: ['10.0.0.0/8'], route-exclude-address: ['192.168.0.0/16']}\n",
+        "t",
+    )
+    .expect("full desktop tun shape loads");
+    assert!(loaded.config.tun.enable);
+    assert_eq!(loaded.config.tun.stack, "gvisor");
+    assert_eq!(loaded.config.tun.mtu, 1400);
+    assert!(!loaded.config.tun.auto_route);
+    assert!(loaded.config.tun.strict_route);
+    assert_eq!(loaded.config.tun.route_address, ["10.0.0.0/8"]);
+    assert_eq!(loaded.config.tun.route_exclude_address, ["192.168.0.0/16"]);
+    for stack in ["mips", "mixed", "gvisor"] {
+        let yaml = format!("mixed-port: 1\ntun: {{enable: true, stack: {stack}}}\n");
+        assert!(load_config(&yaml, "t").is_ok(), "stack {stack}");
+    }
+    assert!(err_tag("tun: {enable: true, stack: system}\n").starts_with("unsupported"));
+    assert!(err_tag("tun: {enable: true, stack: nft}\n").starts_with("unsupported"));
+    assert!(err_tag("tun: {enable: true, gso: true}\n").starts_with("unsupported"));
+    assert!(err_tag("tun: {enable: true, mtu: 70000}\n").starts_with("invalid"));
+    assert!(err_tag("tun: {enable: true, route-address: ['10.0.0.1']}\n").starts_with("invalid"));
+    assert!(err_tag("tun: {enable: true, file-descriptor: 7}\n").starts_with("unsupported"));
 }
 
 #[test]
