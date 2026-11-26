@@ -26,6 +26,7 @@ defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const connectionBack = inject<(() => void) | null>('connectionBack', null)
+const ruleBack = inject<(() => void) | null>('ruleBack', null)
 
 function closeProviderDetail() {
   const closedName = detail.value?.row.name ?? null
@@ -38,6 +39,7 @@ function closeProviderDetail() {
       if (document.activeElement && document.activeElement !== document.body) return
       const target =
         document.querySelector<HTMLElement>('[data-testid="connection-return"]') ??
+        document.querySelector<HTMLElement>('[data-testid="rule-return"]') ??
         document.querySelector<HTMLElement>('[data-testid="page-back"]') ??
         (closedName ? document.querySelector<HTMLElement>(`[data-testid="open-provider-${CSS.escape(closedName)}"]`) : null)
       target?.focus({ preventScroll: true })
@@ -52,14 +54,29 @@ async function returnToConnection() {
   else store.go('connections')
 }
 
+async function returnToRule() {
+  detail.value = null
+  await nextTick()
+  if (ruleBack) ruleBack()
+  else store.go('rules')
+}
+
 type Action = 'update' | 'healthcheck'
 type RowState = 'pending' | 'error' | 'success'
+type ProviderFilter = 'all' | 'proxy' | 'rule' | 'failed'
 
 interface RowProgress {
   state: RowState
   action: Action
   reason: string | null
   at: number | null
+}
+
+interface BatchState {
+  running: boolean
+  action: Action | null
+  done: number
+  total: number
 }
 
 const providers = shallowRef<ProviderRow[]>([])
@@ -69,28 +86,46 @@ const loaded = ref(false)
 const geoBusy = ref(false)
 const geoError = ref<string | null>(null)
 const progress = reactive<Record<string, RowProgress>>({})
-const allRunning = reactive<Record<'proxy' | 'rule', boolean>>({ proxy: false, rule: false })
-const allProgress = reactive<Record<'proxy' | 'rule', { done: number; total: number }>>({
-  proxy: { done: 0, total: 0 },
-  rule: { done: 0, total: 0 },
+const batchState = reactive<Record<'proxy' | 'rule', BatchState>>({
+  proxy: { running: false, action: null, done: 0, total: 0 },
+  rule: { running: false, action: null, done: 0, total: 0 },
 })
 
 const proxySets = computed(() => providers.value.filter((item) => item.kind === 'proxy'))
 const ruleSets = computed(() => providers.value.filter((item) => item.kind === 'rule'))
 
-/** Long provider lists (a dozen rule sets is common) get a name filter. */
-const SEARCH_THRESHOLD = 8
 const query = ref('')
+const providerFilter = ref<ProviderFilter>('all')
 const needle = computed(() => query.value.trim().toLowerCase())
 const queryTokens = computed(() => splitQueryTokens(query.value))
-const showSearch = computed(() => providers.value.length > SEARCH_THRESHOLD || Boolean(query.value))
-const matches = (row: ProviderRow) =>
+const isFiltered = computed(() => Boolean(needle.value) || providerFilter.value !== 'all')
+const failedTotal = computed(() => providers.value.filter((row) => stateOf(row)?.state === 'error').length)
+const PROVIDER_FILTER_OPTIONS = computed(() => [
+  { id: 'all' as const, label: tr('全部') },
+  { id: 'proxy' as const, label: tr('代理集') },
+  { id: 'rule' as const, label: tr('规则集') },
+  { id: 'failed' as const, label: failedTotal.value > 0 ? `${tr('异常')} (${failedTotal.value})` : tr('异常') },
+])
+const matchesQuery = (row: ProviderRow) =>
   !queryTokens.value.length || matchesTokens(`${row.name} ${row.behavior} ${row.format}`, queryTokens.value)
+const matchesFilter = (row: ProviderRow) => {
+  if (providerFilter.value === 'proxy' && row.kind !== 'proxy') return false
+  if (providerFilter.value === 'rule' && row.kind !== 'rule') return false
+  if (providerFilter.value === 'failed' && stateOf(row)?.state !== 'error') return false
+  return true
+}
+const matches = (row: ProviderRow) => matchesFilter(row) && matchesQuery(row)
 const sections = computed(() => [
   { kind: 'proxy' as const, get title() { return tr('代理集') }, all: proxySets.value, rows: proxySets.value.filter(matches) },
   { kind: 'rule' as const, get title() { return tr('规则集') }, all: ruleSets.value, rows: ruleSets.value.filter(matches) },
 ])
-const noMatch = computed(() => Boolean(needle.value) && providers.value.length > 0 && sections.value.every((section) => !section.rows.length))
+const visibleCount = computed(() => sections.value.reduce((sum, section) => sum + section.rows.length, 0))
+const noMatch = computed(() => isFiltered.value && providers.value.length > 0 && visibleCount.value === 0)
+
+function resetFilters() {
+  query.value = ''
+  providerFilter.value = 'all'
+}
 
 /** Sections fold away once they are just plumbing; the choice survives restarts. */
 const COLLAPSE_KEY = 'billow.resources.collapsed'
@@ -111,14 +146,17 @@ function toggleSection(kind: 'proxy' | 'rule') {
     // Storage is optional; the fold still applies for this session.
   }
 }
-/** A search always shows its hits, folded or not. */
-const isOpen = (kind: 'proxy' | 'rule') => !collapsed[kind] || Boolean(needle.value)
+/** Active search or category/status filter always reveals matching sections, folded or not. */
+const isOpen = (kind: 'proxy' | 'rule') => !collapsed[kind] || isFiltered.value
 
 /** One-line digest for a folded section: freshest update and anything needing attention. */
 function sectionSummary(rows: ProviderRow[]): string {
   const parts: string[] = []
-  const failed = rows.filter((row) => stateOf(row)?.state === 'error').length
-  if (failed) parts.push(tr('{0} 个更新失败', { 0: failed }))
+  const failed = rows.filter((row) => stateOf(row)?.state === 'error')
+  if (failed.length) {
+    const allHealthcheck = failed.every((row) => stateOf(row)?.action === 'healthcheck')
+    parts.push(allHealthcheck ? tr('{0} 个检查失败', { 0: failed.length }) : tr('{0} 个更新失败', { 0: failed.length }))
+  }
   const latest = rows.reduce<number | null>((max, row) => {
     const ms = updatedMs(row)
     return ms != null && (max == null || ms > max) ? ms : max
@@ -140,6 +178,7 @@ const updatedMs = (row: ProviderRow) => {
 
 let loadVersion = 0
 let detailVersion = 0
+let batchEpoch = 0
 let disposed = false
 
 async function load(quiet = false) {
@@ -170,17 +209,19 @@ async function load(quiet = false) {
   }
 }
 
-async function act(row: ProviderRow, action: Action, quiet = false) {
+async function act(row: ProviderRow, action: Action, quiet = false, expectedEpoch = batchEpoch) {
   const key = keyOf(row)
   progress[key] = { state: 'pending', action, reason: null, at: null }
   try {
     await store.backend.providerAction(row.kind, row.name, action)
+    if (disposed || expectedEpoch !== batchEpoch) return false
     progress[key] = { state: 'success', action, reason: null, at: Date.now() }
     if (!quiet) {
       store.toast(action === 'update' ? tr('{0} 已更新', { 0: row.name }) : tr('{0} 健康检查完成', { 0: row.name }), 'success')
     }
     return true
   } catch (err) {
+    if (disposed || expectedEpoch !== batchEpoch) return false
     const reason = err instanceof Error ? err.message : String(err)
     progress[key] = { state: 'error', action, reason, at: null }
     if (!quiet) store.toast(`${row.name}：${reason}`, 'error')
@@ -190,52 +231,97 @@ async function act(row: ProviderRow, action: Action, quiet = false) {
 
 async function single(row: ProviderRow, action: Action) {
   if (fruitless(row)) return
-  const ok = await act(row, action)
+  const epoch = batchEpoch
+  const ok = await act(row, action, false, epoch)
+  if (disposed || epoch !== batchEpoch) return
   if (ok) await load(true)
   // A health check only touches its own row; no full page reload and no other row state.
   if (action === 'healthcheck') void store.refresh()
 }
 
 const failedRows = (rows: ProviderRow[]) =>
-  rows.filter((row) => !isInline(row) && stateOf(row)?.state === 'error')
+  rows.filter((row) => {
+    const state = stateOf(row)
+    if (!state || state.state !== 'error') return false
+    return state.action === 'healthcheck' || !isInline(row)
+  })
 
 /**
- * Bounded concurrent pool: updates up to 3 proxy providers or 4 rule providers in parallel
- * while keeping per-row state isolated and updating the done/total counter live.
+ * Bounded concurrent pool: runs update or healthcheck across up to 3 proxy providers
+ * or 4 rule providers in parallel while keeping per-row state isolated, mutually
+ * excluding concurrent batches per section, and safely invalidating on profile switch / stop.
  */
-async function updateAll(rows: ProviderRow[], kind: 'proxy' | 'rule', onlyFailed = false) {
-  if (allRunning[kind]) return
-  const updatable = onlyFailed ? failedRows(rows) : rows.filter((row) => !isInline(row))
-  if (!updatable.length) return
-  allRunning[kind] = true
-  allProgress[kind] = { done: 0, total: updatable.length }
+async function runBatch(
+  rows: ProviderRow[],
+  kind: 'proxy' | 'rule',
+  action: Action,
+  onlyFailed = false,
+) {
+  if (batchState[kind].running) return
+  const targets: { row: ProviderRow; action: Action }[] = onlyFailed
+    ? failedRows(rows).map((row) => ({ row, action: stateOf(row)?.action ?? action }))
+    : rows
+        .filter((row) => action === 'healthcheck' || !isInline(row))
+        .map((row) => ({ row, action }))
+  if (!targets.length) return
+
+  const epoch = batchEpoch
+  const allHealthcheck = targets.every((item) => item.action === 'healthcheck')
+  const anyHealthcheck = targets.some((item) => item.action === 'healthcheck')
+  const displayAction: Action = allHealthcheck ? 'healthcheck' : 'update'
+
+  batchState[kind].running = true
+  batchState[kind].action = displayAction
+  batchState[kind].done = 0
+  batchState[kind].total = targets.length
   try {
     const { done, failed } = await runPool(
-      updatable,
+      targets,
       {
         concurrency: kind === 'rule' ? 4 : 3,
-        shouldStop: () => disposed || !snap.value.kernel_running,
+        shouldStop: () => disposed || epoch !== batchEpoch || !snap.value.kernel_running,
         onProgress: (completed) => {
-          allProgress[kind] = { done: completed, total: updatable.length }
+          if (disposed || epoch !== batchEpoch) return
+          batchState[kind].done = completed
         },
       },
-      (row) => act(row, 'update', true),
+      (item) => act(item.row, item.action, true, epoch),
     )
-    if (!disposed && snap.value.kernel_running) {
+    if (disposed || epoch !== batchEpoch) return
+    if (snap.value.kernel_running) {
       await load(true)
+      if (anyHealthcheck && !disposed && epoch === batchEpoch) void store.refresh()
     }
-    const total = updatable.length
-    if (!disposed && total) {
-      store.toast(
-        failed
-          ? tr('更新完成：{0}/{1}，{2} 个失败', { 0: done, 1: total, 2: failed })
-          : tr('已更新 {0}/{1} 个{2}', { 0: done, 1: total, 2: kind === 'proxy' ? tr('代理集') : tr('规则集') }),
-        failed ? 'error' : 'success',
-      )
+    const total = targets.length
+    if (!disposed && epoch === batchEpoch && total) {
+      if (allHealthcheck) {
+        store.toast(
+          failed
+            ? tr('健康检查完成：{0}/{1}，{2} 个失败', { 0: done, 1: total, 2: failed })
+            : tr('已完成 {0}/{1} 个代理集健康检查', { 0: done, 1: total }),
+          failed ? 'error' : 'success',
+        )
+      } else {
+        store.toast(
+          failed
+            ? tr('更新完成：{0}/{1}，{2} 个失败', { 0: done, 1: total, 2: failed })
+            : tr('已更新 {0}/{1} 个{2}', { 0: done, 1: total, 2: kind === 'proxy' ? tr('代理集') : tr('规则集') }),
+          failed ? 'error' : 'success',
+        )
+      }
     }
   } finally {
-    allRunning[kind] = false
+    if (epoch === batchEpoch) {
+      batchState[kind].running = false
+      batchState[kind].action = null
+    }
   }
+}
+
+async function retryFailed(rows: ProviderRow[], kind: 'proxy' | 'rule') {
+  const firstFailed = failedRows(rows)[0]
+  if (!firstFailed) return
+  await runBatch(rows, kind, stateOf(firstFailed)?.action ?? 'update', true)
 }
 
 async function retry(row: ProviderRow) {
@@ -424,8 +510,9 @@ const detailProxies = computed(() => {
     matchesTokens(`${row.name} ${row.node_type} ${protocolLabel(row.node_type)} ${row.tags.join(' ')}`, detailTokens.value),
   )
 })
-/** Rule lists can hold thousands of lines; the sheet renders a capped slice and says so. */
+/** Rule lists can hold thousands of lines; start at 400 rows and expand progressively via "Show more". */
 const RULE_PAGE = 400
+const detailLimit = ref(RULE_PAGE)
 /** The backend previews the first rows of a large set; searching it must ask for all of them. */
 const detailPartial = computed(() => {
   const data = detail.value?.data
@@ -434,6 +521,9 @@ const detailPartial = computed(() => {
 const detailSearch = shallowRef<{ query: string; data: ProviderDetail | null; error: string | null; pending: boolean } | null>(null)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let searchVersion = 0
+watch(detailNeedle, () => {
+  detailLimit.value = RULE_PAGE
+})
 watch([detailNeedle, detailPartial], ([needle, partial]) => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = null
@@ -478,6 +568,7 @@ function ruleFormat(row: ProviderRow): string {
 async function openDetail(row: ProviderRow) {
   const version = ++detailVersion
   detailQuery.value = ''
+  detailLimit.value = RULE_PAGE
   detail.value = { row, data: null, error: null }
   try {
     const data = await store.backend.providerDetail(row.kind, row.name)
@@ -512,7 +603,8 @@ function consumeFocusProvider() {
     return
   }
   if (collapsed[target.kind]) collapsed[target.kind] = false
-  if (query.value && !matches(target)) query.value = ''
+  if (providerFilter.value !== 'all' && !matchesFilter(target)) providerFilter.value = 'all'
+  if (query.value && !matchesQuery(target)) query.value = ''
   void openDetail(target)
 }
 
@@ -528,8 +620,12 @@ watch(
     if (running && prevRunning && activeId === prevActiveId) return
     loadVersion++
     detailVersion++
+    batchEpoch++
+    batchState.proxy = { running: false, action: null, done: 0, total: 0 }
+    batchState.rule = { running: false, action: null, done: 0, total: 0 }
     detail.value = null
     providers.value = []
+    providerFilter.value = 'all'
     for (const key of Object.keys(progress)) delete progress[key]
     if (running) {
       void load()
@@ -546,6 +642,7 @@ onBeforeUnmount(() => {
   disposed = true
   loadVersion++
   detailVersion++
+  batchEpoch++
   if (store.focusProvider.value) store.focusProvider.value = null
 })
 
@@ -563,15 +660,6 @@ onMounted(() => {
         <p class="muted small">{{ tr('配置引用的代理集与规则集') }}</p>
       </div>
       <div v-if="snap.kernel_running" class="head-actions">
-        <div v-if="showSearch && providers.length" class="search provider-search">
-          <Icon name="search" :size="16" />
-          <input v-model="query" type="search" :placeholder="tr('筛选代理集与规则集')" data-page-search data-testid="provider-search" />
-          <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
-          <span v-if="needle" class="small muted mono">{{ sections.reduce((sum, section) => sum + section.rows.length, 0) }}</span>
-          <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空筛选')" @click="query = ''">
-            <Icon name="x" :size="14" />
-          </button>
-        </div>
         <button
           type="button"
           class="btn ghost sm"
@@ -586,6 +674,38 @@ onMounted(() => {
         </button>
       </div>
     </header>
+
+    <div v-if="snap.kernel_running && providers.length" class="toolbar res-toolbar" data-testid="provider-toolbar">
+      <div class="search provider-search grow">
+        <Icon name="search" :size="16" />
+        <input v-model="query" type="search" :placeholder="tr('筛选代理集与规则集')" data-page-search data-testid="provider-search" />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
+        <span class="small muted mono search-count" data-testid="provider-count">
+          {{ isFiltered ? `${visibleCount}/${providers.length}` : providers.length }}
+        </span>
+        <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空筛选')" @click="query = ''">
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+      <div class="toolbar-options">
+        <Segmented
+          v-model="providerFilter"
+          :options="PROVIDER_FILTER_OPTIONS"
+          size="sm"
+          :label="tr('资源筛选')"
+          data-testid="provider-filter"
+        />
+        <button
+          v-if="isFiltered"
+          type="button"
+          class="btn ghost sm"
+          data-testid="reset-provider-filters"
+          @click="resetFilters"
+        >
+          {{ tr('重置筛选') }}
+        </button>
+      </div>
+    </div>
 
     <Skeleton v-if="loading && !providers.length && snap.kernel_running" variant="card" :cards="2" />
 
@@ -616,7 +736,12 @@ onMounted(() => {
       </template>
     </EmptyState>
 
-    <p v-if="noMatch" class="empty-line muted" data-testid="provider-no-match">{{ tr('没有名称匹配「') }}{{ query.trim() }}{{ tr('」的资源') }}</p>
+    <div v-if="noMatch" class="empty-line muted" data-testid="provider-no-match">
+      <span v-if="needle">{{ tr('没有名称匹配「') }}{{ query.trim() }}{{ tr('」的资源') }}</span>
+      <span v-else-if="providerFilter === 'failed'">{{ tr('当前没有异常的外部资源') }}</span>
+      <span v-else>{{ tr('当前筛选条件下没有外部资源') }}</span>
+      <button type="button" class="btn ghost sm" @click="resetFilters">{{ tr('重置筛选') }}</button>
+    </div>
 
     <template v-for="section in sections" :key="section.kind">
       <section v-if="section.rows.length" class="card provider-card" :class="{ folded: !isOpen(section.kind) }" :data-section="section.kind">
@@ -625,36 +750,53 @@ onMounted(() => {
             type="button"
             class="provider-fold"
             :aria-expanded="isOpen(section.kind)"
-            :disabled="Boolean(needle)"
+            :disabled="isFiltered"
             :data-testid="`fold-${section.kind}`"
             @click="toggleSection(section.kind)"
           >
             <Icon name="chevron-right" :size="15" class="fold-chevron" />
             <h2>{{ section.title }}</h2>
-            <span class="count-pill">{{ needle ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
+            <span class="count-pill">{{ isFiltered ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
             <span v-if="!isOpen(section.kind)" class="muted small ellipsis provider-fold-summary">{{ sectionSummary(section.all) }}</span>
           </button>
           <div class="card-head-actions">
             <button
-              v-if="!allRunning[section.kind] && failedRows(section.all).length > 0"
+              v-if="!batchState[section.kind].running && failedRows(section.all).length > 0"
               type="button"
               class="btn ghost sm danger-text"
               :data-testid="`retry-failed-${section.kind}`"
-              @click="updateAll(section.all, section.kind, true)"
+              @click="retryFailed(section.all, section.kind)"
             >
               <Icon name="refresh" :size="14" />{{ tr('重试失败 (') }}{{ failedRows(section.all).length }})
             </button>
             <button
+              v-if="section.kind === 'proxy'"
               type="button"
               class="btn ghost sm"
-              :disabled="allRunning[section.kind]"
-              :aria-busy="allRunning[section.kind] || undefined"
-              :data-testid="`update-all-${section.kind}`"
-              @click="updateAll(section.all, section.kind)"
+              :disabled="batchState.proxy.running"
+              :aria-busy="(batchState.proxy.running && batchState.proxy.action === 'healthcheck') || undefined"
+              data-testid="healthcheck-all-proxy"
+              @click="runBatch(section.all, 'proxy', 'healthcheck')"
             >
-              <span v-if="allRunning[section.kind]" class="spinner sm" aria-hidden="true" />
+              <span v-if="batchState.proxy.running && batchState.proxy.action === 'healthcheck'" class="spinner sm" aria-hidden="true" />
+              <Icon v-else name="zap" :size="15" />
+              {{ batchState.proxy.running && batchState.proxy.action === 'healthcheck'
+                ? tr('检查中 {0}/{1}', { 0: batchState.proxy.done, 1: batchState.proxy.total })
+                : tr('全部健康检查') }}
+            </button>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="batchState[section.kind].running"
+              :aria-busy="(batchState[section.kind].running && batchState[section.kind].action === 'update') || undefined"
+              :data-testid="`update-all-${section.kind}`"
+              @click="runBatch(section.all, section.kind, 'update')"
+            >
+              <span v-if="batchState[section.kind].running && batchState[section.kind].action === 'update'" class="spinner sm" aria-hidden="true" />
               <Icon v-else name="refresh" :size="15" />
-              {{ allRunning[section.kind] ? tr('更新中 {0}/{1}', { 0: allProgress[section.kind].done, 1: allProgress[section.kind].total }) : tr('全部更新') }}
+              {{ batchState[section.kind].running && batchState[section.kind].action === 'update'
+                ? tr('更新中 {0}/{1}', { 0: batchState[section.kind].done, 1: batchState[section.kind].total })
+                : tr('全部更新') }}
             </button>
           </div>
         </header>
@@ -997,7 +1139,7 @@ onMounted(() => {
         <template v-else>
           <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ tr(detailNotice) }}</p>
           <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
-            <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
+            <li v-for="proxy in detailProxies.slice(0, detailLimit)" :key="proxy.name" class="detail-proxy">
               <span class="grow min0">
                 <strong class="ellipsis">
                   <template v-for="(part, partIdx) in highlightDetail(proxy.name)" :key="partIdx">
@@ -1014,21 +1156,62 @@ onMounted(() => {
                 class="delay"
                 :class="delayTone(proxy.delay_ms, proxy.alive === false)"
               >{{ delayText(proxy.delay_ms, proxy.alive === false) }}</span>
+              <button
+                type="button"
+                class="icon-btn xs detail-copy-btn"
+                :title="tr('复制节点名')"
+                :aria-label="tr('复制节点名')"
+                data-testid="copy-detail-proxy"
+                @click="store.copyText(proxy.name, tr('已复制节点名'))"
+              >
+                <Icon name="copy" :size="13" />
+              </button>
             </li>
-            <li v-if="detailProxies.length > RULE_PAGE" class="muted small empty-line">{{ tr('还有') }} {{ detailProxies.length - RULE_PAGE }} {{ tr('个节点，输入关键词缩小范围') }}</li>
+            <li v-if="detailProxies.length > detailLimit" class="detail-more-row">
+              <button
+                type="button"
+                class="btn ghost sm"
+                data-testid="detail-show-more"
+                @click="detailLimit += RULE_PAGE"
+              >
+                {{ tr('显示更多（还有 {0} 个节点）', { 0: (detailProxies.length - detailLimit).toLocaleString() }) }}
+              </button>
+            </li>
             <li v-if="!detailProxies.length" class="muted small empty-line">{{ detailQuery ? tr('没有匹配的节点') : tr('这个代理集还没有节点') }}</li>
           </ul>
           <ol v-else-if="detail.data.rules.length" class="detail-list detail-rules mono">
-            <li v-for="(rule, index) in detailRules.slice(0, RULE_PAGE)" :key="index">
+            <li v-for="(rule, index) in detailRules.slice(0, detailLimit)" :key="index">
               <span v-if="ruleParts(rule).type" class="rule-type">{{ ruleParts(rule).type }}</span>
-              <span class="ellipsis">
+              <span class="ellipsis grow">
                 <template v-for="(part, partIdx) in highlightDetail(ruleParts(rule).rest)" :key="partIdx">
                   <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                 </template>
               </span>
+              <button
+                type="button"
+                class="icon-btn xs detail-copy-btn"
+                :title="tr('复制规则')"
+                :aria-label="tr('复制规则')"
+                data-testid="copy-detail-rule"
+                @click="store.copyText(rule, tr('已复制规则'))"
+              >
+                <Icon name="copy" :size="13" />
+              </button>
             </li>
             <li v-if="!detailRules.length" class="muted small empty-line">{{ detailSearching ? tr('正在搜索全部 {0} 条…', { 0: detail.data.total.toLocaleString() }) : tr('没有匹配的规则') }}</li>
-            <li v-else-if="detailRules.length > RULE_PAGE" class="muted small empty-line"> {{ tr('还有') }} {{ (detailRules.length - RULE_PAGE).toLocaleString() }} {{ tr('条，输入关键词缩小范围') }} </li>
+            <li v-else-if="detailRules.length > detailLimit" class="detail-more-row">
+              <button
+                type="button"
+                class="btn ghost sm"
+                data-testid="detail-show-more"
+                @click="detailLimit += RULE_PAGE"
+              >
+                {{ tr('显示更多（还有 {0} 条）', { 0: (detailRules.length - detailLimit).toLocaleString() }) }}
+              </button>
+            </li>
+            <li v-else-if="detailPartial && !detailNeedle" class="muted small empty-line" data-testid="detail-preview-cap">
+              {{ tr('共 {0} 条，当前已展开全部 {1} 条预览；输入关键词可搜索整份规则集', { 0: detail.data.total.toLocaleString(), 1: detailRules.length.toLocaleString() }) }}
+            </li>
           </ol>
         </template>
       </div>
@@ -1042,6 +1225,14 @@ onMounted(() => {
           @click="returnToConnection"
         >
           <Icon name="chevron-left" :size="15" />{{ tr('返回连接') }} </button>
+        <button
+          v-else-if="store.ruleReturn.value && store.ruleReturn.value.targetPage === 'resources'"
+          type="button"
+          class="btn ghost"
+          data-testid="provider-return-rule"
+          @click="returnToRule"
+        >
+          <Icon name="chevron-left" :size="15" />{{ tr('返回规则') }} </button>
         <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="closeProviderDetail">{{ tr('关闭') }}</button>
         <button
           v-if="detail && detail.row.kind === 'proxy'"
