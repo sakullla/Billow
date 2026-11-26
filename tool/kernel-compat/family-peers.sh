@@ -160,6 +160,15 @@ else
     echo "SKIP openvpn_peer: no openvpn binary (set KC_OPENVPN_BIN)" >&2
 fi
 
+echo "== OpenVPN routable Docker peer (--dev tun0, real TCP/UDP payload; opt in) =="
+if [ "${KC_OPENVPN_DOCKER:-}" = "1" ]; then
+    KC_OPENVPN_DOCKER=1 cargo test \
+        --manifest-path "$root/native-kernel/Cargo.toml" --locked \
+        --test openvpn_docker -- --ignored --nocapture --test-threads=1
+else
+    echo "SKIP openvpn_docker: set KC_OPENVPN_DOCKER=1 to run the Docker TUN peer" >&2
+fi
+
 echo "== T19/T20 mesh peers (locked zerotier-go, tailscale and EasyTier cleartext) =="
 zt_bin=$(mktemp "${TMPDIR:-/tmp}/billow-zerotier-peer.XXXXXX")
 (cd "$root/tool/kernel-compat/peers/zerotier-peer" && GOFLAGS=-mod=mod GOPROXY=off go build -o "$zt_bin" .)

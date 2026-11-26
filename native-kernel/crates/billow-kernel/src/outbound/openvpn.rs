@@ -234,27 +234,36 @@ impl OpenVpnTunnel {
         };
         debug_stage("key method 2 response");
 
-        // PUSH_REQUEST / PUSH_REPLY.
+        // PUSH_REQUEST / PUSH_REPLY. A multi-segment reply ends with
+        // `push-continuation N`; the pinned client asks again and concatenates
+        // the next records.
         control.write_app(&mut tls, b"PUSH_REQUEST\0")?;
         let mut push_bytes = Vec::new();
-        let reply = loop {
-            if Instant::now() >= deadline {
-                return Err(OpenVpnError::Timeout(timeout));
+        let mut reply = read_push_record(
+            &mut control,
+            &mut tls,
+            deadline,
+            timeout,
+            &mut push_bytes,
+        )?;
+        let mut segments = 0;
+        while reply.push_continuation {
+            segments += 1;
+            if segments > 8 {
+                return Err(OpenVpnError::Unsupported(
+                    "multi-segment PUSH_REPLY exceeds 8 segments".to_string(),
+                ));
             }
-            let chunk = control.read_app(&mut tls, Duration::from_millis(100))?;
-            push_bytes.extend_from_slice(&chunk);
-            if let Some(end) = push_bytes.iter().position(|byte| *byte == 0) {
-                let text = String::from_utf8_lossy(&push_bytes[..end]).to_string();
-                if text.starts_with("AUTH_FAILED") {
-                    return Err(OpenVpnError::Push(text));
-                }
-                if text.starts_with("PUSH_REPLY") {
-                    break parse_push_reply(&text)?;
-                }
-                // A leading informational record: keep reading after the NUL.
-                push_bytes.drain(..=end);
-            }
-        };
+            control.write_app(&mut tls, b"PUSH_REQUEST\0")?;
+            let next = read_push_record(
+                &mut control,
+                &mut tls,
+                deadline,
+                timeout,
+                &mut push_bytes,
+            )?;
+            merge_push_reply(&mut reply, next);
+        }
 
         debug_stage("push reply");
         let cipher = negotiate_cipher(option, &reply)?;
@@ -838,6 +847,7 @@ fn run_datapath(
                     stack.fail(format!("openvpn keepalive send: {error}"));
                     return;
                 }
+                stack.touch();
                 last_sent = Instant::now();
             }
             KeepaliveAction::None => {}
@@ -847,6 +857,7 @@ fn run_datapath(
                 stack.fail(format!("openvpn data send: {error}"));
                 return;
             }
+            stack.touch();
             last_sent = Instant::now();
         }
         match tunnel.recv_data(Duration::from_millis(10)) {
@@ -860,6 +871,7 @@ fn run_datapath(
                     stack.fail(format!("openvpn keepalive send: {error}"));
                     return;
                 }
+                stack.touch();
                 last_sent = Instant::now();
             }
             Ok(None) => {}
@@ -871,9 +883,10 @@ fn run_datapath(
     }
 }
 
-/// Stop/reload hook for one configured OpenVPN outbound: removes the shared
-/// stack entry; the data-path thread sees the last strong reference go away
-/// and exits.
+/// Explicit teardown API for one configured OpenVPN outbound: removes the
+/// shared stack entry; the data-path thread sees the last strong reference go
+/// away and exits. This is not wired into engine reload/close yet (the idle
+/// reaper is the automatic path).
 pub fn forget(option: &OpenVpnOutbound) {
     crate::outbound::l3::forget(&stack_fingerprint(option));
 }
@@ -1552,6 +1565,75 @@ fn parse_push_reply(text: &str) -> Result<PushReply, OpenVpnError> {
     Ok(reply)
 }
 
+/// Read one NUL-terminated record until a `PUSH_REPLY` record arrives.
+/// Informational records are skipped (the pinned client does the same).
+fn read_push_record(
+    control: &mut Control,
+    tls: &mut ClientConnection,
+    deadline: Instant,
+    timeout: Duration,
+    push_bytes: &mut Vec<u8>,
+) -> Result<PushReply, OpenVpnError> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(OpenVpnError::Timeout(timeout));
+        }
+        let chunk = control.read_app(tls, Duration::from_millis(100))?;
+        push_bytes.extend_from_slice(&chunk);
+        let Some(end) = push_bytes.iter().position(|byte| *byte == 0) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&push_bytes[..end]).to_string();
+        push_bytes.drain(..=end);
+        if text.starts_with("AUTH_FAILED") {
+            return Err(OpenVpnError::Push(text));
+        }
+        if text.starts_with("PUSH_REPLY") {
+            return parse_push_reply(&text);
+        }
+        // A leading informational record: keep reading.
+    }
+}
+
+/// Merge one continuation segment into the first `PUSH_REPLY`.
+fn merge_push_reply(into: &mut PushReply, next: PushReply) {
+    if next.cipher.is_some() {
+        into.cipher = next.cipher;
+    }
+    if !next.data_ciphers.is_empty() {
+        into.data_ciphers = next.data_ciphers;
+    }
+    if next.peer_id.is_some() {
+        into.peer_id = next.peer_id;
+    }
+    if next.ifconfig.is_some() {
+        into.ifconfig = next.ifconfig;
+    }
+    for prefix in next.prefixes {
+        if !into.prefixes.contains(&prefix) {
+            into.prefixes.push(prefix);
+        }
+    }
+    for route in next.routes {
+        if !into.routes.contains(&route) {
+            into.routes.push(route);
+        }
+    }
+    for dns in next.dns {
+        if !into.dns.contains(&dns) {
+            into.dns.push(dns);
+        }
+    }
+    into.redirect_gateway |= next.redirect_gateway;
+    into.block_outside_dns |= next.block_outside_dns;
+    into.block_ipv6 |= next.block_ipv6;
+    into.auth_token_seen |= next.auth_token_seen;
+    into.ping = next.ping.or(into.ping);
+    into.ping_restart = next.ping_restart.or(into.ping_restart);
+    into.push_continuation = next.push_continuation;
+    into.raw.push_str(&next.raw);
+}
+
 fn parse_push_field(field: &str, reply: &mut PushReply) {
     let mut parts = field.split_whitespace();
     match parts.next() {
@@ -1594,7 +1676,13 @@ fn parse_push_field(field: &str, reply: &mut PushReply) {
         Some("redirect-gateway") => reply.redirect_gateway = true,
         Some("block-outside-dns") => reply.block_outside_dns = true,
         Some("block-ipv6") => reply.block_ipv6 = true,
-        Some("push-continuation") => reply.push_continuation = true,
+        Some("push-continuation") => {
+            reply.push_continuation = parts
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|value| value != 0)
+                .unwrap_or(true)
+        }
         Some("auth-token") => reply.auth_token_seen = true,
         Some("ping") => reply.ping = parts.next().and_then(|value| value.parse().ok()),
         Some("ping-restart") => {
@@ -2055,6 +2143,31 @@ mod tests {
         assert!(reply.auth_token_seen);
         assert_eq!(reply.ping, Some(10));
         assert_eq!(reply.ping_restart, Some(60));
+    }
+
+    #[test]
+    fn multi_segment_push_reply_accumulates_options() {
+        let mut first = parse_push_reply(
+            "PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,push-continuation 1",
+        )
+        .expect("first segment");
+        assert!(first.push_continuation);
+        let second = parse_push_reply(
+            "PUSH_REPLY,route 10.9.0.0 255.255.255.0,dhcp-option DNS 10.8.0.1,ping 10,ping-restart 60,block-ipv6,push-continuation 0",
+        )
+        .expect("second segment");
+        merge_push_reply(&mut first, second);
+        assert!(!first.push_continuation);
+        assert_eq!(
+            first.prefixes,
+            vec![(std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 8, 0, 2)), 24)]
+        );
+        assert_eq!(first.routes.len(), 1);
+        assert_eq!(first.dns.len(), 1);
+        assert_eq!(first.ping, Some(10));
+        assert_eq!(first.ping_restart, Some(60));
+        assert!(first.block_ipv6);
+        assert!(first.raw.contains("10.9.0.0"));
     }
 
     #[test]

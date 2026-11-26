@@ -188,6 +188,10 @@ struct Core {
 pub struct Stack {
     core: Mutex<Core>,
     config: StackConfig,
+    /// Optional carrier-level route check. WireGuard installs one so a UDP
+    /// destination outside every peer's `allowed-ips` is a named `NoRoute`
+    /// error instead of a silent drop.
+    route_guard: Mutex<Option<Arc<dyn Fn(IpAddr) -> bool + Send + Sync>>>,
     /// Wakes `dial_tcp`/`udp recv` waiters after every poll.
     change: Notify,
     /// Wakes the stack poller when a carrier queues a received packet.
@@ -301,6 +305,7 @@ impl Stack {
                 next_port: start_port,
             }),
             config,
+            route_guard: Mutex::new(None),
             change: Notify::new(),
             ingress: Notify::new(),
             tcp_slot: Notify::new(),
@@ -329,9 +334,44 @@ impl Stack {
         &self.config.fingerprint
     }
 
-    fn touch(&self) {
+    pub(crate) fn touch(&self) {
         self.last_used
             .store(monotonic_millis(), Ordering::Relaxed);
+    }
+
+    /// Install the carrier's destination route check (WireGuard
+    /// `allowed-ips`). `None` leaves every destination accepted.
+    pub(crate) fn set_route_guard(
+        &self,
+        guard: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
+    ) {
+        *self
+            .route_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(guard);
+    }
+
+    fn route_allowed(&self, addr: IpAddr) -> bool {
+        match self
+            .route_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            Some(guard) => guard(addr),
+            None => true,
+        }
+    }
+
+    /// Whether the poller may stop. The socket/transmit checks and the idle
+    /// timestamp are read under the same core lock so a dial cannot create a
+    /// socket between the individual checks.
+    fn should_stop(&self) -> bool {
+        let core = self.lock();
+        core.tcp.is_empty()
+            && core.udp.is_empty()
+            && !core.device.has_tx()
+            && self.idle()
     }
 
     pub(crate) fn idle(&self) -> bool {
@@ -420,9 +460,12 @@ impl Stack {
                     return;
                 };
                 stack.poll_once();
-                if stack.idle() && stack.socket_counts() == (0, 0) && !stack.has_tx_packets() {
-                    // Let the reaper/forget remove the registry entry; a later
-                    // dial starts a fresh poller or stack.
+                if stack.should_stop() {
+                    // Publish the stop. Every socket creator calls
+                    // `ensure_poller` again after insertion (and ingress only
+                    // matters while a socket exists, which makes `should_stop`
+                    // false under the same lock), so a racing dial starts a new
+                    // poller instead of leaving a socket unpolled.
                     stack.poller_running.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -513,7 +556,10 @@ impl Stack {
                 .to_io());
         }
         let deadline = tokio::time::Instant::now() + timeout;
-        let (handle, local_port) = self.admit_tcp(remote, deadline).await?;
+        let (handle, local_port) = self.admit_tcp(remote, deadline, timeout).await?;
+        // The poller may have decided to stop between the first ensure and the
+        // socket insertion; restart it now that a socket exists.
+        self.ensure_poller();
         let stream = L3TcpStream {
             stack: self.clone(),
             handle,
@@ -546,17 +592,22 @@ impl Stack {
         &self,
         remote: SocketAddr,
         deadline: tokio::time::Instant,
+        timeout: Duration,
     ) -> io::Result<(SocketHandle, u16)> {
         loop {
             match self.try_create_tcp(remote) {
                 Ok(slot) => return Ok(slot),
-                Err(TcpAdmission::Full) => self.wait_tcp_slot(deadline).await?,
+                Err(TcpAdmission::Full) => self.wait_tcp_slot(deadline, timeout).await?,
                 Err(TcpAdmission::Failed(error)) => return Err(error),
             }
         }
     }
 
-    async fn wait_tcp_slot(&self, deadline: tokio::time::Instant) -> io::Result<()> {
+    async fn wait_tcp_slot(
+        &self,
+        deadline: tokio::time::Instant,
+        timeout: Duration,
+    ) -> io::Result<()> {
         struct Waiter<'a>(&'a AtomicUsize);
         impl Drop for Waiter<'_> {
             fn drop(&mut self) {
@@ -587,7 +638,7 @@ impl Stack {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
-                        "userspace TCP admission timed out waiting for one of {TCP_SOCKETS} slots"
+                        "userspace TCP admission timed out after {timeout:?} waiting for one of {TCP_SOCKETS} slots"
                     ),
                 ));
             }
@@ -597,7 +648,7 @@ impl Stack {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         format!(
-                            "userspace TCP admission timed out waiting for one of {TCP_SOCKETS} slots"
+                            "userspace TCP admission timed out after {timeout:?} waiting for one of {TCP_SOCKETS} slots"
                         ),
                     ))
                 }
@@ -721,6 +772,7 @@ impl Stack {
         let handle = core.sockets.add(socket);
         core.udp.insert(local_port, handle);
         self.touch();
+        self.ensure_poller();
         self.ingress.notify_one();
         Ok(L3UdpSocket {
             stack: self.clone(),
@@ -919,6 +971,9 @@ impl L3UdpSocket {
             return Err(StackError::NoFamily(if remote.is_ipv4() { "IPv4" } else { "IPv6" })
                 .to_io());
         }
+        if !self.stack.route_allowed(remote.ip()) {
+            return Err(StackError::NoRoute(remote.ip()).to_io());
+        }
         let overhead = if remote.is_ipv4() { 28 } else { 48 };
         let mtu_limit = self.stack.mtu().saturating_sub(overhead);
         let limit = mtu_limit.min(UDP_PACKET_BYTES);
@@ -1045,7 +1100,9 @@ pub fn publish(fingerprint: impl Into<String>, stack: &Arc<Stack>) -> bool {
     true
 }
 
-/// Remove one entry (stop/reload or a caller that found it unusable).
+/// Remove one entry. This is an API hook for a caller that owns the proxy
+/// lifecycle; the engine's reload/close path does not call it yet (the idle
+/// reaper is the automatic path).
 pub fn forget(fingerprint: &str) {
     let mut map = registry()
         .lock()

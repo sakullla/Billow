@@ -1,7 +1,7 @@
 {
   "workflow": "2026-11-20-native-rust-kernel",
   "task": "T35",
-  "attempt": "T35-A2",
+  "attempt": "T35-A3",
   "result": "completed_with_concerns",
   "stack": {
     "module": "src/outbound/l3/",
@@ -56,7 +56,7 @@
       ]
     },
     "openvpn": {
-      "status": "wiring_verified_datapath_not_end_to_end",
+      "status": "verified_end_to_end",
       "local_addresses": [
         "PUSH_REPLY ifconfig",
         "PUSH_REPLY ifconfig-ipv6"
@@ -64,13 +64,13 @@
       "carrier": "one dedicated OS thread; lazy stack handoff outside registry lock; send_id starts at 1; ping/ping-restart timers; TCP length-prefix FrameBuffer; replay/out-of-window packets dropped",
       "verified": [
         "control channel over UDP and TCP framing, TLS and key-method 2 against OpenVPN 2.7.9",
-        "PUSH_REPLY prefixes/routes/dns/dhcp-option DNS/redirect/block-ipv6/push-continuation/auth-token/ping parsing (unit tests)",
+        "PUSH_REPLY prefixes/routes/dns/dhcp-option DNS/redirect/block-ipv6/push-continuation/auth-token/ping parsing and multi-segment accumulation (unit tests)",
         "AEAD keepalive decryption over UDP and TCP",
-        "send_data accepted and the session remains usable",
-        "connect_stack builds from the pushed ifconfig and opens a UDP socket"
+        "real routable Docker peer (--dev tun0, 10.8.0.1/24): connect_stack local 10.8.0.2, TCP echo hello-ovpn, UDP echo udp-ovpn from 10.8.0.1:7778",
+        "container and cert directory removed by a Drop guard after success/failure"
       ],
       "not_verified": [
-        "delivery of TCP or UDP payload through a real OpenVPN tunnel: --dev null discards IP packets"
+        "OpenVPN UDP control transport against a real TUN (Docker Desktop UDP port mapping is unreliable on macOS); control UDP is covered against --dev null and payload UDP is covered inside the TCP-controlled tunnel"
       ]
     }
   },
@@ -89,12 +89,13 @@
       "required_features": [
         "device-vpn"
       ],
-      "passed": 11,
+      "passed": 12,
       "cases": [
         "tcp_three_concurrent_connections_echo",
         "tcp_half_close_delivers_remaining_data_then_eof",
         "tcp_reset_is_reported_as_a_connection_error",
         "tcp_connect_timeout_is_named_and_releases_the_socket",
+        "tcp_admission_timeout_names_slots_and_duration",
         "tcp_admission_waits_for_a_released_slot",
         "tcp_waiting_queue_is_bounded_and_named",
         "tcp_timeout_reclaims_a_dead_connection",
@@ -123,9 +124,20 @@
         "control_channel_pushes_and_the_data_keys_decrypt_a_keepalive (prefixes + send_data, first data id 1)"
       ]
     },
-    "default_suite": "pass (221 lib tests plus every default integration suite, --test-threads=1)",
-    "device_vpn_suite": "pass, including l3_stack 11/11; desktop-tun also passes",
-    "config_udp_capability": "tests/config.rs::wireguard_and_openvpn_udp_capability_follows_pinned"
+    "default_suite": "pass (222 lib tests plus every default integration suite, --test-threads=1)",
+    "device_vpn_suite": "pass, including l3_stack 12/12; desktop-tun also passes (256 lib)",
+    "config_udp_capability": "tests/config.rs::wireguard_and_openvpn_udp_capability_follows_pinned",
+    "openvpn_docker": {
+      "passed": 1,
+      "command": "KC_OPENVPN_DOCKER=1 cargo test --manifest-path native-kernel/Cargo.toml --locked --test openvpn_docker -- --ignored --nocapture --test-threads=1",
+      "output": [
+        "OPENVPN_DOCKER_LOCAL v4=Some(10.8.0.2) v6=None",
+        "OPENVPN_DOCKER_TCP_OK payload=hello-ovpn",
+        "OPENVPN_DOCKER_UDP_OK from=10.8.0.1:7778 payload=udp-ovpn"
+      ],
+      "skip_conditions": "KC_OPENVPN_DOCKER unset, docker unavailable, openssl unavailable, /dev/net/tun unavailable"
+    },
+    "src_tauri_lib": "pass 252 passed, 10 ignored"
   },
   "dependency": {
     "name": "smoltcp",
@@ -152,11 +164,13 @@
     "tool/kernel-compat/evidence/{rust-mapping.json,t35-l3.md,t35-l3.json}"
   ],
   "concerns": [
-    "OpenVPN payload delivery through a real tunnel is not end-to-end verified; the controlled server runs --dev null. Control/data framing, PUSH_REPLY, ping timers, stack construction and first-packet id are proven.",
+    "OpenVPN real payload is verified over TCP control against a routable Docker TUN peer; the UDP control transport with a real TUN is not separately tested because Docker Desktop UDP forwarding is unreliable. --dev null remains only a control-plane case, not a payload claim.",
     "IPv6 through the WireGuard fixture is not verified (locked Go peer answers IPv4 only); IPv6 is covered by the independent in-memory L3 peer.",
-    "The option matrix was not regenerated (needs a release kernel and pinned Mihomo); ip-stack rows are unchanged and only the rejection text changed.",
-    "OpenVPN tran-window and handshake-timeout are accepted but not enforced as separate timers; renegotiation (reneg-sec) is not implemented. auth-token is recognized but unused; these are recorded rather than silently claimed.",
-    "The strong registry caps active stacks at 64; a config activating more proxies at once is refused by name. Idle stacks are reaped after 60 s, so transiently many proxies can hit the cap."
+    "The option matrix was not regenerated (needs a release kernel and pinned Mihomo); ip-stack rows are unchanged and only the note text changed.",
+    "OpenVPN tran-window and handshake-timeout are accepted but not enforced; renegotiation is not implemented. auth-token is recognized but unused.",
+    "forget/forget_carrier/openvpn::forget are not wired into engine reload/close; idle reaping is the only automatic teardown path.",
+    "The strong registry caps active stacks at 64; a config activating more proxies at once is refused by name.",
+    "TCP admission waiters are wake-all and re-check; the queue is bounded at 64 but not strictly FIFO, so slot acquisition is not guaranteed in arrival order. The timeout error names 16 slots and the wait duration."
   ],
   "repair": {
     "P1-1": "WireGuard peers are lazy: connect_carrier resolves/binds only; first packet or dial ensure_peer handshakes; per-peer failure drops only that peer; dial selects by allowed-ips, ensures that peer, never falls back; Dialed.server is the resolved endpoint. Registry lock now covers only double-check lookup/publish; OVPN thread handoff is outside it.",
@@ -166,6 +180,8 @@
     "P3-5": "Replayed/out-of-window data packet ids return Replay and recv_data drops them (continue); named LINK_READ_TIMEOUT=50 ms matches the blocking link read.",
     "P3-6": "Registries hold strong references: l3 MAX_STACKS=64, WireGuard carrier registry strong with shutdown notify, 5 s idle sweep, explicit l3::forget/wireguard::forget/openvpn::forget; idle reap unit test. Stack poller is 500 Hz.",
     "P3-7": "Per-stack memory table and formula documented: 1 MiB TCP + 4 MiB UDP + 2x256xmtu device + 128 KiB/peer scratch; MAX_STACKS 64 => ~378 MiB + 8 MiB*peers.",
-    "P3-8": "OVPN TCP framing uses FrameBuffer so a read timeout keeps partial frames; unit test plus a real OpenVPN 2.7.9 tcp4-server round trip. The TCP run also proved packet-id must start at 1."
+    "P3-8": "OVPN TCP framing uses FrameBuffer so a read timeout keeps partial frames; unit test plus a real OpenVPN 2.7.9 tcp4-server round trip. The TCP run also proved packet-id must start at 1.",
+    "A3-P1": "Routable Docker OpenVPN peer + default-skipped test; real TCP/UDP payload echo verified, container cleanup guard.",
+    "A3-P3": "forget hooks documented as API-only (not engine-wired); poller stop check under one lock with recheck and second ensure after socket creation; WG keepalive touches; TCP admission timeout names 16 slots and wait duration; WG UDP outside allowed-ips returns named NoRoute; multi-segment PUSH_REPLY accumulated; stale evidence contradictions removed."
   }
 }

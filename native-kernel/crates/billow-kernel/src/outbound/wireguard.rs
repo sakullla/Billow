@@ -924,9 +924,10 @@ fn spawn_carrier_reaper() {
     });
 }
 
-/// Stop/reload hook for one configured WireGuard outbound: stops its actors,
-/// drops the carrier and removes the shared stack entry. The idle check in
-/// [`lookup_carrier`] covers the passive path.
+/// Explicit teardown API for one configured WireGuard outbound: stops its
+/// actors, drops the carrier and removes the shared stack entry. This is not
+/// wired into engine reload/close yet; the idle check and carrier reaper cover
+/// the automatic path.
 pub fn forget(outbound: &WireguardOutbound) {
     let fingerprint = stack_fingerprint(outbound);
     forget_carrier(&fingerprint);
@@ -1017,6 +1018,12 @@ pub async fn connect_carrier(
     let stack = Stack::new(config).map_err(|error| WireguardError::Stack(error.to_string()))?;
     let shutdown = Shutdown::new();
     let (peers, allowed) = spawn_carrier(&stack, specs, allowed, shutdown.clone());
+    // UDP destinations outside every peer's allowed-ips become a named
+    // `NoRoute` at the socket, not a silent drop in the dispatcher.
+    let route_allowed = allowed.clone();
+    stack.set_route_guard(Arc::new(move |dst| {
+        select_peer(&route_allowed, dst).is_some()
+    }));
     let carrier = Arc::new(WireguardCarrier {
         stack,
         peers,
@@ -1157,6 +1164,8 @@ async fn peer_task(
                     if let Some(active) = tunnel.as_mut() {
                         if active.send_packet(&packet).await.is_err() {
                             drop_tunnel(&mut tunnel, &mut retry_after);
+                        } else if let Some(stack) = weak.upgrade() {
+                            stack.touch();
                         }
                         rekeyed = false;
                         continue;
@@ -1242,12 +1251,22 @@ async fn peer_task(
             },
             _ = keepalive_tick.tick() => {
                 if spec.keepalive != 0 {
-                    let failed = match tunnel.as_mut() {
-                        Some(active) => active.send_keepalive().await.is_err(),
+                    let sent = match tunnel.as_mut() {
+                        Some(active) => match active.send_keepalive().await {
+                            Ok(()) => true,
+                            Err(_) => {
+                                drop_tunnel(&mut tunnel, &mut retry_after);
+                                false
+                            }
+                        },
+                        // A down peer has no live session to keep warm; do not
+                        // touch the stack or the idle reaper would never stop.
                         None => false,
                     };
-                    if failed {
-                        drop_tunnel(&mut tunnel, &mut retry_after);
+                    if sent {
+                        if let Some(stack) = weak.upgrade() {
+                            stack.touch();
+                        }
                     }
                 }
             }

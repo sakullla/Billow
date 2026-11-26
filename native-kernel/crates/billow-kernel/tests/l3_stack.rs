@@ -308,6 +308,35 @@ async fn tcp_admission_waits_for_a_released_slot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn tcp_admission_timeout_names_slots_and_duration() {
+    let stack = stack(1408, false);
+    let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);
+    let remote = SocketAddr::new(IpAddr::V4(PEER_V4), 80);
+    let mut streams = Vec::new();
+    for _ in 0..TCP_SOCKETS {
+        streams.push(
+            stack
+                .dial_tcp(remote, Duration::from_secs(2))
+                .await
+                .expect("dial"),
+        );
+    }
+    let error = match stack
+        .dial_tcp(remote, Duration::from_millis(120))
+        .await
+    {
+        Ok(_) => panic!("all slots are held, the dial must time out"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    let text = error.to_string();
+    assert!(text.contains("16 slots"), "{text}");
+    assert!(text.contains("120ms"), "{text}");
+    drop(streams);
+    peer.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn tcp_waiting_queue_is_bounded_and_named() {
     let stack = stack(1408, false);
     let peer = spawn_tcp_peer(stack.clone(), TcpMode::Echo);

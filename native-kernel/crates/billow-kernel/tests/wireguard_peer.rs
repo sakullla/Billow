@@ -448,6 +448,17 @@ async fn a_dead_peer_does_not_block_the_live_peer_or_allow_fallback() {
     assert_eq!(from, live_target);
     assert_eq!(&buffer[..read], b"lazy-live");
 
+    // A UDP destination outside every allowed-ips prefix is refused by name
+    // at the association, not silently dropped by the dispatcher.
+    let uncovered = SocketAddr::from(([10, 99, 99, 99], 53));
+    let error = socket
+        .send(uncovered, b"no-route")
+        .await
+        .err()
+        .expect("UDP destination outside allowed-ips must be refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(error.to_string().contains("no route"), "{error}");
+
     // A TCP dial to the live peer (already connected) succeeds.
     let target = billow_kernel::outbound::Target {
         host: "10.13.13.1".to_string(),

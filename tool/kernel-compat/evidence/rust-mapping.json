@@ -1621,7 +1621,7 @@
     },
     "openvpn": {
       "status": "partial",
-      "reason": "The control channel (UDP and TCP framing, hard reset, reliable ACKs, TLS 1.2/1.3 client authentication, key-method 2) and the AEAD data channel are implemented in src/outbound/openvpn.rs and verified against OpenVPN 2.7.9 over both UDP and TCP framing. TCP/UDP then run through the shared smoltcp userspace stack (src/outbound/l3/), with the local address from PUSH_REPLY ifconfig/ifconfig-ipv6; PUSH_REPLY also parses routes, dns/dhcp-option DNS, redirect-gateway, block-outside-dns, block-ipv6, push-continuation, auth-token (recognized) and ping/ping-restart. The data-path thread sends keepalives on ping, fails on ping-restart silence, drops replayed/out-of-window packets, starts packet-id at 1 (the server rejects 0), and buffers TCP length prefixes so a read timeout cannot desync. tls-auth/tls-crypt, compression, CBC data ciphers and an explicit mips/gVisor ip-stack are rejected by name. Real OpenVPN payload delivery is not end-to-end verified: the controlled server runs `--dev null`.",
+      "reason": "The control channel (UDP and TCP framing, hard reset, reliable ACKs, TLS 1.2/1.3 client authentication, key-method 2) and the AEAD data channel are implemented in src/outbound/openvpn.rs. TCP/UDP run through the shared smoltcp userspace stack (src/outbound/l3/) with the local address from PUSH_REPLY (multi-segment push-continuation is accumulated). Real payload delivery is verified end-to-end against a routable Docker peer (Ubuntu OpenVPN --dev tun0, 10.8.0.1/24): connect_stack assigned 10.8.0.2, TCP echo on 10.8.0.1:7777 and UDP echo on 10.8.0.1:7778 both matched. OpenVPN 2.7.9 --dev null cases still verify control/TLS/key-method/PUSH_REPLY and AEAD keepalives. PUSH_REPLY also parses routes, dns/dhcp-option DNS, redirect-gateway, block-outside-dns, block-ipv6, push-continuation, auth-token (recognized) and ping/ping-restart; the data path sends keepalives on ping, fails on ping-restart silence, drops replayed/out-of-window packets, starts packet-id at 1 and buffers TCP length prefixes. tls-auth/tls-crypt, compression, CBC data ciphers and an explicit mips/gVisor ip-stack are rejected by name.",
       "options": [
         "server",
         "port",
@@ -1682,9 +1682,12 @@
         "src/outbound/openvpn.rs::tests::keepalive_timers_produce_ping_and_restart_actions",
         "src/outbound/openvpn.rs::tests::tcp_frame_buffer_reassembles_across_partial_reads",
         "tests/openvpn_peer.rs::tcp_control_channel_pushes_and_decrypts_a_keepalive",
-        "tool/kernel-compat/evidence/t35-l3.json"
+        "tool/kernel-compat/evidence/t35-l3.json",
+        "tests/openvpn_docker.rs::openvpn_tun_payload_tcp_and_udp_echo",
+        "src/outbound/openvpn.rs::tests::multi_segment_push_reply_accumulates_options",
+        "tool/kernel-compat/peers/openvpn-docker/Dockerfile"
       ],
-      "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional. Data ciphers: AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305. The data-channel actor is one dedicated OS thread (blocking link), never a tokio worker; control handshake and stack handoff happen outside the registry lock. `ping`/`ping-restart` are enforced from the pushed values (falling back to configuration); `tran-window` and `handshake-timeout` are accepted but have no separate timer and renegotiation is not implemented, which is recorded rather than claimed.",
+      "notes": "`ca` is an inline PEM and is required; the server chain is verified against it without a hostname check (matching the pinned client). `cert`/`key` are inline PEM and optional. Data ciphers: AES-128-GCM, AES-256-GCM and CHACHA20-POLY1305. The data-channel actor is one dedicated OS thread; control handshake and stack handoff happen outside the registry lock. `ping`/`ping-restart` are enforced from pushed/config values; multi-segment PUSH_REPLY is accumulated (up to 8 segments). `tran-window`, `handshake-timeout` and renegotiation are accepted/recorded but not enforced, as listed in notImplemented. The Docker payload test is default-skipped (KC_OPENVPN_DOCKER=1) and removes its container/certs on success or panic.",
       "license": "No OpenVPN crate; no OpenVPN/Mihomo source vendored, linked, or copied line-by-line. The GPL-2.0 OpenVPN binary is a test peer only. The pinned transport/openvpn (GPL-3.0) was read for functional wire facts; this is not a certified clean-room. Audit and limits: tool/kernel-compat/evidence/t16-provenance.md."
     }
   },
