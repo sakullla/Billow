@@ -890,6 +890,10 @@ pub struct TunConfig {
     pub dns_mode: TunDnsMode,
     /// `inet6-address` prefixes; pinned default `fdfe:dcba:9876::1/126`.
     pub inet6_address: Vec<String>,
+    /// Linux policy-routing table for the TUN routes (pinned default 2022).
+    pub iproute2_table_index: u32,
+    /// Linux policy-routing rule priority (pinned default 9000).
+    pub iproute2_rule_index: u32,
     pub route_address: Vec<String>,
     pub route_exclude_address: Vec<String>,
 }
@@ -933,6 +937,8 @@ impl Default for TunConfig {
             dns_hijack: vec![SocketAddr::from(([0, 0, 0, 0], 53))],
             dns_mode: TunDnsMode::Disabled,
             inet6_address: vec!["fdfe:dcba:9876::1/126".to_string()],
+            iproute2_table_index: 2022,
+            iproute2_rule_index: 9000,
             route_address: Vec::new(),
             route_exclude_address: Vec::new(),
         }
@@ -1294,6 +1300,24 @@ fn parse_tun(
                     warnings.push("tun.inet6-address is empty; no IPv6 device address is assigned".to_string());
                 }
             }
+            "iproute2-table-index" => {
+                let value = parse_tun_u32(item, &label, path)?;
+                if value == 0 || (253..=255).contains(&value) {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: tun.iproute2-table-index {value} is reserved (local/main/default tables); use a dedicated table such as 2022"
+                    )));
+                }
+                tun.iproute2_table_index = value;
+            }
+            "iproute2-rule-index" => {
+                let value = parse_tun_u32(item, &label, path)?;
+                if value == 0 {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: tun.iproute2-rule-index must be non-zero"
+                    )));
+                }
+                tun.iproute2_rule_index = value;
+            }
             "route-address" => {
                 tun.route_address = parse_tun_prefix_list(item, path, &label)?;
             }
@@ -1307,7 +1331,7 @@ fn parse_tun(
             }
             other => {
                 return Err(ConfigError::Unsupported(format!(
-                    "{path}: tun.{other} is not implemented (accepted keys: enable, device, stack, mtu, auto-route, auto-detect-interface, strict-route, dns-hijack, dns-mode, inet6-address, route-address, route-exclude-address)"
+                    "{path}: tun.{other} is not implemented (accepted keys: enable, device, stack, mtu, auto-route, auto-detect-interface, strict-route, dns-hijack, dns-mode, inet6-address, iproute2-table-index, iproute2-rule-index, route-address, route-exclude-address)"
                 )))
             }
         }
@@ -1327,6 +1351,26 @@ fn parse_tun(
         );
     }
     Ok(tun)
+}
+
+fn parse_tun_u32(
+    value: &serde_yaml::Value,
+    key: &str,
+    path: &str,
+) -> Result<u32, ConfigError> {
+    let number = match value {
+        serde_yaml::Value::Number(number) => number.as_u64(),
+        serde_yaml::Value::String(text) => text.parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        ConfigError::InvalidValue(format!(
+            "{path}: {key} must be a non-negative integer, found {value:?}"
+        ))
+    })?;
+    u32::try_from(number).map_err(|_| {
+        ConfigError::InvalidValue(format!("{path}: {key} {number} exceeds u32"))
+    })
 }
 
 fn parse_dns_hijack_entries(

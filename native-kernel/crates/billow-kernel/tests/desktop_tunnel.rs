@@ -61,7 +61,7 @@ fn physical() -> DefaultRoute {
 #[test]
 fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
     let yaml = format!(
-        "mixed-port: {}\ntun:\n  enable: true\n  device: utun9\n  stack: gvisor\n  mtu: 1400\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: false\n  dns-hijack: [any:53, udp://1.1.1.1:53, '[::]:53']\n  dns-mode: native\n  inet6-address: ['fdfe:dcba:9876::1/126']\n  route-address: [10.0.0.0/8]\n  route-exclude-address: [192.168.0.0/16]\nrules: ['MATCH,DIRECT']\n",
+        "mixed-port: {}\ntun:\n  enable: true\n  device: utun9\n  stack: gvisor\n  mtu: 1400\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: false\n  dns-hijack: [any:53, udp://1.1.1.1:53, '[::]:53']\n  dns-mode: native\n  inet6-address: ['fdfe:dcba:9876::1/126']\n  iproute2-table-index: 3033\n  iproute2-rule-index: 9100\n  route-address: [10.0.0.0/8]\n  route-exclude-address: [192.168.0.0/16]\nrules: ['MATCH,DIRECT']\n",
         free_port()
     );
     let loaded = load_config(&yaml, "desktop-tun").expect("Billow desktop shape loads");
@@ -81,6 +81,8 @@ fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
         ]
     );
     assert_eq!(tun.inet6_address, ["fdfe:dcba:9876::1/126"]);
+    assert_eq!(tun.iproute2_table_index, 3033);
+    assert_eq!(tun.iproute2_rule_index, 9100);
     assert_eq!(tun.route_address, ["10.0.0.0/8"]);
     assert_eq!(tun.route_exclude_address, ["192.168.0.0/16"]);
 
@@ -97,6 +99,9 @@ fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
     assert_eq!(tag("tun: {enable: true, mtu: 70000}\n"), "invalid_value");
     assert_eq!(tag("tun: {enable: true, route-address: ['10.0.0.1']}\n"), "invalid_value");
     assert!(tag("tun: {enable: true, inet6-address: ['10.0.0.0/8']}\n").starts_with("invalid"));
+    assert!(tag("tun: {enable: true, iproute2-table-index: 0}\n").starts_with("invalid"));
+    assert!(tag("tun: {enable: true, iproute2-table-index: 254}\n").starts_with("invalid"));
+    assert!(tag("tun: {enable: true, iproute2-rule-index: 0}\n").starts_with("invalid"));
     // A non-53 DNS entry is named instead of becoming a global hijack.
     assert_eq!(
         tag("tun: {enable: true, dns-hijack: ['tls://1.1.1.1:853']}\n"),
@@ -289,10 +294,22 @@ fn dns_config(upstream: SocketAddr, hijack: &str) -> String {
     )
 }
 
+fn native_dns_config(upstream: SocketAddr, hijack: &str) -> String {
+    format!(
+        "mixed-port: {}\ndns:\n  enable: true\n  nameserver: ['{}']\ntun: {{enable: true, auto-route: false, auto-detect-interface: false, dns-mode: native, dns-hijack: [{hijack}]}}\nrules: ['MATCH,DIRECT']\n",
+        free_port(),
+        upstream
+    )
+}
+
 fn start_tunnel_with_config(config: &str, dir: &std::path::Path) -> Tunnel {
     let loaded = load_config(config, "desktop-tunnel").expect("config");
+    let addresses = DeviceAddresses::from_config(&loaded.config);
     let options = TunnelOptions {
-        dns_hijack: loaded.config.tun.dns_hijack.clone(),
+        dns_hijack: billow_kernel::desktop_tun::effective_dns_hijack(
+            &loaded.config.tun,
+            &addresses,
+        ),
         ..TunnelOptions::default()
     };
     Tunnel::start(config, dir.to_path_buf(), options, None).expect("tunnel")
@@ -386,15 +403,64 @@ fn an_unspecified_dns_hijack_entry_answers_any_port_53_target() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// TCP DNS hijack: the same target set drives the passive TCP endpoint.
+/// With `dns-mode: native` and an empty `dns-hijack`, pinned still appends the
+/// device DNS address, so a query to tun4+1:53 is answered locally.
+#[test]
+fn native_dns_mode_appends_the_device_dns_address_to_an_empty_hijack_set() {
+    let (upstream, upstream_thread) = dns_upstream();
+    let dir = test_dir("dns-native");
+    let config = native_dns_config(upstream, "");
+    let loaded = load_config(&config, "desktop-tunnel").unwrap();
+    assert!(loaded.config.tun.dns_hijack.is_empty());
+    assert_eq!(loaded.config.tun.dns_mode, TunDnsMode::Native);
+    let addresses = DeviceAddresses::from_config(&loaded.config);
+    let effective = billow_kernel::desktop_tun::effective_dns_hijack(&loaded.config.tun, &addresses);
+    assert!(effective.contains(&"198.18.0.2:53".parse().unwrap()));
+    assert!(effective.contains(&"[fdfe:dcba:9876::2]:53".parse().unwrap()));
+    let tunnel = start_tunnel_with_config(&config, &dir);
+    let packet = ipstack::build_udp_packet(
+        IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)),
+        IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)),
+        40_000,
+        53,
+        &dns_query(),
+        64,
+    )
+    .unwrap();
+    tunnel.ingest(&packet);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reply = loop {
+        if let Some(packet) = drain(&tunnel).into_iter().find(|packet| {
+            ipstack::parse_ip_packet(packet)
+                .map(|parsed| parsed.protocol == ipstack::IPPROTO_UDP)
+                .unwrap_or(false)
+        }) {
+            break packet;
+        }
+        assert!(Instant::now() < deadline, "no device-DNS reply");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let parsed = ipstack::parse_ip_packet(&reply).unwrap();
+    let udp = ipstack::parse_udp(&parsed).unwrap();
+    assert_eq!(udp.dst_port, 40_000);
+    assert_eq!(udp.payload[2] & 0x80, 0x80);
+    upstream_thread.join().unwrap();
+    assert!(tunnel.stats().dns_queries >= 1);
+    tunnel.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// TCP DNS hijack: the same target set drives the passive TCP endpoint. A
+/// narrow `dns-hijack` list plus `dns-mode: native` still matches the device
+/// DNS address (pinned appends tun4+1:53).
 #[test]
 fn a_tcp_dns_query_is_hijacked_only_for_a_matching_target() {
     let (upstream, upstream_thread) = dns_upstream();
     let dir = test_dir("dns-tcp");
-    let config = dns_config(upstream, "'any:53'");
+    let config = native_dns_config(upstream, "'1.1.1.1:53'");
     let tunnel = start_tunnel_with_config(&config, &dir);
     let device_ip = IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2));
-    let target = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
+    let target = IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2));
     let port = 40_000u16;
     let syn = tcp_packet(device_ip, target, port, 53, 1000, 0, FLAG_SYN, &[]);
     tunnel.ingest(&syn);
@@ -496,7 +562,12 @@ fn route_plan_follows_pinned_auto_route_and_exclusion() {
     let linux = route_plan::plan(Platform::Linux, "billow0", &tun, &addresses, Some(&physical()), 1500).unwrap();
     assert_eq!(
         linux.up.iter().map(|command| command.render()).collect::<Vec<_>>(),
-        vec!["ip route add 10.0.0.0/8 dev billow0", "ip -6 route add ::/0 dev billow0"]
+        vec![
+            "ip route add 10.0.0.0/8 dev billow0 table 2022",
+            "ip -6 route add ::/0 dev billow0 table 2022",
+            "ip rule add priority 9000 lookup 2022",
+            "ip -6 rule add priority 9000 lookup 2022",
+        ]
     );
 
     // Exclusions are a set difference: no `via gateway` route remains.
@@ -551,7 +622,7 @@ fn ipv6_false_and_custom_inet6_addresses_change_the_plan() {
     )
     .unwrap();
     let up: Vec<String> = plan.up.iter().map(|command| command.render()).collect();
-    assert!(up.contains(&"ip -6 route add 2001:db8:1::/48 dev billow0".to_string()), "{up:?}");
+    assert!(up.contains(&"ip -6 route add 2001:db8:1::/48 dev billow0 table 2022".to_string()), "{up:?}");
     assert!(plan
         .address
         .iter()

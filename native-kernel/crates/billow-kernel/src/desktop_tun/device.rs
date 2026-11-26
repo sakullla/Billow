@@ -339,22 +339,15 @@ mod platform {
         sc_reserved: [u32; 5],
     }
 
-    fn utun_unit(device: &str) -> Result<Option<u32>, String> {
+    pub(super) fn utun_unit(device: &str) -> Option<u32> {
         if device.is_empty() {
-            return Ok(None);
+            return None;
         }
-        let Some(rest) = device.strip_prefix("utun") else {
-            return Err(format!(
-                "desktop-tun: macOS tun.device '{device}' must be utunN or empty"
-            ));
-        };
-        rest.parse::<u32>().map(Some).map_err(|_| {
-            format!("desktop-tun: macOS tun.device '{device}' must be utunN or empty")
-        })
+        device.strip_prefix("utun")?.parse::<u32>().ok()
     }
 
     pub fn open(tun: &TunConfig) -> Result<Arc<dyn TunDevice>, String> {
-        let requested_unit = utun_unit(&tun.device)?;
+        let requested_unit = utun_unit(&tun.device);
         let fd = unsafe { libc::socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL) };
         if fd < 0 {
             let error = io::Error::last_os_error();
@@ -382,8 +375,10 @@ mod platform {
         let mut opened = false;
         let mut last = None;
         let units: Vec<u32> = match requested_unit {
-            Some(unit) => vec![unit],
-            None => (0..16u32).collect(),
+            // Darwin `sc_unit` is one-based: `utun3` is unit 4; 0 lets the
+            // kernel pick the next free unit.
+            Some(unit) => vec![unit.saturating_add(1)],
+            None => vec![0],
         };
         for unit in units {
             address.sc_unit = unit;
@@ -662,5 +657,21 @@ mod platform {
         // explicit so a caller cannot pass something smaller.
         let _ = MAX_PACKET;
         Ok(Arc::new(device))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::platform::utun_unit;
+
+    #[test]
+    fn utun_device_names_map_to_darwin_sc_units() {
+        // Darwin sc_unit is one-based; utun0 -> 1, utun9 -> 10.
+        assert_eq!(utun_unit("utun0"), Some(0));
+        assert_eq!(utun_unit("utun9"), Some(9));
+        // Empty or a non-utunN name lets the kernel pick (sc_unit 0 = auto).
+        assert_eq!(utun_unit(""), None);
+        assert_eq!(utun_unit("utun"), None);
+        assert_eq!(utun_unit("billow0"), None);
     }
 }

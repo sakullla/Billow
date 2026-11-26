@@ -18,11 +18,14 @@ Date: 2026-11-26. Host: macOS arm64 (darwin 25.x), non-root. Workspace: `native-
   - `dns-hijack` is an address-port set (`tcp://`/`udp://` scheme stripped,
     `any` -> `0.0.0.0`, `[::]:53` supported). Hijack matches pinned
     `ShouldHijackDns`: exact target, or an unspecified entry for any target on
-    port 53. An unlisted target goes through the normal flow.
+    port 53. The device DNS addresses (`tun4+1:53`, `tun6+1:53`) are appended
+    to the set as pinned does, so `dns-mode: native` is answered even with an
+    empty or narrow `dns-hijack` list.
 - `src/desktop_tun/`:
   - macOS `utun` control socket, `UTUN_OPT_IFNAME`, 4-byte big-endian
     `AF_INET=2`/`AF_INET6=30` framing (strip on read, add on write). A
-    `tun.device: utunN` selects that unit; any other non-empty name is rejected.
+    `tun.device: utunN` maps to Darwin `sc_unit = N + 1`; empty or a
+    non-`utunN` name passes `sc_unit = 0` (kernel picks a free unit).
   - Linux `/dev/net/tun` with `TUNSETIFF | IFF_TUN | IFF_NO_PI` (raw IP;
     15-byte name check stays platform-specific).
   - Windows Wintun via the shipped `wintun.dll`
@@ -38,11 +41,15 @@ Date: 2026-11-26. Host: macOS arm64 (darwin 25.x), non-root. Workspace: `native-
     installs only those prefixes (macOS also adds the TUN subnet); otherwise
     macOS installs `1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/5, 16.0.0.0/4,
     32.0.0.0/3, 64.0.0.0/2, 128.0.0.0/1` (IPv6 mirrors it with `100::/8`
-    ... `8000::/1`), while Linux/Windows use the pinned full `0.0.0.0/0` /
-    `::/0`. `route-exclude-address` is an integer-prefix set difference over
-    the chosen ranges (no `via` gateway route). `strict-route` requires a
-    detected physical interface and is registered as a weak semantic in the
-    config warning.
+    ... `8000::/1`). Linux uses a dedicated policy table + rule (default table
+    2022, rule 9000): `ip route add ... table <t>` plus `ip rule add priority
+    <r> lookup <t>`; a precheck refuses an occupied table/priority instead of
+    overwriting it, and teardown deletes the rules and table routes. Excluded
+    prefixes are a CIDR set difference and stay covered by the main table, not
+    written into the TUN table. Windows sets interface metric 0 and installs
+    `add route prefix=... interface=... metric=0`, restoring `metric=automatic`
+    on teardown. `strict-route` requires a detected physical interface and is
+    registered as a weak semantic in the config warning.
   - `dns-mode: native|hijack` points the system resolver at `tun4+1` /
     `tun6+1`: Linux `resolvectl dns/domain/default-route` (down: `revert`),
     Windows `netsh interface ipv4/ipv6 set dnsservers` with the previous static
@@ -58,7 +65,9 @@ Date: 2026-11-26. Host: macOS arm64 (darwin 25.x), non-root. Workspace: `native-
     cannot re-capture the kernel's own traffic. The same binding now covers
     mKCP (`udp_socket_std_blocking`, keeping its blocking read loop), provider
     downloads (`tcp_stream_std_blocking`), group/controller DIRECT probes and
-    DNS bootstrap queries.
+    DNS bootstrap queries. WireGuard/OpenVPN/Tailscale/EasyTier server/control
+    connections still use their own direct sockets/connects; those are left to
+    T35, so this is not a blanket "all proxy server dials are bound" claim.
   - Reader thread feeds `Tunnel::ingest` (the T7 userspace stack); the bounded
     `PacketSink` queue plus a writer thread writes replies. Stop removes the
     routes/addresses/DNS changes this process added, clears the interface bind
@@ -81,7 +90,7 @@ All commands used an isolated `CARGO_TARGET_DIR` under the session temp dir and
 | Command | Result |
 | --- | --- |
 | `cargo test --manifest-path native-kernel/Cargo.toml --locked -- --test-threads=1` | pass: 480 passed, 0 failed (across suites; lib 212, ignored cases are separate) |
-| `cargo test --manifest-path native-kernel/Cargo.toml --features desktop-tun --locked -- --test-threads=1` | pass: 528 passed, 0 failed (full suite plus `desktop_tunnel` 14 passed/1 ignored and `desktop_cli` 2/0) |
+| `cargo test --manifest-path native-kernel/Cargo.toml --features desktop-tun --locked -- --test-threads=1` | pass: 531 passed, 0 failed (full suite plus `desktop_tunnel` 15 passed/1 ignored and `desktop_cli` 2/0) |
 | `cargo test --features android-vpn --test android_tunnel` | pass: 9/9 (shared `Tunnel::set_sink`/pump change does not regress the fd data plane) |
 | `cargo check --features ios-vpn` | pass |
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1` | pass: 252 passed, 0 failed, 10 ignored |
@@ -106,6 +115,7 @@ Targeted new tests:
   - `utun_framing_matches_darwin_address_families`
   - `fd_pump_carries_udp_ip_packets_both_ways` (UnixDatagram pair; UDP both ways)
   - `dns_hijack_matching_is_exact_or_unspecified`
+  - `native_dns_mode_appends_the_device_dns_address_to_an_empty_hijack_set`
   - `a_listed_dns_target_is_hijacked_and_an_unlisted_one_is_not`
   - `an_unspecified_dns_hijack_entry_answers_any_port_53_target`
   - `a_tcp_dns_query_is_hijacked_only_for_a_matching_target`
@@ -117,8 +127,9 @@ Targeted new tests:
   - `start_with_tun_disabled_fails_before_creating_a_device`
   - `real_utun_can_be_created_and_closed` (`#[ignore]`)
 - `src/desktop_tun/route_plan.rs` unit tests: pinned macOS sub-ranges,
-  route-address replacement, set-difference exclusion, DNS command/restore,
-  default-route and DNS parsers.
+  route-address replacement, set-difference exclusion, Linux policy-table
+  precheck, Windows metric/route commands, DNS command/restore and parsers.
+- `src/desktop_tun/device.rs` unit test: Darwin `sc_unit = N + 1` mapping.
 - `src/outbound/mod.rs` unit tests: process-interface bind and blocking
   UDP/TCP helpers (mKCP/provider path).
 - `tests/desktop_cli.rs`
@@ -137,9 +148,11 @@ Targeted new tests:
   macOS `utun` needs root or the `TunGrant` setuid authorization; this host has
   neither. The real-device test is `#[ignore]`d and its failure/absence must not
   be read as a pass.
-- Linux `/dev/net/tun` and Windows Wintun device creation and `ip`/`netsh`
-  route execution are cfg-complete but were not run here (no Linux/Windows
-  host). Their real-platform acceptance remains pending.
+- Linux `/dev/net/tun` and Windows Wintun device creation and the route/DNS
+  command execution are not run here (no Linux/Windows host). The Linux
+  table/rule commands and the precheck are pure tests only; the Windows
+  metric/route commands are pure tests only. Their real-platform acceptance
+  remains pending.
 - Auto-route ranges, route-exclude set difference, DNS-hijack targeting and
   DNS command/restore plans are covered by pure tests plus the UnixDatagram
   pump and the real macOS lo0 interface bind; the end-to-end "TUN captures the
@@ -147,9 +160,11 @@ Targeted new tests:
   host.
 - `dns-mode` command execution was not run on any platform (no root and no
   Linux/Windows host); macOS utun has no networksetup service so the resolver
-  is left unchanged with a named warning. Windows restore is best-effort (the
-  first saved static server); a localized `netsh` output may not parse and
+  is left unchanged with a named warning. Windows DNS restore is best-effort
+  (the first saved static server); a localized `netsh` output may not parse and
   falls back to DHCP.
+- Windows route teardown restores the interface metric to `automatic`; the
+  previous static metric is not captured, recorded as best-effort.
 - `stack` is not a MipsSoft or gVisor implementation; only the name is
   accepted and mapped to the in-tree userspace IP stack.
 - `strict-route` is implemented as "require a detected physical interface and

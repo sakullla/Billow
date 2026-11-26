@@ -200,7 +200,15 @@ pub fn plan(
         v6 = subtract_prefixes(&v6, &v6_excludes);
         match platform {
             Platform::Macos => plan_routes_macos(&mut plan, &mut down, device, &v4, &v6),
-            Platform::Linux => plan_routes_linux(&mut plan, &mut down, device, &v4, &v6),
+            Platform::Linux => plan_routes_linux(
+                &mut plan,
+                &mut down,
+                device,
+                &v4,
+                &v6,
+                tun.iproute2_table_index,
+                tun.iproute2_rule_index,
+            ),
             Platform::Windows => plan_routes_windows(&mut plan, &mut down, device, &v4, &v6),
         }
     }
@@ -367,6 +375,22 @@ fn plan_addresses_windows(
             "store=active",
         ],
     ));
+    plan.address.push(Command::new(
+        NETSH,
+        ["interface", "ipv4", "set", "interface", device, "metric=0"],
+    ));
+    plan.address.push(Command::new(
+        NETSH,
+        ["interface", "ipv6", "set", "interface", device, "metric=0"],
+    ));
+    down.push(Command::new(
+        NETSH,
+        ["interface", "ipv6", "set", "interface", device, "metric=automatic"],
+    ));
+    down.push(Command::new(
+        NETSH,
+        ["interface", "ipv4", "set", "interface", device, "metric=automatic"],
+    ));
     for v6 in &addresses.v6 {
         let prefix = v6.to_string();
         down.push(Command::new(
@@ -424,17 +448,51 @@ fn plan_routes_linux(
     device: &str,
     v4: &[String],
     v6: &[String],
+    table: u32,
+    rule: u32,
 ) {
     const IP: &str = "ip";
+    let table = table.to_string();
+    let rule = rule.to_string();
     for prefix in v4 {
-        plan.up
-            .push(Command::new(IP, ["route", "add", prefix, "dev", device]));
-        down.push(Command::new(IP, ["route", "del", prefix, "dev", device]));
+        plan.up.push(Command::new(
+            IP,
+            ["route", "add", prefix, "dev", device, "table", table.as_str()],
+        ));
+        down.push(Command::new(
+            IP,
+            ["route", "del", prefix, "dev", device, "table", table.as_str()],
+        ));
     }
     for prefix in v6 {
-        plan.up
-            .push(Command::new(IP, ["-6", "route", "add", prefix, "dev", device]));
-        down.push(Command::new(IP, ["-6", "route", "del", prefix, "dev", device]));
+        plan.up.push(Command::new(
+            IP,
+            ["-6", "route", "add", prefix, "dev", device, "table", table.as_str()],
+        ));
+        down.push(Command::new(
+            IP,
+            ["-6", "route", "del", prefix, "dev", device, "table", table.as_str()],
+        ));
+    }
+    if !v4.is_empty() {
+        plan.up.push(Command::new(
+            IP,
+            ["rule", "add", "priority", rule.as_str(), "lookup", table.as_str()],
+        ));
+        down.push(Command::new(
+            IP,
+            ["rule", "del", "priority", rule.as_str(), "lookup", table.as_str()],
+        ));
+    }
+    if !v6.is_empty() {
+        plan.up.push(Command::new(
+            IP,
+            ["-6", "rule", "add", "priority", rule.as_str(), "lookup", table.as_str()],
+        ));
+        down.push(Command::new(
+            IP,
+            ["-6", "rule", "del", "priority", rule.as_str(), "lookup", table.as_str()],
+        ));
     }
 }
 
@@ -447,23 +505,57 @@ fn plan_routes_windows(
 ) {
     const NETSH: &str = "netsh";
     for prefix in v4 {
+        let prefix_arg = format!("prefix={prefix}");
+        let interface_arg = format!("interface={device}");
         plan.up.push(Command::new(
             NETSH,
-            ["interface", "ipv4", "add", "route", prefix, device],
+            [
+                "interface",
+                "ipv4",
+                "add",
+                "route",
+                prefix_arg.as_str(),
+                interface_arg.as_str(),
+                "metric=0",
+            ],
         ));
         down.push(Command::new(
             NETSH,
-            ["interface", "ipv4", "delete", "route", prefix, device],
+            [
+                "interface",
+                "ipv4",
+                "delete",
+                "route",
+                prefix_arg.as_str(),
+                interface_arg.as_str(),
+            ],
         ));
     }
     for prefix in v6 {
+        let prefix_arg = format!("prefix={prefix}");
+        let interface_arg = format!("interface={device}");
         plan.up.push(Command::new(
             NETSH,
-            ["interface", "ipv6", "add", "route", prefix, device],
+            [
+                "interface",
+                "ipv6",
+                "add",
+                "route",
+                prefix_arg.as_str(),
+                interface_arg.as_str(),
+                "metric=0",
+            ],
         ));
         down.push(Command::new(
             NETSH,
-            ["interface", "ipv6", "delete", "route", prefix, device],
+            [
+                "interface",
+                "ipv6",
+                "delete",
+                "route",
+                prefix_arg.as_str(),
+                interface_arg.as_str(),
+            ],
         ));
     }
 }
@@ -629,6 +721,47 @@ fn prefixes_v6(mut start: u128, end: u128) -> Vec<String> {
         }
     }
     out
+}
+
+/// Read-only precheck commands for the Linux policy-routing table/rule.
+pub fn linux_precheck_commands(tun: &TunConfig, ipv6: bool) -> Vec<Command> {
+    let table = tun.iproute2_table_index.to_string();
+    let mut commands = vec![
+        Command::new("ip", ["rule", "show"]),
+        Command::new("ip", ["route", "show", "table", table.as_str()]),
+    ];
+    if ipv6 {
+        commands.push(Command::new("ip", ["-6", "rule", "show"]));
+        commands.push(Command::new("ip", ["-6", "route", "show", "table", table.as_str()]));
+    }
+    commands
+}
+
+/// Name a pre-existing table/priority conflict instead of overwriting it.
+pub fn linux_conflict(
+    rules: &str,
+    routes: &str,
+    table: u32,
+    rule: u32,
+) -> Option<String> {
+    let table_text = table.to_string();
+    let rule_prefix = format!("{rule}:");
+    for line in rules.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with(&rule_prefix)
+            || line.contains(&format!("priority {rule} "))
+            || line.contains(&format!("lookup {table_text}"))
+        {
+            return Some(format!(
+                "desktop-tun: Linux policy rule priority {rule} or lookup table {table} is already in use; refusing to overwrite it"
+            ));
+        }
+    }
+    if !routes.trim().is_empty() {
+        return Some(format!(
+            "desktop-tun: Linux routing table {table} already has routes; refusing to overwrite it"
+        ));
+    }
+    None
 }
 
 /// Linux systemd-resolved DNS commands.
@@ -942,8 +1075,10 @@ mod tests {
         assert_eq!(
             up,
             vec![
-                "ip route add 10.0.0.0/8 dev billow0",
-                "ip -6 route add ::/0 dev billow0"
+                "ip route add 10.0.0.0/8 dev billow0 table 2022",
+                "ip -6 route add ::/0 dev billow0 table 2022",
+                "ip rule add priority 9000 lookup 2022",
+                "ip -6 rule add priority 9000 lookup 2022",
             ]
         );
     }
@@ -997,6 +1132,48 @@ mod tests {
         };
         // Exclusions are a set difference and no longer need a gateway.
         assert!(plan(Platform::Linux, "billow0", &tun, &addresses(), Some(&no_gateway), 1500).is_ok());
+    }
+
+    #[test]
+    fn linux_policy_precheck_and_windows_metrics_are_explicit() {
+        let tun = base();
+        let commands = linux_precheck_commands(&tun, true);
+        let rendered: Vec<String> = commands.iter().map(Command::render).collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "ip rule show",
+                "ip route show table 2022",
+                "ip -6 rule show",
+                "ip -6 route show table 2022",
+            ]
+        );
+        assert!(linux_conflict("", "", 2022, 9000).is_none());
+        assert!(linux_conflict(
+            "9000: from all lookup 2022",
+            "",
+            2022,
+            9000
+        )
+        .unwrap()
+        .contains("9000"));
+        assert!(linux_conflict("", "default dev eth0", 2022, 9000)
+            .unwrap()
+            .contains("2022"));
+
+        let plan = plan(Platform::Windows, "Billow", &tun, &addresses(), Some(&route()), 1500)
+            .unwrap();
+        let address: Vec<String> = plan.address.iter().map(Command::render).collect();
+        assert!(address.contains(&"netsh interface ipv4 set interface Billow metric=0".to_string()), "{address:?}");
+        let up: Vec<String> = plan.up.iter().map(Command::render).collect();
+        assert!(up.contains(
+            &"netsh interface ipv4 add route prefix=0.0.0.0/0 interface=Billow metric=0"
+                .to_string()
+        ), "{up:?}");
+        let down: Vec<String> = plan.down.iter().map(Command::render).collect();
+        assert!(down.contains(
+            &"netsh interface ipv4 set interface Billow metric=automatic".to_string()
+        ), "{down:?}");
     }
 
     #[test]

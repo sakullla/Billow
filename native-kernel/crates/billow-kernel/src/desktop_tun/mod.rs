@@ -19,6 +19,7 @@ pub mod framing;
 pub mod pump;
 pub mod route_plan;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,8 +105,11 @@ impl DesktopTun {
                 "desktop-tun: auto-detect-interface did not find a physical default route; kernel-originated sockets are not interface-bound"
             );
         }
-        let device = device::create(&tun)?;
         let addresses = route_plan::DeviceAddresses::from_config(&loaded.config);
+        if platform == Platform::Linux && tun.auto_route {
+            check_linux_precheck(&tun, !addresses.v6.is_empty())?;
+        }
+        let device = device::create(&tun)?;
         let routes = route_plan::plan(
             platform,
             device.name(),
@@ -132,7 +136,7 @@ impl DesktopTun {
 
         let tunnel_options = TunnelOptions {
             mtu: tun.effective_mtu(),
-            dns_hijack: tun.dns_hijack.clone(),
+            dns_hijack: effective_dns_hijack(&tun, &addresses),
             ..options.tunnel
         };
         let tunnel = match Tunnel::start_at(
@@ -299,12 +303,16 @@ fn rollback_with(plan: &RoutePlan, runner: &mut dyn FnMut(&Command) -> Result<()
 }
 
 fn run_command(command: &Command) -> Result<(), String> {
+    run_capture(command).map(|_| ())
+}
+
+fn run_capture(command: &Command) -> Result<String, String> {
     let output = ProcessCommand::new(&command.program)
         .args(&command.args)
         .output()
         .map_err(|error| error.to_string())?;
     if output.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -318,6 +326,49 @@ fn run_command(command: &Command) -> Result<(), String> {
     } else {
         detail.to_string()
     })
+}
+
+/// The pinned hijack set: configured `dns-hijack` plus the device DNS
+/// addresses (`tun4+1:53`, `tun6+1:53`).
+pub fn effective_dns_hijack(tun: &TunConfig, addresses: &route_plan::DeviceAddresses) -> Vec<SocketAddr> {
+    let mut targets = tun.dns_hijack.clone();
+    let (v4, v6) = addresses.dns_servers();
+    for ip in [v4, v6].into_iter().flatten() {
+        let target = SocketAddr::new(ip, 53);
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+/// Refuse to overwrite an existing policy table/rule. Runs before the device
+/// is created so a conflict cannot leave a half-installed TUN.
+fn check_linux_precheck(tun: &TunConfig, ipv6: bool) -> Result<(), String> {
+    let commands = route_plan::linux_precheck_commands(tun, ipv6);
+    let rules = run_capture(&commands[0])?;
+    let routes = run_capture(&commands[1])?;
+    if let Some(conflict) = route_plan::linux_conflict(
+        &rules,
+        &routes,
+        tun.iproute2_table_index,
+        tun.iproute2_rule_index,
+    ) {
+        return Err(conflict);
+    }
+    if ipv6 {
+        let rules6 = run_capture(&commands[2])?;
+        let routes6 = run_capture(&commands[3])?;
+        if let Some(conflict) = route_plan::linux_conflict(
+            &rules6,
+            &routes6,
+            tun.iproute2_table_index,
+            tun.iproute2_rule_index,
+        ) {
+            return Err(conflict);
+        }
+    }
+    Ok(())
 }
 
 /// Build the system-DNS command set for `dns-mode`. Capture commands (macOS
