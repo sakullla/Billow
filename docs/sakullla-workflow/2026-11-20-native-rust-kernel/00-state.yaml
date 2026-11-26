@@ -270,25 +270,25 @@ tasks:
     requirement_revision: 11
     review_base_ref: 040af2b05cac54074c56bad4fcfc6540cb565e38
     attempts:
-      - attempt_id: T7-A4
-        message_id: T7-A4-M1
+      - attempt_id: T7-A6
+        message_id: T7-A6-M1
         recipe_digest: sha256:afff276f830c870a8789f559ff181501d4569e830762b806783c4148dd7defb0
         owner_mode: worker
-        baseline_ref: 9e815cee58262ab2a395a174991186dff95fda19
-        checkpoint_ref: 18631566f4ee317d9e47d1c42d6d39276be67e7d
+        baseline_ref: 01e12edaca5c9e2f8b870abd8fb7a1e22136e2b7
+        checkpoint_ref: 01e12edaca5c9e2f8b870abd8fb7a1e22136e2b7
         execution_status: completed_with_concerns
         review_decision: passed
-        finding_count: 3
-        path_count: 16
-        review_evidence_refs: [evidence/reviews/154.json]
-        scope_ref: evidence/history/79.json#Attempt-History/T7-A4/scope_delta
+        finding_count: 0
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/190.json]
+        scope_ref: evidence/history/99.json#Attempt-History/T7-A6/scope_delta
         scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
-        execution_ref: evidence/history/79.json#Attempt-History/T7-A4/execution
-        execution_digest: sha256:62aad71f96ef264bc8a95aab8a255051ac850c40dee22019b7c26266a451dd12
-        review_ref: evidence/history/79.json#Attempt-History/T7-A4/review
-        review_digest: sha256:4f24b34f088c7844e772a3c7967a6a836b43347f5d3b3761b45d3e35bce80970
-    history_head_ref: evidence/history/79.json
-    history_count: 4
+        execution_ref: evidence/history/99.json#Attempt-History/T7-A6/execution
+        execution_digest: sha256:60b6df401b34112ae88395284e15307f83aa3d48118b4a62cdabf6bd2f7d34ac
+        review_ref: evidence/history/99.json#Attempt-History/T7-A6/review
+        review_digest: sha256:97118e0fbdfbe019803749f31aa0d43a64f21667b9ab93f2dc04207d3f0fa0cf
+    history_head_ref: evidence/history/99.json
+    history_count: 6
   - id: T8
     status: completed
     task_run_ref: task-runs/T8-run.md
@@ -323,6 +323,9 @@ tasks:
         review_digest: sha256:96ed38929342c78a0213eab6c00992f83140816ae8bf1b10a734f78ae01f7152
     history_head_ref: evidence/history/81.json
     history_count: 2
+    dependency_evaluation:
+      decision: retained
+      reason: producer_no_net_change
   - id: T10
     status: completed
     task_run_ref: task-runs/T10-run.md
@@ -1068,25 +1071,25 @@ tasks:
     requirement_revision: 12
     review_base_ref: 936057af3f17a9db4ac062bbe6f92e62734133f3
     attempts:
-      - attempt_id: T26-A6
-        message_id: T26-A6-M1
+      - attempt_id: T26-A7
+        message_id: T26-A7-M1
         recipe_digest: sha256:8b99f1acc0dc516507d681f6501791669a0f2c9947e26f20a58cfd22ba5e177c
         owner_mode: worker
-        baseline_ref: 18631566f4ee317d9e47d1c42d6d39276be67e7d
-        checkpoint_ref: e1a53f95610d287b3d7db83d3d5192503277b4df
+        baseline_ref: 01e12edaca5c9e2f8b870abd8fb7a1e22136e2b7
+        checkpoint_ref: 01e12edaca5c9e2f8b870abd8fb7a1e22136e2b7
         execution_status: completed_with_concerns
         review_decision: passed
-        finding_count: 1
-        path_count: 1
-        review_evidence_refs: [evidence/reviews/156.json]
-        scope_ref: evidence/history/80.json#Attempt-History/T26-A6/scope_delta
+        finding_count: 0
+        path_count: 0
+        review_evidence_refs: [evidence/reviews/192.json]
+        scope_ref: evidence/history/100.json#Attempt-History/T26-A7/scope_delta
         scope_digest: sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
-        execution_ref: evidence/history/80.json#Attempt-History/T26-A6/execution
-        execution_digest: sha256:c1e7f60c394ea24d389473e3cc51743418757d4ea9867b0ef5d44c2d47078fe2
-        review_ref: evidence/history/80.json#Attempt-History/T26-A6/review
-        review_digest: sha256:9a5d99dc2cb410b3a922c52d8b5b49f1794c9d74db1a6905962cac2e8de0ccd7
-    history_head_ref: evidence/history/80.json
-    history_count: 6
+        execution_ref: evidence/history/100.json#Attempt-History/T26-A7/execution
+        execution_digest: sha256:89e8c292dbc87118ba1bb29d2764f9cefd1111ffcddee8d050aa16faa4c431d3
+        review_ref: evidence/history/100.json#Attempt-History/T26-A7/review
+        review_digest: sha256:8c88a28fe3c66c4a5c2d6236746cbdec59db8a87ae61179d9c826d5632692681
+    history_head_ref: evidence/history/100.json
+    history_count: 7
   - id: T27
     status: completed
     task_run_ref: task-runs/T27-run.md
@@ -1195,6 +1198,9 @@ tasks:
         review_digest: sha256:0f871f9442b0b1a6a6375c0af5155f53f104184964b9633135533a3b21ce190c
     history_head_ref: evidence/history/83.json
     history_count: 6
+    dependency_evaluation:
+      decision: retained
+      reason: producer_no_net_change
   - id: T30
     status: completed
     task_run_ref: task-runs/T30-run.md
@@ -1385,6 +1391,9 @@ tasks:
         review_digest: sha256:ffb3d446ebadac7266e38a2f8f76f839d610f23aeb21f0dfc9c3a1518f8e7536
     history_head_ref: evidence/history/94.json
     history_count: 4
+    dependency_evaluation:
+      decision: retained
+      reason: producer_no_net_change
   - id: T35
     status: completed
     task_run_ref: task-runs/T35-run.md
@@ -1423,6 +1432,9 @@ tasks:
         review_digest: sha256:a6632a78fb00e656d56014d3f6b604d374325f66ff8a345eee354a9e0cfe32da
     history_head_ref: evidence/history/97.json
     history_count: 3
+    dependency_evaluation:
+      decision: retained
+      reason: producer_no_net_change
 blocker: null
 delivery:
   status: pending
@@ -2206,4 +2218,4 @@ scheduling:
       evidence_ref: ""
       admission_evidence_ref: ""
   bypasses: {}
-result_inbox_ref: evidence/results/640.json
+result_inbox_ref: evidence/results/656.json
