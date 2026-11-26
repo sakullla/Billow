@@ -802,6 +802,15 @@ pub struct RuleToggle {
     pub disabled: bool,
 }
 
+/// Snapshot of state needed to evaluate `match_rule` off the session lock.
+#[derive(Debug, Clone)]
+pub struct RuleMatchContext {
+    pub endpoint: ControllerEndpoint,
+    pub config_rules: Vec<diagnostics::ConfigRule>,
+    pub disabled_rules: BTreeSet<String>,
+    pub config_yaml: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Takeover {
     system_proxy: bool,
@@ -6363,6 +6372,29 @@ impl ProfileBook {
                 disabled,
             },
         }
+    }
+
+    /// Captures the controller endpoint, full config rules, disabled rule keys, and
+    /// unfiltered runtime YAML under a short lock so `match_rule` can run in `spawn_blocking`.
+    pub fn rule_match_context(
+        &mut self,
+        kernel: &mut dyn KernelLaunch,
+    ) -> Result<RuleMatchContext, String> {
+        let Some(endpoint) = kernel.controller() else {
+            return Err(KERNEL_DOWN.to_string());
+        };
+        let config_rules = self.active_config_rules();
+        let disabled_rules = self.disabled_rules.clone();
+        let config_yaml = match &self.runtime_base {
+            Some(base) => base.clone(),
+            None => self.effective_config().unwrap_or_default(),
+        };
+        Ok(RuleMatchContext {
+            endpoint,
+            config_rules,
+            disabled_rules,
+            config_yaml,
+        })
     }
 
     /// Temporarily disables or re-enables one rule. The filtered runtime config is

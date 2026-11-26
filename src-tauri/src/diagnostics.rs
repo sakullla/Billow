@@ -268,22 +268,37 @@ pub fn rule_rows(
     rows
 }
 
-/// Splits one config rule line into kind, payload and proxy. Trailing modifiers
-/// such as `no-resolve` are ignored, and `MATCH`/`FINAL` have no payload.
-pub fn config_rule_parts(text: &str) -> Option<(String, String, String)> {
+/// Trailing rule modifiers parsed from config text (`no-resolve`, `src`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RuleModifiers {
+    pub no_resolve: bool,
+    pub src: bool,
+}
+
+/// Splits one config rule line into kind, payload, proxy and trailing modifiers.
+/// `MATCH`/`FINAL` have no payload.
+pub fn config_rule_parts_with_modifiers(
+    text: &str,
+) -> Option<(String, String, String, RuleModifiers)> {
     let segments: Vec<&str> = text.split(',').map(str::trim).collect();
     if segments.len() < 2 {
         return None;
     }
     let kind = segments[0].to_string();
     let mut end = segments.len();
-    while end > 1
-        && matches!(
-            segments[end - 1].to_ascii_lowercase().as_str(),
-            "no-resolve" | "src"
-        )
-    {
-        end -= 1;
+    let mut modifiers = RuleModifiers::default();
+    while end > 1 {
+        match segments[end - 1].to_ascii_lowercase().as_str() {
+            "no-resolve" => {
+                modifiers.no_resolve = true;
+                end -= 1;
+            }
+            "src" => {
+                modifiers.src = true;
+                end -= 1;
+            }
+            _ => break,
+        }
     }
     if end < 2 {
         return None;
@@ -295,7 +310,768 @@ pub fn config_rule_parts(text: &str) -> Option<(String, String, String)> {
     } else {
         segments[1..end - 1].join(",")
     };
-    Some((kind, payload, proxy))
+    Some((kind, payload, proxy, modifiers))
+}
+
+/// Splits one config rule line into kind, payload and proxy. Trailing modifiers
+/// such as `no-resolve` are ignored, and `MATCH`/`FINAL` have no payload.
+pub fn config_rule_parts(text: &str) -> Option<(String, String, String)> {
+    config_rule_parts_with_modifiers(text).map(|(kind, payload, proxy, _)| (kind, payload, proxy))
+}
+
+/// Maps each config rule's stable `rule_key` to its trailing modifiers (`no-resolve`, `src`).
+pub fn config_rule_modifiers(value: &serde_yaml::Value) -> HashMap<String, RuleModifiers> {
+    let Some(sequence) = value
+        .as_mapping()
+        .and_then(|map| map.get(serde_yaml::Value::String("rules".to_string())))
+        .and_then(serde_yaml::Value::as_sequence)
+    else {
+        return HashMap::new();
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut result = HashMap::new();
+    for item in sequence {
+        let Some(text) = item.as_str() else {
+            continue;
+        };
+        let Some((kind, payload, proxy, modifiers)) = config_rule_parts_with_modifiers(text) else {
+            continue;
+        };
+        let base = rule_base(&kind, &payload, &proxy);
+        let occurrence = seen.entry(base).or_insert(0);
+        let key = rule_key(&kind, &payload, &proxy, *occurrence);
+        *occurrence += 1;
+        if modifiers.no_resolve || modifiers.src {
+            result.insert(key, modifiers);
+        }
+    }
+    result
+}
+
+/// Input for read-only rule match evaluation (`match_rule` IPC).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub struct RuleMatchInput {
+    pub target: String,
+    #[serde(default)]
+    pub dst_port: Option<u16>,
+    #[serde(default)]
+    pub process: Option<String>,
+}
+
+/// Confirmed rule hit aligned with `RulesView` row indexing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleMatchHit {
+    pub row_index: usize,
+    pub rule_key: Option<String>,
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+    pub sub_rule: Option<String>,
+}
+
+/// A rule that would have matched but was skipped because it is temporarily disabled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleMatchCandidate {
+    pub row_index: usize,
+    pub rule_key: Option<String>,
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+    pub sub_rule: Option<String>,
+}
+
+/// A rule ahead of `matched` that cannot be statically ruled out (zero false positives).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleMatchUncertain {
+    pub row_index: usize,
+    pub rule_key: Option<String>,
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+    pub reason: String,
+    pub provider_name: Option<String>,
+    pub needs_dns: bool,
+}
+
+/// Full result of read-only static rule match evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleMatchResult {
+    pub normalized_host: Option<String>,
+    pub normalized_ip: Option<String>,
+    pub effective_port: Option<u16>,
+    pub effective_process: Option<String>,
+    pub matched: Option<RuleMatchHit>,
+    pub skipped_disabled: Vec<RuleMatchCandidate>,
+    pub preceding_uncertain: Vec<RuleMatchUncertain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedRuleTarget {
+    pub host: Option<String>,
+    pub ip: Option<std::net::IpAddr>,
+    pub port: Option<u16>,
+    pub process: Option<String>,
+}
+
+pub(crate) enum RuleEval {
+    Matched(Option<String>),
+    NotMatched,
+    Uncertain {
+        reason: String,
+        provider_name: Option<String>,
+        needs_dns: bool,
+    },
+}
+
+fn parse_port_str(text: &str) -> Result<u16, String> {
+    let port = text
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "目标端口无效（应为 1-65535）".to_string())?;
+    if port == 0 {
+        return Err("目标端口无效（应为 1-65535）".to_string());
+    }
+    Ok(port)
+}
+
+fn validate_domain_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.len() > 253 {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let labels: Vec<&str> = lower.split('.').collect();
+    if labels.is_empty() {
+        return None;
+    }
+    for label in &labels {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return None;
+        }
+        if !label
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_')
+        {
+            return None;
+        }
+    }
+    // Reject all-numeric TLDs / malformed IPv4 like `999.999.999.999` or `12345`.
+    if labels.last().is_some_and(|tld| tld.chars().all(|ch| ch.is_ascii_digit())) {
+        return None;
+    }
+    Some(lower)
+}
+
+pub(crate) fn parse_rule_target(input: &RuleMatchInput) -> Result<ParsedRuleTarget, String> {
+    if input.dst_port == Some(0) {
+        return Err("目标端口无效（应为 1-65535）".to_string());
+    }
+    let raw = input.target.trim();
+    if raw.is_empty() {
+        return Err("请输入要测试的域名或 IP".to_string());
+    }
+    if raw.chars().any(char::is_whitespace) {
+        return Err("目标地址格式无效".to_string());
+    }
+
+    // Strip URL scheme (`https://...`), path/query/fragment, and optional `user@` prefix.
+    let without_scheme = match raw.find("://") {
+        Some(idx) => &raw[idx + 3..],
+        None => raw,
+    };
+    let authority = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    let authority = match authority.rsplit_once('@') {
+        Some((_, host_port)) => host_port,
+        None => authority,
+    };
+    if authority.is_empty() {
+        return Err("目标地址格式无效".to_string());
+    }
+
+    let mut extracted_port: Option<u16> = None;
+    let mut host: Option<String> = None;
+    let mut ip: Option<std::net::IpAddr> = None;
+
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((ip_part, after)) = rest.split_once(']') else {
+            return Err("目标地址格式无效".to_string());
+        };
+        let v6 = ip_part
+            .parse::<std::net::Ipv6Addr>()
+            .map_err(|_| "目标地址格式无效".to_string())?;
+        if let Some(port_str) = after.strip_prefix(':') {
+            extracted_port = Some(parse_port_str(port_str)?);
+        } else if !after.is_empty() {
+            return Err("目标地址格式无效".to_string());
+        }
+        ip = Some(std::net::IpAddr::V6(v6));
+    } else if let Ok(parsed_ip) = authority.parse::<std::net::IpAddr>() {
+        ip = Some(parsed_ip);
+    } else {
+        let colon_count = authority.bytes().filter(|&b| b == b':').count();
+        if colon_count > 1 {
+            return Err("目标地址格式无效".to_string());
+        }
+        let host_part = if let Some((h, p)) = authority.split_once(':') {
+            extracted_port = Some(parse_port_str(p)?);
+            h
+        } else {
+            authority
+        };
+        if let Ok(v4) = host_part.parse::<std::net::Ipv4Addr>() {
+            ip = Some(std::net::IpAddr::V4(v4));
+        } else if let Some(domain) = validate_domain_name(host_part) {
+            host = Some(domain);
+        } else {
+            return Err("目标地址格式无效".to_string());
+        }
+    }
+
+    let port = input.dst_port.or(extracted_port);
+    let process = input
+        .process
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    Ok(ParsedRuleTarget {
+        host,
+        ip,
+        port,
+        process,
+    })
+}
+
+/// Matches a lowercased host against a Mihomo domain pattern (`+.foo`, `.foo`, `*.foo`,
+/// `foo.*.bar`, `foo.+.bar`, or exact `foo.com`).
+pub(crate) fn match_domain_pattern(host: &str, pattern: &str) -> bool {
+    let pat = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+    if pat.is_empty() || host.is_empty() {
+        return false;
+    }
+    if let Some(suffix) = pat.strip_prefix("+.") {
+        if suffix.is_empty() {
+            return false;
+        }
+        return host == suffix
+            || (host.len() > suffix.len()
+                && host.ends_with(suffix)
+                && host.as_bytes()[host.len() - suffix.len() - 1] == b'.');
+    }
+    if pat.starts_with('.') {
+        return host.len() > pat.len() && host.ends_with(&pat);
+    }
+    if !pat.contains(['*', '+', '?']) {
+        return host == pat;
+    }
+    let p = pat.as_bytes();
+    let s = host.as_bytes();
+    let mut prev = vec![false; s.len() + 1];
+    let mut curr = vec![false; s.len() + 1];
+    prev[0] = true;
+    for &pc in p {
+        curr.fill(false);
+        match pc {
+            b'*' => {
+                curr[0] = prev[0];
+                for j in 1..=s.len() {
+                    curr[j] = prev[j] || (s[j - 1] != b'.' && curr[j - 1]);
+                }
+            }
+            b'+' => {
+                curr[0] = prev[0];
+                for j in 1..=s.len() {
+                    curr[j] = prev[j] || curr[j - 1];
+                }
+            }
+            b'?' => {
+                for j in 1..=s.len() {
+                    curr[j] = s[j - 1] != b'.' && prev[j - 1];
+                }
+            }
+            lit => {
+                for j in 1..=s.len() {
+                    curr[j] = s[j - 1] == lit && prev[j - 1];
+                }
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[s.len()]
+}
+
+pub(crate) fn ip_in_cidr(ip: std::net::IpAddr, cidr: &str) -> bool {
+    let cidr = cidr.trim();
+    if cidr.is_empty() {
+        return false;
+    }
+    let (addr_str, prefix_opt) = match cidr.split_once('/') {
+        Some((a, p)) => (a.trim(), Some(p.trim())),
+        None => (cidr, None),
+    };
+    let Ok(net) = addr_str.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match (ip, net) {
+        (std::net::IpAddr::V4(ip4), std::net::IpAddr::V4(net4)) => {
+            let prefix = match prefix_opt {
+                Some(p) => match p.parse::<u32>() {
+                    Ok(v) if v <= 32 => v,
+                    _ => return false,
+                },
+                None => 32,
+            };
+            let mask = if prefix == 0 { 0u32 } else { !0u32 << (32 - prefix) };
+            (u32::from(ip4) & mask) == (u32::from(net4) & mask)
+        }
+        (std::net::IpAddr::V6(ip6), std::net::IpAddr::V6(net6)) => {
+            let prefix = match prefix_opt {
+                Some(p) => match p.parse::<u32>() {
+                    Ok(v) if v <= 128 => v,
+                    _ => return false,
+                },
+                None => 128,
+            };
+            let mask = if prefix == 0 { 0u128 } else { !0u128 << (128 - prefix) };
+            (u128::from(ip6) & mask) == (u128::from(net6) & mask)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn match_port_expr(port: u16, expr: &str) -> bool {
+    for part in expr.split(['/', ',']) {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            if let (Ok(lo), Ok(hi)) = (start.trim().parse::<u16>(), end.trim().parse::<u16>()) {
+                if lo <= hi && (lo..=hi).contains(&port) {
+                    return true;
+                }
+            }
+        } else if let Ok(single) = token.parse::<u16>() {
+            if single == port {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Parses one classical rule-provider line (which omits the proxy column),
+/// inheriting outer `RULE-SET` modifiers (`no-resolve`, `src`).
+pub(crate) fn parse_classical_sub_rule(
+    line: &str,
+    outer_modifiers: RuleModifiers,
+) -> Option<(String, String, RuleModifiers)> {
+    let segments: Vec<&str> = line.split(',').map(str::trim).collect();
+    if segments.is_empty() || segments[0].is_empty() {
+        return None;
+    }
+    let kind = segments[0].to_string();
+    let normalized = normalize_rule_kind(&kind);
+    if normalized == "match" || normalized == "final" {
+        return Some((kind, String::new(), outer_modifiers));
+    }
+    let mut end = segments.len();
+    let mut modifiers = outer_modifiers;
+    while end > 1 {
+        match segments[end - 1].to_ascii_lowercase().as_str() {
+            "no-resolve" => {
+                modifiers.no_resolve = true;
+                end -= 1;
+            }
+            "src" => {
+                modifiers.src = true;
+                end -= 1;
+            }
+            _ => break,
+        }
+    }
+    if end < 2 {
+        return None;
+    }
+    let payload = segments[1..end].join(",");
+    Some((kind, payload, modifiers))
+}
+
+fn process_basename(value: &str) -> &str {
+    value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
+pub(crate) fn evaluate_explicit_rule(
+    kind: &str,
+    payload: &str,
+    modifiers: RuleModifiers,
+    target: &ParsedRuleTarget,
+) -> RuleEval {
+    let normalized = normalize_rule_kind(kind);
+    let trimmed = payload.trim();
+
+    if normalized == "match" || normalized == "final" {
+        return RuleEval::Matched(None);
+    }
+
+    if normalized.starts_with("src") {
+        return RuleEval::Uncertain {
+            reason: format!("源属性规则（{kind}）需结合实际连接来源判断"),
+            provider_name: None,
+            needs_dns: false,
+        };
+    }
+
+    match normalized.as_str() {
+        "domain" => {
+            let Some(host) = target.host.as_deref() else {
+                return RuleEval::NotMatched;
+            };
+            let pat = trimmed.trim_end_matches('.').to_ascii_lowercase();
+            if !pat.is_empty() && host == pat {
+                RuleEval::Matched(None)
+            } else {
+                RuleEval::NotMatched
+            }
+        }
+        "domainsuffix" => {
+            let Some(host) = target.host.as_deref() else {
+                return RuleEval::NotMatched;
+            };
+            let pat = trimmed
+                .trim_start_matches("+.")
+                .trim_start_matches('.')
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            if !pat.is_empty()
+                && (host == pat
+                    || (host.len() > pat.len()
+                        && host.ends_with(&pat)
+                        && host.as_bytes()[host.len() - pat.len() - 1] == b'.'))
+            {
+                RuleEval::Matched(None)
+            } else {
+                RuleEval::NotMatched
+            }
+        }
+        "domainkeyword" => {
+            let Some(host) = target.host.as_deref() else {
+                return RuleEval::NotMatched;
+            };
+            let pat = trimmed.to_ascii_lowercase();
+            if !pat.is_empty() && host.contains(&pat) {
+                RuleEval::Matched(None)
+            } else {
+                RuleEval::NotMatched
+            }
+        }
+        "domainwildcard" => {
+            let Some(host) = target.host.as_deref() else {
+                return RuleEval::NotMatched;
+            };
+            if match_domain_pattern(host, trimmed) {
+                RuleEval::Matched(None)
+            } else {
+                RuleEval::NotMatched
+            }
+        }
+        "domainregex" => {
+            if target.host.is_none() {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: format!("正则规则（{kind}）需内核运行时评估"),
+                    provider_name: None,
+                    needs_dns: false,
+                }
+            }
+        }
+        "ipcidr" | "ipcidr6" => {
+            if modifiers.src {
+                return RuleEval::Uncertain {
+                    reason: "源地址 IP 规则需结合实际来源 IP 判断".to_string(),
+                    provider_name: None,
+                    needs_dns: false,
+                };
+            }
+            if let Some(ip) = target.ip {
+                if ip_in_cidr(ip, trimmed) {
+                    RuleEval::Matched(None)
+                } else {
+                    RuleEval::NotMatched
+                }
+            } else if modifiers.no_resolve {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: "IP 规则未设置 no-resolve，域名需先解析 DNS 才能判定".to_string(),
+                    provider_name: None,
+                    needs_dns: true,
+                }
+            }
+        }
+        "ipsuffix" => {
+            if modifiers.src {
+                return RuleEval::Uncertain {
+                    reason: "源地址 IP 规则需结合实际来源 IP 判断".to_string(),
+                    provider_name: None,
+                    needs_dns: false,
+                };
+            }
+            if target.ip.is_none() && modifiers.no_resolve {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: if target.ip.is_none() {
+                        "IP-SUFFIX 规则未设置 no-resolve，域名需先解析 DNS 才能判定".to_string()
+                    } else {
+                        format!("规则 {kind} 需内核运行时评估")
+                    },
+                    provider_name: None,
+                    needs_dns: target.ip.is_none(),
+                }
+            }
+        }
+        "dstport" => match target.port {
+            Some(port) => {
+                if match_port_expr(port, trimmed) {
+                    RuleEval::Matched(None)
+                } else {
+                    RuleEval::NotMatched
+                }
+            }
+            None => RuleEval::Uncertain {
+                reason: "未提供目标端口，无法排除前置端口规则".to_string(),
+                provider_name: None,
+                needs_dns: false,
+            },
+        },
+        "processname" => match target.process.as_deref() {
+            Some(proc_val) => {
+                let base = process_basename(proc_val);
+                if base.eq_ignore_ascii_case(trimmed) || proc_val.eq_ignore_ascii_case(trimmed) {
+                    RuleEval::Matched(None)
+                } else {
+                    RuleEval::NotMatched
+                }
+            }
+            None => RuleEval::Uncertain {
+                reason: "未提供进程信息，无法排除前置进程规则".to_string(),
+                provider_name: None,
+                needs_dns: false,
+            },
+        },
+        "processpath" => match target.process.as_deref() {
+            Some(proc_val) => {
+                let norm_input = proc_val.replace('\\', "/");
+                let norm_rule = trimmed.replace('\\', "/");
+                if norm_input.eq_ignore_ascii_case(&norm_rule) {
+                    RuleEval::Matched(None)
+                } else if !norm_input.contains('/')
+                    && process_basename(&norm_rule).eq_ignore_ascii_case(&norm_input)
+                {
+                    RuleEval::Uncertain {
+                        reason: "仅提供了进程名，无法完全验证进程路径规则".to_string(),
+                        provider_name: None,
+                        needs_dns: false,
+                    }
+                } else {
+                    RuleEval::NotMatched
+                }
+            }
+            None => RuleEval::Uncertain {
+                reason: "未提供进程信息，无法排除前置进程规则".to_string(),
+                provider_name: None,
+                needs_dns: false,
+            },
+        },
+        "processnameregex" | "processpathregex" => match target.process.as_deref() {
+            Some(_) => RuleEval::Uncertain {
+                reason: format!("正则进程规则（{kind}）需内核运行时评估"),
+                provider_name: None,
+                needs_dns: false,
+            },
+            None => RuleEval::Uncertain {
+                reason: "未提供进程信息，无法排除前置进程规则".to_string(),
+                provider_name: None,
+                needs_dns: false,
+            },
+        },
+        "geosite" => {
+            if target.host.is_none() {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: format!("GEOSITE,{trimmed} 需内核查询 GeoSite 数据库判定"),
+                    provider_name: None,
+                    needs_dns: false,
+                }
+            }
+        }
+        "geoip" => {
+            if modifiers.src {
+                RuleEval::Uncertain {
+                    reason: "源地址 GEOIP 规则需结合实际来源 IP 判断".to_string(),
+                    provider_name: None,
+                    needs_dns: false,
+                }
+            } else if target.ip.is_some() {
+                RuleEval::Uncertain {
+                    reason: format!("GEOIP,{trimmed} 需内核查询 GeoIP 数据库判定"),
+                    provider_name: None,
+                    needs_dns: false,
+                }
+            } else if modifiers.no_resolve {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: format!("GEOIP,{trimmed} 未设置 no-resolve，域名需先解析 DNS 并查询 GeoIP 数据库"),
+                    provider_name: None,
+                    needs_dns: true,
+                }
+            }
+        }
+        "ipasn" => {
+            if target.ip.is_none() && modifiers.no_resolve {
+                RuleEval::NotMatched
+            } else {
+                RuleEval::Uncertain {
+                    reason: if target.ip.is_none() {
+                        format!("IP-ASN,{trimmed} 未设置 no-resolve，域名需先解析 DNS 并查询 ASN 数据库")
+                    } else {
+                        format!("IP-ASN,{trimmed} 需内核查询 ASN 数据库判定")
+                    },
+                    provider_name: None,
+                    needs_dns: target.ip.is_none(),
+                }
+            }
+        }
+        "and" | "or" | "not" | "subrule" => RuleEval::Uncertain {
+            reason: format!("复合规则（{kind}）需内核运行时评估"),
+            provider_name: None,
+            needs_dns: false,
+        },
+        _ => RuleEval::Uncertain {
+            reason: format!("规则 {kind} 依赖运行时连接上下文，无法静态排除"),
+            provider_name: None,
+            needs_dns: false,
+        },
+    }
+}
+
+/// Evaluates `input` top-down against `rows` (aligned with `RulesView`), penetrating
+/// locally cached `RULE-SET` providers from `config_yaml` + `home`.
+pub fn match_rules(
+    rows: &[RuleRowView],
+    config_yaml: &str,
+    home: Option<&Path>,
+    input: &RuleMatchInput,
+) -> Result<RuleMatchResult, String> {
+    let target = parse_rule_target(input)?;
+    let mut config: serde_yaml::Value =
+        serde_yaml::from_str(config_yaml).unwrap_or(serde_yaml::Value::Null);
+    let _ = config.apply_merge();
+    let modifiers_by_key = config_rule_modifiers(&config);
+
+    let mut matched: Option<RuleMatchHit> = None;
+    let mut skipped_disabled: Vec<RuleMatchCandidate> = Vec::new();
+    let mut preceding_uncertain: Vec<RuleMatchUncertain> = Vec::new();
+
+    for (row_index, row) in rows.iter().enumerate() {
+        let modifiers = row
+            .key
+            .as_deref()
+            .and_then(|key| modifiers_by_key.get(key))
+            .copied()
+            .unwrap_or_default();
+
+        let eval = if normalize_rule_kind(&row.kind) == "ruleset" {
+            match crate::resources::match_rule_provider_in_config(
+                &config,
+                &row.payload,
+                home,
+                &target,
+                modifiers,
+            ) {
+                crate::resources::RuleProviderMatch::Matched(sub_rule) => {
+                    RuleEval::Matched(Some(sub_rule))
+                }
+                crate::resources::RuleProviderMatch::NotMatched => RuleEval::NotMatched,
+                crate::resources::RuleProviderMatch::Uncertain { reason, needs_dns } => {
+                    RuleEval::Uncertain {
+                        reason,
+                        provider_name: Some(row.payload.clone()),
+                        needs_dns,
+                    }
+                }
+            }
+        } else {
+            evaluate_explicit_rule(&row.kind, &row.payload, modifiers, &target)
+        };
+
+        if row.disabled {
+            if let RuleEval::Matched(sub_rule) = eval {
+                skipped_disabled.push(RuleMatchCandidate {
+                    row_index,
+                    rule_key: row.key.clone(),
+                    kind: row.kind.clone(),
+                    payload: row.payload.clone(),
+                    proxy: row.proxy.clone(),
+                    sub_rule,
+                });
+            }
+            continue;
+        }
+
+        match eval {
+            RuleEval::Matched(sub_rule) => {
+                matched = Some(RuleMatchHit {
+                    row_index,
+                    rule_key: row.key.clone(),
+                    kind: row.kind.clone(),
+                    payload: row.payload.clone(),
+                    proxy: row.proxy.clone(),
+                    sub_rule,
+                });
+                break;
+            }
+            RuleEval::Uncertain {
+                reason,
+                provider_name,
+                needs_dns,
+            } => {
+                preceding_uncertain.push(RuleMatchUncertain {
+                    row_index,
+                    rule_key: row.key.clone(),
+                    kind: row.kind.clone(),
+                    payload: row.payload.clone(),
+                    proxy: row.proxy.clone(),
+                    reason,
+                    provider_name,
+                    needs_dns,
+                });
+            }
+            RuleEval::NotMatched => {}
+        }
+    }
+
+    Ok(RuleMatchResult {
+        normalized_host: target.host,
+        normalized_ip: target.ip.map(|ip| ip.to_string()),
+        effective_port: target.port,
+        effective_process: target.process,
+        matched,
+        skipped_disabled,
+        preceding_uncertain,
+    })
 }
 
 /// Drops disabled rules from the `rules:` list while keeping the occurrence
@@ -2751,5 +3527,338 @@ rules:
             (Some("tun".to_string()), None)
         );
         assert_eq!(log_hint("level=info msg=connected"), (None, None));
+    }
+
+    fn test_match_rows(config_yaml: &str, disabled: &[&str]) -> Vec<RuleRowView> {
+        let value: serde_yaml::Value = serde_yaml::from_str(config_yaml).unwrap();
+        let cfg = config_rules(&value);
+        let disabled_set: BTreeSet<String> = disabled.iter().map(|s| (*s).to_string()).collect();
+        let kernel: Vec<RuleView> = cfg
+            .iter()
+            .filter(|rule| !disabled_set.contains(&rule.key))
+            .map(|rule| RuleView {
+                kind: rule.kind.clone(),
+                payload: rule.payload.clone(),
+                proxy: rule.proxy.clone(),
+                hit_count: None,
+                last_hit: None,
+            })
+            .collect();
+        rule_rows(&cfg, &kernel, &disabled_set)
+    }
+
+    #[test]
+    fn match_rules_parses_targets_and_rejects_invalid_inputs() {
+        let yaml = "rules:\n  - MATCH,Proxy\n";
+        let rows = test_match_rows(yaml, &[]);
+
+        let url_res = match_rules(
+            &rows,
+            yaml,
+            None,
+            &RuleMatchInput {
+                target: "https://Example.COM:8443/a/b?x=1#top".to_string(),
+                dst_port: None,
+                process: Some("  curl  ".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(url_res.normalized_host.as_deref(), Some("example.com"));
+        assert_eq!(url_res.normalized_ip, None);
+        assert_eq!(url_res.effective_port, Some(8443));
+        assert_eq!(url_res.effective_process.as_deref(), Some("curl"));
+
+        // Explicit dst_port overrides port in target.
+        let override_port = match_rules(
+            &rows,
+            yaml,
+            None,
+            &RuleMatchInput {
+                target: "1.1.1.1:53".to_string(),
+                dst_port: Some(443),
+                process: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(override_port.normalized_host, None);
+        assert_eq!(override_port.normalized_ip.as_deref(), Some("1.1.1.1"));
+        assert_eq!(override_port.effective_port, Some(443));
+
+        // IPv6 bare and bracketed with port.
+        let v6_bare = match_rules(
+            &rows,
+            yaml,
+            None,
+            &RuleMatchInput {
+                target: "2001:db8::1".to_string(),
+                dst_port: None,
+                process: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(v6_bare.normalized_ip.as_deref(), Some("2001:db8::1"));
+        assert_eq!(v6_bare.effective_port, None);
+
+        let v6_port = match_rules(
+            &rows,
+            yaml,
+            None,
+            &RuleMatchInput {
+                target: "[2001:db8::1]:8080".to_string(),
+                dst_port: None,
+                process: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(v6_port.normalized_ip.as_deref(), Some("2001:db8::1"));
+        assert_eq!(v6_port.effective_port, Some(8080));
+
+        // Invalid inputs must return Err.
+        for bad in [
+            RuleMatchInput { target: "".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "   ".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "bad host".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "999.999.999.999".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "example.com:0".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "example.com:99999".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "[2001:db8::1".into(), dst_port: None, process: None },
+            RuleMatchInput { target: "example.com".into(), dst_port: Some(0), process: None },
+        ] {
+            assert!(match_rules(&rows, yaml, None, &bad).is_err(), "expected error for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn match_rules_evaluates_explicit_domain_ip_port_and_process_rules() {
+        let yaml = r#"
+rules:
+  - DOMAIN,exact.example.com,Direct
+  - DOMAIN-SUFFIX,suffix.org,ProxyA
+  - DOMAIN-KEYWORD,kwtest,ProxyB
+  - DOMAIN-WILDCARD,*.wild.io,ProxyW
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR6,2001:db8::/32,DIRECT,no-resolve
+  - DST-PORT,80/443/8000-8080,PortProxy
+  - PROCESS-NAME,curl,ProcProxy
+  - MATCH,Fallback
+"#;
+        let rows = test_match_rows(yaml, &[]);
+
+        // Domain exact
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "EXACT.example.com.".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((0, "Direct")));
+        assert!(r.preceding_uncertain.is_empty());
+
+        // Domain suffix
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "a.b.suffix.org".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((1, "ProxyA")));
+
+        // Domain keyword
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "my-kwtest-host.net".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((2, "ProxyB")));
+
+        // Domain wildcard single label vs multi label
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "sub.wild.io".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((3, "ProxyW")));
+        let r_multi = match_rules(&rows, yaml, None, &RuleMatchInput { target: "a.b.wild.io".into(), dst_port: Some(22), process: Some("ssh".into()) }).unwrap();
+        assert_eq!(r_multi.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((8, "Fallback")));
+        assert!(r_multi.preceding_uncertain.is_empty());
+
+        // IP-CIDR v4 & v6
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "10.1.2.3".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((4, "DIRECT")));
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "2001:db8::cafe".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((5, "DIRECT")));
+
+        // DST-PORT range
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "unmatched.test:8050".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((6, "PortProxy")));
+        assert!(r.preceding_uncertain.is_empty());
+
+        // PROCESS-NAME with full path input
+        let r = match_rules(&rows, yaml, None, &RuleMatchInput { target: "unmatched.test:22".into(), dst_port: None, process: Some("/usr/bin/curl".into()) }).unwrap();
+        assert_eq!(r.matched.as_ref().map(|m| (m.row_index, m.proxy.as_str())), Some((7, "ProcProxy")));
+        assert!(r.preceding_uncertain.is_empty());
+    }
+
+    #[test]
+    fn match_rules_skips_disabled_rules_and_reports_honest_preceding_uncertain() {
+        let yaml = r#"
+rules:
+  - DOMAIN-SUFFIX,example.com,DisabledProxy
+  - IP-CIDR,192.168.0.0/16,LAN
+  - IP-CIDR,10.0.0.0/8,LAN-NoResolve,no-resolve
+  - GEOIP,CN,DIRECT
+  - GEOSITE,cn,DIRECT
+  - DST-PORT,443,HttpsProxy
+  - PROCESS-NAME,firefox,BrowserProxy
+  - DOMAIN,app.example.com,ActiveProxy
+  - GEOIP,US,AfterMatchShouldNotAppear
+  - MATCH,Fallback
+"#;
+        let disabled_key = rule_key("DOMAIN-SUFFIX", "example.com", "DisabledProxy", 0);
+        let rows = test_match_rows(yaml, &[&disabled_key]);
+
+        let res = match_rules(
+            &rows,
+            yaml,
+            None,
+            &RuleMatchInput {
+                target: "app.example.com".to_string(),
+                dst_port: None,
+                process: None,
+            },
+        )
+        .unwrap();
+
+        // Row 0 was disabled so it was skipped and recorded.
+        assert_eq!(res.skipped_disabled.len(), 1);
+        assert_eq!(res.skipped_disabled[0].row_index, 0);
+        assert_eq!(res.skipped_disabled[0].proxy, "DisabledProxy");
+
+        // Confirmed match is row 7 (ActiveProxy).
+        let hit = res.matched.as_ref().expect("should match row 7");
+        assert_eq!(hit.row_index, 7);
+        assert_eq!(hit.proxy, "ActiveProxy");
+
+        // Preceding uncertain should include rows 1 (IP-CIDR no no-resolve), 3 (GEOIP no no-resolve),
+        // 4 (GEOSITE), 5 (DST-PORT missing port), 6 (PROCESS-NAME missing process).
+        // Row 2 (IP-CIDR with no-resolve) MUST NOT be uncertain; row 8 (after match) MUST NOT be included.
+        let uncertain_indices: Vec<usize> = res.preceding_uncertain.iter().map(|u| u.row_index).collect();
+        assert_eq!(uncertain_indices, vec![1, 3, 4, 5, 6]);
+        assert!(res.preceding_uncertain[0].needs_dns); // IP-CIDR without no-resolve
+        assert!(res.preceding_uncertain[1].needs_dns); // GEOIP without no-resolve
+        assert!(!res.preceding_uncertain[2].needs_dns); // GEOSITE
+        assert!(!res.preceding_uncertain[3].needs_dns); // DST-PORT
+        assert!(!res.preceding_uncertain[4].needs_dns); // PROCESS-NAME
+    }
+
+    #[test]
+    fn match_rules_penetrates_inline_yaml_text_and_mrs_providers_and_handles_missing_or_oversized() {
+        let dir = std::env::temp_dir().join(format!("billow-match-rules-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("rules")).unwrap();
+
+        fs::write(dir.join("domain.mrs"), include_bytes!("../testdata/domain.mrs")).unwrap();
+        fs::write(dir.join("ipcidr.mrs"), include_bytes!("../testdata/ipcidr.mrs")).unwrap();
+        fs::write(
+            dir.join("yaml_classical.yaml"),
+            "payload:\n  - DOMAIN-SUFFIX,yaml-hit.org\n  - IP-CIDR,172.16.0.0/12,no-resolve\n",
+        )
+        .unwrap();
+        // Create an oversized file (> 8 MiB).
+        fs::write(dir.join("huge.txt"), vec![b'a'; (crate::resources::MAX_PREVIEW_BYTES as usize) + 16]).unwrap();
+
+        let yaml = r#"
+rule-providers:
+  inline_set:
+    type: inline
+    behavior: classical
+    payload:
+      - DOMAIN,inline.test
+  yaml_set:
+    type: file
+    path: ./yaml_classical.yaml
+    behavior: classical
+    format: yaml
+  mrs_domain:
+    type: file
+    path: ./domain.mrs
+    behavior: domain
+    format: mrs
+  mrs_ip:
+    type: file
+    path: ./ipcidr.mrs
+    behavior: ipcidr
+    format: mrs
+  missing_set:
+    type: http
+    url: https://example.invalid/missing.yaml
+    behavior: domain
+  huge_set:
+    type: file
+    path: ./huge.txt
+    behavior: domain
+    format: text
+rules:
+  - RULE-SET,missing_set,MissingOut
+  - RULE-SET,huge_set,HugeOut
+  - RULE-SET,inline_set,InlineOut
+  - RULE-SET,yaml_set,YamlOut
+  - RULE-SET,mrs_domain,MrsDomainOut
+  - RULE-SET,mrs_ip,MrsIpOut
+  - MATCH,Fallback
+"#;
+        let rows = test_match_rows(yaml, &[]);
+
+        // 1. MRS domain penetration (`+.google.com` in testdata/domain.mrs) with preceding missing & huge sets.
+        let r_mrs_domain = match_rules(
+            &rows,
+            yaml,
+            Some(&dir),
+            &RuleMatchInput { target: "mail.google.com".into(), ..Default::default() },
+        )
+        .unwrap();
+        let hit = r_mrs_domain.matched.as_ref().expect("should hit mrs_domain");
+        assert_eq!(hit.row_index, 4);
+        assert_eq!(hit.proxy, "MrsDomainOut");
+        assert_eq!(hit.sub_rule.as_deref(), Some("+.google.com"));
+        // missing_set (row 0) and huge_set (row 1) should be reported as preceding_uncertain with provider_name.
+        assert_eq!(r_mrs_domain.preceding_uncertain.len(), 2);
+        assert_eq!(r_mrs_domain.preceding_uncertain[0].provider_name.as_deref(), Some("missing_set"));
+        assert_eq!(r_mrs_domain.preceding_uncertain[1].provider_name.as_deref(), Some("huge_set"));
+
+        // 2. MRS IP-CIDR penetration (`2001:db8::/32` in testdata/ipcidr.mrs).
+        // Notice: missing_set and huge_set have behavior: domain, so for an IP input they are fast-pathed to NotMatched!
+        let r_mrs_ip = match_rules(
+            &rows,
+            yaml,
+            Some(&dir),
+            &RuleMatchInput { target: "2001:db8::42".into(), ..Default::default() },
+        )
+        .unwrap();
+        let hit = r_mrs_ip.matched.as_ref().expect("should hit mrs_ip");
+        assert_eq!(hit.row_index, 5);
+        assert_eq!(hit.proxy, "MrsIpOut");
+        assert_eq!(hit.sub_rule.as_deref(), Some("2001:db8::/32"));
+        assert!(r_mrs_ip.preceding_uncertain.is_empty());
+
+        // 3. Inline penetration.
+        let r_inline = match_rules(
+            &rows,
+            yaml,
+            Some(&dir),
+            &RuleMatchInput { target: "inline.test".into(), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(r_inline.matched.as_ref().map(|m| (m.row_index, m.sub_rule.as_deref())), Some((2, Some("DOMAIN,inline.test"))));
+
+        // 4. YAML classical penetration.
+        let r_yaml = match_rules(
+            &rows,
+            yaml,
+            Some(&dir),
+            &RuleMatchInput { target: "api.yaml-hit.org".into(), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(r_yaml.matched.as_ref().map(|m| (m.row_index, m.sub_rule.as_deref())), Some((3, Some("DOMAIN-SUFFIX,yaml-hit.org"))));
+
+        // 5. Pure domain reaching mrs_ip (without no-resolve) -> mrs_ip recorded in preceding_uncertain with needs_dns: true, then hits MATCH.
+        let r_fallback = match_rules(
+            &rows,
+            yaml,
+            Some(&dir),
+            &RuleMatchInput { target: "unknown-domain.example".into(), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(r_fallback.matched.as_ref().map(|m| m.row_index), Some(6));
+        let ip_uncertain = r_fallback
+            .preceding_uncertain
+            .iter()
+            .find(|u| u.provider_name.as_deref() == Some("mrs_ip"))
+            .expect("mrs_ip should be marked uncertain for domain without no-resolve");
+        assert!(ip_uncertain.needs_dns);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

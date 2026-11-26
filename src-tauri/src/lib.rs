@@ -1286,6 +1286,29 @@ fn set_rule_disabled(app: AppHandle, command: RuleToggle) -> Result<RulesSnapsho
     })
 }
 
+/// Read-only static rule match evaluation (explicit rules + cached local RULE-SET penetration).
+/// Captures runtime state under a short lock, then fetches live rules and evaluates off-lock.
+#[tauri::command]
+async fn match_rule(
+    app: AppHandle,
+    input: diagnostics::RuleMatchInput,
+) -> Result<diagnostics::RuleMatchResult, String> {
+    let ctx = with_session_raw(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.rule_match_context(runtime)
+    })?;
+    // Validate input early before making a controller HTTP round-trip.
+    diagnostics::parse_rule_target(&input)?;
+    let home = kernel_home(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let kernel_rules = diagnostics::fetch_rules(&ctx.endpoint)?;
+        let rows = diagnostics::rule_rows(&ctx.config_rules, &kernel_rules, &ctx.disabled_rules);
+        diagnostics::match_rules(&rows, &ctx.config_yaml, home.as_deref(), &input)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 #[tauri::command(async)]
 fn kernel_providers(app: AppHandle) -> ProvidersSnapshot {
     with_session_raw(&app, |session| {
@@ -2912,6 +2935,7 @@ pub fn run() {
             dns_query,
             exit_ip,
             kernel_rules,
+            match_rule,
             set_rule_disabled,
             clear_logs,
             export_logs,
