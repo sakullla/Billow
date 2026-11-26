@@ -13,7 +13,7 @@ import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import { useColumnResize } from '../lib/ui/columns'
 import { useVirtualList } from '../lib/ui/virtual'
-import type { RuleRow } from '../lib/types'
+import type { RuleMatchResult, RuleRow } from '../lib/types'
 
 const props = defineProps<{ compact?: boolean }>()
 const store = useStore()
@@ -158,14 +158,14 @@ const virtual = useVirtualList(
 )
 const visible = computed(() => capped.value.slice(virtual.window.value.start, virtual.window.value.end))
 
-onMounted(() => {
-  void nextTick(() => virtual.measure(scroller.value))
-})
+let suppressFilterReset = false
+let pendingRestoreScrollTop: number | null = null
 
 // A remounted list (empty state round trip) and a changed filter both start at the
 // first row instead of the previous offset (R31).
 watch(scroller, (el) => virtual.measure(el))
 watch([query, kind, proxy, sort, onlyDisabled], () => {
+  if (suppressFilterReset) return
   limit.value = PAGE
   virtual.reset(scroller.value)
 })
@@ -178,7 +178,8 @@ function resetFilters() {
 }
 
 const labelOf = (rule: RuleRow) => rule.payload || rule.kind
-const isRuleSet = (rule: RuleRow) => /^rule-?set$/i.test(rule.kind.trim()) && Boolean(rule.payload.trim())
+const isRuleSetKind = (ruleKind: string) => /^rule-?set$/i.test(ruleKind.trim())
+const isRuleSet = (rule: RuleRow) => isRuleSetKind(rule.kind) && Boolean(rule.payload.trim())
 
 function ruleExpression(rule: RuleRow): string {
   return rule.payload ? `${rule.kind},${rule.payload},${rule.proxy}` : `${rule.kind},${rule.proxy}`
@@ -193,19 +194,185 @@ async function copyRuleRow(rule: RuleRow) {
 const groupNames = computed(() => new Set(snap.value.node_catalog.map((group) => group.name)))
 const isGroup = (name: string) => groupNames.value.has(name)
 
+// ── Static rule matcher panel (R2) ──
+const matcherOpen = ref(false)
+const matchExtraOpen = ref(false)
+const matchTarget = ref('')
+const matchPort = ref('')
+const matchProcess = ref('')
+const matchPending = ref(false)
+const matchError = ref<string | null>(null)
+const matchResult = shallowRef<RuleMatchResult | null>(null)
+const matchInputRef = ref<HTMLInputElement | null>(null)
+const highlightedRowIndex = ref<number | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+let matchGen = 0
+
+function clearHighlight() {
+  if (highlightTimer) {
+    clearTimeout(highlightTimer)
+    highlightTimer = null
+  }
+  highlightedRowIndex.value = null
+}
+
+function toggleMatcher() {
+  if (!snap.value.kernel_running) return
+  matcherOpen.value = !matcherOpen.value
+  if (matcherOpen.value) {
+    void nextTick(() => matchInputRef.value?.focus({ preventScroll: true }))
+  }
+}
+
+function clearMatch() {
+  ++matchGen
+  matchTarget.value = ''
+  matchPort.value = ''
+  matchProcess.value = ''
+  matchError.value = null
+  matchResult.value = null
+  matchPending.value = false
+  clearHighlight()
+  void nextTick(() => matchInputRef.value?.focus({ preventScroll: true }))
+}
+
+function parseOptionalPort(raw: string): { value: number | null; error: string | null } {
+  const trimmed = raw.trim()
+  if (!trimmed) return { value: null, error: null }
+  if (!/^\d{1,5}$/.test(trimmed)) return { value: null, error: tr('目标端口无效（应为 1-65535）') }
+  const port = Number(trimmed)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return { value: null, error: tr('目标端口无效（应为 1-65535）') }
+  }
+  return { value: port, error: null }
+}
+
+async function runMatch() {
+  if (!snap.value.kernel_running) {
+    matchError.value = tr('内核未运行，连接后可测试规则匹配')
+    return
+  }
+  const target = matchTarget.value.trim()
+  if (!target) {
+    matchError.value = tr('请输入要测试的域名或 IP')
+    return
+  }
+  const parsedPort = parseOptionalPort(matchPort.value)
+  if (parsedPort.error) {
+    matchError.value = parsedPort.error
+    return
+  }
+  const processName = matchProcess.value.trim() || null
+  matchError.value = null
+  matchPending.value = true
+  const ticket = ++matchGen
+  try {
+    const result = await store.matchRule({
+      target,
+      dst_port: parsedPort.value,
+      process: processName,
+    })
+    if (ticket !== matchGen) return
+    matchResult.value = result
+  } catch (err) {
+    if (ticket !== matchGen) return
+    matchError.value = tr(err instanceof Error ? err.message : String(err))
+  } finally {
+    if (ticket === matchGen) matchPending.value = false
+  }
+}
+
+async function locateRuleRow(rowIndex: number, ruleKey?: string | null) {
+  if (!rules.value.length) return
+  const findPos = () =>
+    filtered.value.findIndex((item) => item.index === rowIndex || (ruleKey != null && item.rule.key === ruleKey))
+  let pos = findPos()
+  if (pos < 0 && isFiltered.value) {
+    resetFilters()
+    store.toast(tr('已清空当前筛选以定位命中规则'), 'info')
+    await nextTick()
+    pos = findPos()
+  }
+  if (pos < 0) {
+    store.toast(tr('未在当前规则列表中找到该行'), 'info')
+    return
+  }
+  if (pos >= limit.value) {
+    limit.value = Math.ceil((pos + 1) / PAGE) * PAGE
+  }
+  await nextTick()
+  const targetTop = Math.max(0, pos * ROW_HEIGHT.value - ROW_HEIGHT.value * 2)
+  if (scroller.value) {
+    scroller.value.scrollTop = targetTop
+    virtual.measure(scroller.value)
+  } else {
+    virtual.scrollTop.value = targetTop
+  }
+  clearHighlight()
+  const resolvedIndex = filtered.value[pos]?.index ?? rowIndex
+  highlightedRowIndex.value = resolvedIndex
+  highlightTimer = setTimeout(() => {
+    highlightedRowIndex.value = null
+    highlightTimer = null
+  }, 3200)
+}
+
+function saveRuleReturn(targetPage: 'resources' | 'proxies') {
+  store.ruleReturn.value = {
+    sessionId: store.connectionSessionId.value,
+    profileId: snap.value.active_id,
+    targetPage,
+    query: query.value,
+    kindFilter: String(kind.value),
+    proxyFilter: String(proxy.value),
+    disabledOnly: onlyDisabled.value,
+    listScrollTop: scroller.value?.scrollTop ?? virtual.scrollTop.value,
+    limit: limit.value,
+    matcherOpen: matcherOpen.value,
+    matchTarget: matchTarget.value,
+    matchPort: matchPort.value,
+    matchProcess: matchProcess.value,
+    matchResult: matchResult.value,
+  }
+}
+
+function openRuleSet(name: string) {
+  const trimmed = name.trim()
+  if (!trimmed) return
+  saveRuleReturn('resources')
+  store.openProvider('rule', trimmed)
+}
+
+function openProxyGroup(name: string) {
+  const trimmed = name.trim()
+  if (!trimmed) return
+  saveRuleReturn('proxies')
+  store.go('proxies', trimmed)
+}
+
 function onPolicyClick(policyName: string) {
   if (isGroup(policyName)) {
-    store.go('proxies', policyName)
+    openProxyGroup(policyName)
     return
   }
   proxy.value = proxy.value === policyName ? 'all' : policyName
 }
 
 const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; rule?: RuleRow } | null>(null)
+let menuTriggerEl: HTMLElement | null = null
+
+function closeCtxMenu() {
+  ctxMenu.value = null
+  if (menuTriggerEl?.isConnected) {
+    menuTriggerEl.focus({ preventScroll: true })
+  }
+  menuTriggerEl = null
+}
 
 function openHeadMenu(event: MouseEvent) {
   if (props.compact || !ruleCols.customized.value) return
   event.preventDefault()
+  menuTriggerEl = null
   ctxMenu.value = {
     x: event.clientX,
     y: event.clientY,
@@ -213,9 +380,7 @@ function openHeadMenu(event: MouseEvent) {
   }
 }
 
-function openRowMenu(rule: RuleRow, event: MouseEvent) {
-  if (props.compact) return
-  event.preventDefault()
+function buildRowMenuItems(rule: RuleRow): MenuItem[] {
   const items: MenuItem[] = [
     { id: 'copy', get label() { return tr('复制规则') }, icon: 'copy' },
     {
@@ -242,12 +407,28 @@ function openRowMenu(rule: RuleRow, event: MouseEvent) {
       icon: rule.disabled ? 'play' : 'pause',
     })
   }
-  ctxMenu.value = { x: event.clientX, y: event.clientY, items, rule }
+  return items
+}
+
+function openRowMenu(rule: RuleRow, event: MouseEvent) {
+  if (props.compact) return
+  event.preventDefault()
+  menuTriggerEl = null
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items: buildRowMenuItems(rule), rule }
+}
+
+function openMobileRowMenu(rule: RuleRow, event: MouseEvent) {
+  const el = event.currentTarget as HTMLElement | null
+  menuTriggerEl = el
+  const rect = el?.getBoundingClientRect()
+  const x = rect ? rect.right : event.clientX
+  const y = rect ? rect.bottom + 4 : event.clientY
+  ctxMenu.value = { x, y, items: buildRowMenuItems(rule), rule }
 }
 
 function onContextSelect(item: MenuItem) {
   const target = ctxMenu.value?.rule
-  ctxMenu.value = null
+  closeCtxMenu()
   if (item.id === 'reset-cols') {
     ruleCols.resetAll()
     return
@@ -256,8 +437,8 @@ function onContextSelect(item: MenuItem) {
   if (item.id === 'copy') void copyRuleRow(target)
   else if (item.id === 'filter-kind') kind.value = kind.value === target.kind ? 'all' : target.kind
   else if (item.id === 'filter-proxy') proxy.value = proxy.value === target.proxy ? 'all' : target.proxy
-  else if (item.id === 'open-ruleset') store.openProvider('rule', target.payload)
-  else if (item.id === 'open-group') store.go('proxies', target.proxy)
+  else if (item.id === 'open-ruleset') openRuleSet(target.payload)
+  else if (item.id === 'open-group') openProxyGroup(target.proxy)
   else if (item.id === 'toggle') void toggle(target)
 }
 
@@ -294,6 +475,9 @@ async function toggle(rule: RuleRow) {
       disabling ? tr('已临时禁用 {0}，重启后恢复', { 0: labelOf(rule) }) : tr('已恢复 {0}', { 0: labelOf(rule) }),
       'success',
     )
+    if (matcherOpen.value && matchResult.value && matchTarget.value.trim()) {
+      void runMatch()
+    }
   } catch (err) {
     store.toast(tr('规则没有修改：{0}', { 0: err instanceof Error ? err.message : String(err) }), 'error')
   } finally {
@@ -301,11 +485,76 @@ async function toggle(rule: RuleRow) {
   }
 }
 
+function consumeDiagnosticTarget(): boolean {
+  const target = store.diagnosticTarget.value
+  if (!target || target.kind !== 'rule-match') return false
+  store.diagnosticTarget.value = null
+  matcherOpen.value = true
+  matchTarget.value = target.target
+  matchPort.value = target.dstPort != null ? String(target.dstPort) : ''
+  matchProcess.value = target.process ?? ''
+  if (matchPort.value || matchProcess.value) {
+    matchExtraOpen.value = true
+  }
+  matchError.value = null
+  if (snap.value.kernel_running) {
+    void runMatch()
+  }
+  return true
+}
+
+function restoreRuleReturn(): boolean {
+  const saved = store.ruleReturn.value
+  if (!saved) return false
+  store.ruleReturn.value = null
+  if (
+    !snap.value.kernel_running ||
+    saved.sessionId !== store.connectionSessionId.value ||
+    saved.profileId !== snap.value.active_id
+  ) {
+    return false
+  }
+  suppressFilterReset = true
+  query.value = saved.query
+  kind.value = saved.kindFilter
+  proxy.value = saved.proxyFilter
+  onlyDisabled.value = saved.disabledOnly
+  limit.value = Math.max(PAGE, saved.limit)
+  matcherOpen.value = saved.matcherOpen
+  matchTarget.value = saved.matchTarget
+  matchPort.value = saved.matchPort
+  matchProcess.value = saved.matchProcess
+  if (saved.matchPort || saved.matchProcess) {
+    matchExtraOpen.value = true
+  }
+  matchResult.value = saved.matchResult
+  pendingRestoreScrollTop = saved.listScrollTop
+  void nextTick(() => {
+    suppressFilterReset = false
+  })
+  return true
+}
+
+watch(
+  () => store.diagnosticTarget.value,
+  (target) => {
+    if (target?.kind === 'rule-match') {
+      consumeDiagnosticTarget()
+    }
+  },
+)
+
 // A stopped kernel drops every row instead of keeping the previous session (R31).
 watch(
   [() => snap.value.kernel_running, () => snap.value.active_id, () => store.current.value?.updated_ms],
   ([running]) => {
     ++loadId
+    ++matchGen
+    clearHighlight()
+    matchResult.value = null
+    matchError.value = null
+    matchPending.value = false
+    pendingRestoreScrollTop = null
     rules.value = []
     limit.value = PAGE
     resetFilters()
@@ -321,8 +570,25 @@ watch(
   },
 )
 
-onMounted(() => void load())
-onBeforeUnmount(() => { ++loadId })
+onMounted(() => {
+  const consumedTarget = consumeDiagnosticTarget()
+  if (!consumedTarget) {
+    restoreRuleReturn()
+  }
+  void load().then(async () => {
+    await nextTick()
+    if (pendingRestoreScrollTop != null && scroller.value) {
+      scroller.value.scrollTop = pendingRestoreScrollTop
+      pendingRestoreScrollTop = null
+    }
+    virtual.measure(scroller.value)
+  })
+})
+onBeforeUnmount(() => {
+  ++loadId
+  ++matchGen
+  clearHighlight()
+})
 </script>
 
 <template>
@@ -343,6 +609,21 @@ onBeforeUnmount(() => { ++loadId })
         <p v-if="rules.length && !hasHits" class="muted small" data-testid="rules-no-hits"> {{ tr('当前内核不提供命中信息，已隐藏命中列。') }} </p>
       </div>
       <div class="head-actions">
+        <button
+          v-if="!rules.length"
+          type="button"
+          class="btn ghost sm rule-matcher-toggle"
+          :class="{ active: matcherOpen }"
+          :disabled="!snap.kernel_running"
+          :aria-expanded="matcherOpen"
+          aria-controls="rule-matcher-panel"
+          :title="!snap.kernel_running ? tr('内核未运行，连接后可测试规则匹配') : tr('测试域名或 IP 会命中哪条规则')"
+          data-testid="rule-match-toggle"
+          @click="toggleMatcher()"
+        >
+          <Icon name="locate" :size="14" />
+          {{ tr('匹配测试') }}
+        </button>
         <button
           v-if="!compact && ruleCols.customized.value"
           type="button"
@@ -368,10 +649,16 @@ onBeforeUnmount(() => { ++loadId })
 
     <Skeleton v-if="loading && !rules.length && snap.kernel_running" variant="list" :rows="8" />
 
-    <div v-if="rules.length" class="toolbar rule-toolbar">
+    <div v-if="rules.length" class="toolbar rule-toolbar" data-testid="rule-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" :placeholder="tr('搜索规则内容或策略')" data-page-search />
+        <span
+          v-if="!compact && isFiltered"
+          class="toolbar-count search-match-count small mono"
+          data-testid="rule-match-count"
+          aria-live="polite"
+        >{{ filtered.length }} / {{ rules.length }}</span>
         <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
         <button
           v-if="query"
@@ -415,8 +702,268 @@ onBeforeUnmount(() => { ++loadId })
       > {{ tr('已禁用') }} {{ disabledCount }}
       </button>
       <Segmented v-if="hasHits" v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
+      <button
+        type="button"
+        class="btn ghost sm rule-matcher-toggle"
+        :class="{ active: matcherOpen }"
+        :disabled="!snap.kernel_running"
+        :aria-expanded="matcherOpen"
+        aria-controls="rule-matcher-panel"
+        :title="!snap.kernel_running ? tr('内核未运行，连接后可测试规则匹配') : tr('测试域名或 IP 会命中哪条规则')"
+        data-testid="rule-match-toggle"
+        @click="toggleMatcher()"
+      >
+        <Icon name="locate" :size="14" />
+        {{ tr('匹配测试') }}
+      </button>
       <button v-if="isFiltered" type="button" class="btn ghost sm" data-testid="reset-rule-toolbar" @click="resetFilters"> {{ tr('重置') }} </button>
     </div>
+
+    <section v-if="matcherOpen" id="rule-matcher-panel" class="card rule-matcher" data-testid="rule-matcher-panel">
+      <div class="rule-matcher-head">
+        <div>
+          <h2 class="rule-matcher-title">{{ tr('规则匹配测试') }}</h2>
+          <p class="muted small">{{ tr('静态按顺序评估当前生效规则与本地已缓存规则集，不发起网络请求') }}</p>
+        </div>
+        <button
+          type="button"
+          class="icon-btn sm"
+          :aria-label="tr('收起匹配测试')"
+          data-testid="rule-match-close"
+          @click="matcherOpen = false"
+        >
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+
+      <form class="rule-matcher-form" data-testid="rule-match-form" @submit.prevent="runMatch">
+        <div class="rule-matcher-row">
+          <input
+            ref="matchInputRef"
+            v-model="matchTarget"
+            class="input mono grow"
+            type="text"
+            placeholder="example.com / 1.1.1.1 / host:443"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+            enterkeyhint="search"
+            :disabled="!snap.kernel_running"
+            :aria-label="tr('目标域名或 IP')"
+            :aria-invalid="matchError ? 'true' : undefined"
+            data-testid="rule-match-target"
+            @input="matchError = null"
+          />
+          <button
+            type="button"
+            class="btn ghost sm"
+            :class="{ active: matchExtraOpen || Boolean(matchPort || matchProcess) }"
+            :aria-expanded="matchExtraOpen"
+            data-testid="rule-match-extra-toggle"
+            @click="matchExtraOpen = !matchExtraOpen"
+          >
+            <Icon name="sliders" :size="13" />
+            {{ tr('端口/进程') }}
+          </button>
+          <button
+            type="submit"
+            class="btn primary sm"
+            :disabled="!snap.kernel_running || matchPending"
+            :aria-busy="matchPending || undefined"
+            data-testid="rule-match-submit"
+          >
+            <span v-if="matchPending" class="spinner xs" aria-hidden="true" />
+            <Icon v-else name="locate" :size="14" />
+            {{ matchPending ? tr('匹配中') : tr('测试') }}
+          </button>
+          <button
+            v-if="matchTarget || matchPort || matchProcess || matchResult || matchError"
+            type="button"
+            class="btn ghost sm"
+            data-testid="rule-match-clear"
+            @click="clearMatch()"
+          >
+            {{ tr('清空') }}
+          </button>
+        </div>
+
+        <div v-if="matchExtraOpen" class="rule-matcher-extra" data-testid="rule-match-extra">
+          <label class="rule-matcher-field">
+            <span class="small muted">{{ tr('目标端口（可选）') }}</span>
+            <input
+              v-model="matchPort"
+              class="input mono"
+              type="text"
+              inputmode="numeric"
+              placeholder="443"
+              :disabled="!snap.kernel_running"
+              data-testid="rule-match-port"
+              @input="matchError = null"
+            />
+          </label>
+          <label class="rule-matcher-field grow">
+            <span class="small muted">{{ tr('进程名或路径（可选）') }}</span>
+            <input
+              v-model="matchProcess"
+              class="input mono"
+              type="text"
+              :placeholder="tr('如 curl 或 /usr/bin/curl')"
+              spellcheck="false"
+              autocomplete="off"
+              :disabled="!snap.kernel_running"
+              data-testid="rule-match-process"
+              @input="matchError = null"
+            />
+          </label>
+        </div>
+
+        <p v-if="!snap.kernel_running" class="muted small rule-matcher-status" role="status" data-testid="rule-match-blocked">
+          <Icon name="info" :size="13" /> {{ tr('内核未运行，连接后可测试规则匹配') }}
+        </p>
+        <p v-if="matchError" class="field-error small rule-matcher-status" role="alert" data-testid="rule-match-error">
+          <Icon name="alert" :size="13" /> {{ matchError }}
+        </p>
+      </form>
+
+      <div v-if="matchResult" class="rule-matcher-result" aria-live="polite" data-testid="rule-match-result">
+        <p class="muted small mono rule-matcher-summary" data-testid="rule-match-summary">
+          {{ matchResult.normalized_host || matchResult.normalized_ip || matchTarget.trim() }}<template v-if="matchResult.effective_port != null">:{{ matchResult.effective_port }}</template><template v-if="matchResult.effective_process"> · {{ matchResult.effective_process }}</template>
+        </p>
+
+        <div v-if="matchResult.matched" class="rule-matcher-hit" data-testid="rule-match-hit">
+          <div class="rule-matcher-hit-main">
+            <span class="tag accent">{{ tr('命中规则') }}</span>
+            <span class="mono small muted">#{{ matchResult.matched.row_index + 1 }}</span>
+            <span class="tag">{{ matchResult.matched.kind }}</span>
+            <span v-if="matchResult.matched.payload" class="mono ellipsis">{{ matchResult.matched.payload }}</span>
+            <span class="muted" aria-hidden="true">→</span>
+            <span class="rule-proxy" :data-policy="matchResult.matched.proxy.toUpperCase()">
+              <span class="rule-proxy-badge">{{ matchResult.matched.proxy }}</span>
+            </span>
+          </div>
+          <p v-if="matchResult.matched.sub_rule" class="rule-matcher-sub small" data-testid="rule-match-sub-rule">
+            <span class="muted">{{ tr('命中规则集条目') }}：</span>
+            <code class="mono">{{ matchResult.matched.sub_rule }}</code>
+          </p>
+          <div class="rule-matcher-actions">
+            <button
+              type="button"
+              class="btn ghost sm"
+              data-testid="rule-match-locate"
+              @click="locateRuleRow(matchResult.matched.row_index, matchResult.matched.rule_key)"
+            >
+              <Icon name="locate" :size="13" />
+              {{ tr('定位规则') }}
+            </button>
+            <button
+              v-if="isRuleSetKind(matchResult.matched.kind) && matchResult.matched.payload"
+              type="button"
+              class="btn ghost sm"
+              data-testid="rule-match-open-ruleset"
+              @click="openRuleSet(matchResult.matched.payload)"
+            >
+              <Icon name="database" :size="13" />
+              {{ tr('查看规则集') }}
+            </button>
+            <button
+              v-if="isGroup(matchResult.matched.proxy)"
+              type="button"
+              class="btn ghost sm"
+              data-testid="rule-match-open-group"
+              @click="openProxyGroup(matchResult.matched.proxy)"
+            >
+              <Icon name="globe" :size="13" />
+              {{ tr('前往代理组') }}
+            </button>
+          </div>
+        </div>
+        <p v-else class="muted small rule-matcher-miss" data-testid="rule-match-miss">
+          <Icon name="info" :size="13" /> {{ tr('未静态命中任何规则') }}
+        </p>
+
+        <div v-if="matchResult.skipped_disabled.length" class="rule-matcher-section" data-testid="rule-match-skipped">
+          <div class="rule-matcher-section-head small">
+            <span class="tag warn">{{ tr('已跳过') }}</span>
+            <span class="muted">{{ tr('已跳过 {0} 条临时禁用规则', { 0: matchResult.skipped_disabled.length }) }}</span>
+          </div>
+          <ul class="rule-matcher-list">
+            <li
+              v-for="(item, idx) in matchResult.skipped_disabled"
+              :key="`skip-${item.row_index}-${idx}`"
+              class="rule-matcher-item small"
+              data-testid="rule-match-skipped-item"
+            >
+              <div class="rule-matcher-item-main">
+                <span class="mono muted">#{{ item.row_index + 1 }}</span>
+                <span class="tag">{{ item.kind }}</span>
+                <span v-if="item.payload" class="mono ellipsis">{{ item.payload }}</span>
+                <span class="muted" aria-hidden="true">→</span>
+                <span class="mono">{{ item.proxy }}</span>
+                <code v-if="item.sub_rule" class="mono muted">({{ item.sub_rule }})</code>
+              </div>
+              <button
+                type="button"
+                class="btn ghost sm"
+                @click="locateRuleRow(item.row_index, item.rule_key)"
+              >{{ tr('定位') }}</button>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="matchResult.preceding_uncertain.length" class="rule-matcher-section" data-testid="rule-match-uncertain">
+          <div class="rule-matcher-section-head small">
+            <span class="tag">{{ tr('待核验') }}</span>
+            <span class="muted">{{ tr('前置待核验（{0}）', { 0: matchResult.preceding_uncertain.length }) }} · {{ tr('以下规则位于确认命中之前，静态条件下无法完全排除') }}</span>
+          </div>
+          <ul class="rule-matcher-list">
+            <li
+              v-for="(item, idx) in matchResult.preceding_uncertain"
+              :key="`uncertain-${item.row_index}-${idx}`"
+              class="rule-matcher-item small"
+              data-testid="rule-match-uncertain-item"
+            >
+              <div class="rule-matcher-item-body">
+                <div class="rule-matcher-item-main">
+                  <span class="mono muted">#{{ item.row_index + 1 }}</span>
+                  <span class="tag">{{ item.kind }}</span>
+                  <span v-if="item.payload" class="mono ellipsis">{{ item.payload }}</span>
+                  <span class="muted" aria-hidden="true">→</span>
+                  <span class="mono">{{ item.proxy }}</span>
+                </div>
+                <p class="muted small rule-matcher-reason">{{ tr(item.reason) }}</p>
+              </div>
+              <div class="rule-matcher-item-actions">
+                <button
+                  type="button"
+                  class="btn ghost sm"
+                  @click="locateRuleRow(item.row_index, item.rule_key)"
+                >{{ tr('定位') }}</button>
+                <button
+                  v-if="item.provider_name"
+                  type="button"
+                  class="btn ghost sm"
+                  data-testid="rule-match-uncertain-provider"
+                  @click="openRuleSet(item.provider_name)"
+                >
+                  <Icon name="database" :size="13" />
+                  {{ tr('查看规则集') }}
+                </button>
+                <button
+                  v-if="item.needs_dns"
+                  type="button"
+                  class="btn ghost sm"
+                  data-testid="rule-match-uncertain-dns"
+                  @click="store.dnsQueryOpen.value = true"
+                >
+                  <Icon name="search" :size="13" />
+                  {{ tr('DNS 查询') }}
+                </button>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
 
     <EmptyState v-if="!snap.kernel_running" variant="unavailable" icon="route" :title="tr('内核未运行')" :description="tr('连接后可以查看当前配置生效的分流规则。')">
       <template #action>
@@ -547,10 +1094,12 @@ onBeforeUnmount(() => { ++loadId })
         v-for="({ rule, index }, position) in visible"
         :key="rule.key ?? `i${index}`"
         class="rule-row"
-        :class="{ disabled: rule.disabled }"
+        :class="{ disabled: rule.disabled, highlighted: highlightedRowIndex === index }"
         :data-row-index="virtual.window.value.start + position"
+        :data-rule-index="index"
         :data-rule-key="rule.key ?? undefined"
         :data-rule-disabled="rule.disabled ? 'true' : undefined"
+        :data-rule-highlighted="highlightedRowIndex === index ? 'true' : undefined"
         data-testid="rule-row"
         @contextmenu="openRowMenu(rule, $event)"
       >
@@ -583,7 +1132,7 @@ onBeforeUnmount(() => { ++loadId })
               :title="tr('查看规则集「{0}」详情', { 0: rule.payload })"
               :aria-label="tr('查看规则集 {0}', { 0: rule.payload })"
               data-testid="rule-open-provider"
-              @click="store.openProvider('rule', rule.payload)"
+              @click="openRuleSet(rule.payload)"
             >
               <Icon name="external" :size="12" />
             </button>
@@ -650,7 +1199,19 @@ onBeforeUnmount(() => { ++loadId })
           >
             {{ toggling[rule.key] ? (rule.disabled ? tr('恢复中') : tr('禁用中')) : rule.disabled ? tr('启用') : tr('禁用') }}
           </button>
-          <span v-else class="rule-toggle muted small">—</span>
+          <span v-else-if="!compact" class="rule-toggle muted small">—</span>
+          <button
+            v-if="compact"
+            type="button"
+            class="icon-btn sm rule-row-more"
+            aria-haspopup="menu"
+            :aria-label="tr('更多操作')"
+            :title="tr('更多操作')"
+            data-testid="rule-row-menu"
+            @click="openMobileRowMenu(rule, $event)"
+          >
+            <Icon name="more" :size="14" />
+          </button>
         </span>
       </div>
       <div v-if="virtual.tail.value" class="rule-spacer" aria-hidden="true" :style="{ height: `${virtual.tail.value}px` }" />
@@ -670,7 +1231,178 @@ onBeforeUnmount(() => { ++loadId })
       :items="ctxMenu?.items ?? []"
       :label="tr('规则操作')"
       @select="onContextSelect"
-      @close="ctxMenu = null"
+      @close="closeCtxMenu"
     />
   </div>
 </template>
+
+<style scoped>
+.rule-matcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.rule-matcher-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rule-matcher-title {
+  margin: 0;
+  font-size: var(--text-md, 15px);
+  font-weight: 600;
+}
+
+.rule-matcher-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-matcher-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-matcher-row .input {
+  min-width: 180px;
+}
+
+.rule-matcher-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.rule-matcher-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+}
+
+.rule-matcher-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.rule-matcher-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.rule-matcher-summary {
+  margin: 0;
+}
+
+.rule-matcher-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm, 8px);
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border);
+}
+
+.rule-matcher-hit-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-matcher-sub {
+  margin: 0;
+  word-break: break-all;
+}
+
+.rule-matcher-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rule-matcher-miss {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.rule-matcher-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rule-matcher-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-matcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rule-matcher-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border);
+}
+
+.rule-matcher-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.rule-matcher-item-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rule-matcher-reason {
+  margin: 0;
+}
+
+.rule-matcher-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.rule-row.highlighted {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+</style>
