@@ -877,15 +877,46 @@ pub struct TunConfig {
     pub device: String,
     /// Accepted `stack` value (`mips`, `mixed` or `gvisor`).
     pub stack: String,
-    /// Requested MTU; 0 keeps the platform default (1500 for this stack).
+    /// Requested MTU; 0 keeps the platform default (9000 for this stack).
     pub mtu: u32,
     pub auto_route: bool,
     pub auto_detect_interface: bool,
     pub strict_route: bool,
-    /// `dns-hijack` entries. The userspace stack answers UDP/TCP port 53.
-    pub dns_hijack: Vec<String>,
+    /// Parsed `dns-hijack` address ports. The userspace stack answers a target
+    /// only when it equals an entry, or when an entry is unspecified and the
+    /// target port is 53 (pinned `ShouldHijackDns`).
+    pub dns_hijack: Vec<SocketAddr>,
+    /// `dns-mode`; empty/disabled keeps the OS DNS untouched.
+    pub dns_mode: TunDnsMode,
+    /// `inet6-address` prefixes; pinned default `fdfe:dcba:9876::1/126`.
+    pub inet6_address: Vec<String>,
     pub route_address: Vec<String>,
     pub route_exclude_address: Vec<String>,
+}
+
+/// Pinned `tun.dns-mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunDnsMode {
+    /// `""` or `disabled`: never touch the system resolver.
+    Disabled,
+    /// `native`: point the system resolver at the TUN DNS address.
+    Native,
+    /// `hijack`: as native; the stack also owns the DNS redirect path.
+    Hijack,
+}
+
+impl TunDnsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TunDnsMode::Disabled => "disabled",
+            TunDnsMode::Native => "native",
+            TunDnsMode::Hijack => "hijack",
+        }
+    }
+
+    pub fn touches_system_resolver(self) -> bool {
+        !matches!(self, TunDnsMode::Disabled)
+    }
 }
 
 impl Default for TunConfig {
@@ -899,7 +930,9 @@ impl Default for TunConfig {
             auto_route: true,
             auto_detect_interface: true,
             strict_route: false,
-            dns_hijack: vec!["0.0.0.0:53".to_string()],
+            dns_hijack: vec![SocketAddr::from(([0, 0, 0, 0], 53))],
+            dns_mode: TunDnsMode::Disabled,
+            inet6_address: vec!["fdfe:dcba:9876::1/126".to_string()],
             route_address: Vec::new(),
             route_exclude_address: Vec::new(),
         }
@@ -918,7 +951,14 @@ impl TunConfig {
         }
     }
 
-    /// Whether `dns-hijack` asks the userspace stack to answer `:53`.
+    /// Pinned `ShouldHijackDns`: exact target match, or an unspecified entry
+    /// matching any target on port 53.
+    pub fn should_hijack_dns(&self, target: SocketAddr) -> bool {
+        self.dns_hijack
+            .iter()
+            .any(|entry| *entry == target || (entry.ip().is_unspecified() && target.port() == 53))
+    }
+
     pub fn hijack_dns(&self) -> bool {
         !self.dns_hijack.is_empty()
     }
@@ -1174,13 +1214,9 @@ fn parse_tun(
         match key {
             "enable" => tun.enable = parse_bool(item, path, &label)?,
             "device" => {
-                let device = parse_string(item, path, &label)?;
-                if device.len() > 15 {
-                    return Err(ConfigError::InvalidValue(format!(
-                        "{path}: tun.device '{device}' is longer than the 15-byte interface name limit"
-                    )));
-                }
-                tun.device = device;
+                // Platform name limits differ (Unix IFNAMSIZ vs Windows
+                // adapter alias); the device backend validates its own shape.
+                tun.device = parse_string(item, path, &label)?;
             }
             "stack" => {
                 let stack = parse_string(item, path, &label)?.to_ascii_lowercase();
@@ -1229,16 +1265,34 @@ fn parse_tun(
             "auto-route" => tun.auto_route = parse_bool(item, path, &label)?,
             "auto-detect-interface" => tun.auto_detect_interface = parse_bool(item, path, &label)?,
             "strict-route" => tun.strict_route = parse_bool(item, path, &label)?,
+            "dns-mode" => {
+                let mode = parse_string(item, path, &label)?.to_ascii_lowercase();
+                tun.dns_mode = match mode.as_str() {
+                    "" | "disabled" => TunDnsMode::Disabled,
+                    "native" => TunDnsMode::Native,
+                    "hijack" => TunDnsMode::Hijack,
+                    other => {
+                        return Err(ConfigError::Unsupported(format!(
+                            "{path}: tun.dns-mode '{other}' is not a pinned value (accepted: '', disabled, native, hijack)"
+                        )))
+                    }
+                };
+            }
             "dns-hijack" => {
                 let entries = parse_tun_string_list(item, path, &label)?;
-                for entry in &entries {
-                    if !entry.ends_with(":53") {
-                        warnings.push(format!(
-                            "tun.dns-hijack entry '{entry}' is recorded but the userspace stack answers only UDP/TCP port 53"
-                        ));
-                    }
+                tun.dns_hijack = parse_dns_hijack_entries(&entries, path)?;
+            }
+            "inet6-address" => {
+                let prefixes = parse_tun_prefix_list(item, path, &label)?;
+                if let Some(bad) = prefixes.iter().find(|prefix| !prefix.contains(':')) {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "{path}: tun.inet6-address '{bad}' is not an IPv6 prefix"
+                    )));
                 }
-                tun.dns_hijack = entries;
+                tun.inet6_address = prefixes;
+                if tun.inet6_address.is_empty() {
+                    warnings.push("tun.inet6-address is empty; no IPv6 device address is assigned".to_string());
+                }
             }
             "route-address" => {
                 tun.route_address = parse_tun_prefix_list(item, path, &label)?;
@@ -1253,7 +1307,7 @@ fn parse_tun(
             }
             other => {
                 return Err(ConfigError::Unsupported(format!(
-                    "{path}: tun.{other} is not implemented (accepted keys: enable, device, stack, mtu, auto-route, auto-detect-interface, strict-route, dns-hijack, route-address, route-exclude-address)"
+                    "{path}: tun.{other} is not implemented (accepted keys: enable, device, stack, mtu, auto-route, auto-detect-interface, strict-route, dns-hijack, dns-mode, inet6-address, route-address, route-exclude-address)"
                 )))
             }
         }
@@ -1266,13 +1320,40 @@ fn parse_tun(
     } else {
         warnings.push("'tun' is present but disabled; no device is created".to_string());
     }
-    if tun.strict_route && !tun.auto_detect_interface {
+    if tun.strict_route {
         warnings.push(
-            "tun.strict-route is true with auto-detect-interface false; the runner requires a detected physical interface or fails by name"
+            "tun.strict-route is implemented as requiring a detected physical interface and binding kernel-originated sockets to it; pinned fwmark/rule/table details are not applied"
                 .to_string(),
         );
     }
     Ok(tun)
+}
+
+fn parse_dns_hijack_entries(
+    entries: &[String],
+    path: &str,
+) -> Result<Vec<SocketAddr>, ConfigError> {
+    let mut parsed = Vec::with_capacity(entries.len());
+    for raw in entries {
+        let text = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
+        // Pinned `parseTun` replaces the first "any" with 0.0.0.0.
+        let text = text.replacen("any", "0.0.0.0", 1);
+        let target: SocketAddr = text.parse().map_err(|error| {
+            ConfigError::InvalidValue(format!(
+                "{path}: tun.dns-hijack '{raw}' is not an ip:port address: {error}"
+            ))
+        })?;
+        if target.port() != 53 {
+            return Err(ConfigError::Unsupported(format!(
+                "{path}: tun.dns-hijack '{raw}' targets port {}, but the userspace stack only answers port 53",
+                target.port()
+            )));
+        }
+        if !parsed.contains(&target) {
+            parsed.push(target);
+        }
+    }
+    Ok(parsed)
 }
 
 fn parse_tun_string_list(
@@ -1729,6 +1810,12 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         None => (Vec::new(), RulesSource::None),
         Some(value) => (parse_rules(value, path, &context, "rules")?, RulesSource::Inline),
     };
+
+    if !general_ipv6 && tun.enable {
+        warnings.push(
+            "ipv6: false clears the TUN IPv6 address, routes and DNS entries".to_string(),
+        );
+    }
 
     let config = Config {
         listen: SocketAddr::new(host, port),
@@ -3654,6 +3741,22 @@ pub mod ipnet_like {
         /// Address with all host bits cleared, as stored in the file.
         pub fn network(&self) -> IpAddr {
             self.addr
+        }
+
+        /// The network prefix with host bits cleared.
+        pub fn masked(&self) -> IpNet {
+            let addr = match self.addr {
+                IpAddr::V4(addr) => IpAddr::V4(std::net::Ipv4Addr::from(
+                    u32::from(addr) & v4_mask(self.prefix),
+                )),
+                IpAddr::V6(addr) => IpAddr::V6(std::net::Ipv6Addr::from(
+                    u128::from(addr) & v6_mask(self.prefix),
+                )),
+            };
+            IpNet {
+                addr,
+                prefix: self.prefix,
+            }
         }
 
         pub fn contains(&self, ip: IpAddr) -> bool {

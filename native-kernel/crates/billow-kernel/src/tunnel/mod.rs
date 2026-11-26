@@ -56,7 +56,7 @@ const DNS_SLOTS: usize = 32;
 
 /// Tunables of one tunnel. The defaults are the values the iOS extension
 /// starts with; tests shrink them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TunnelOptions {
     /// Tunnel MTU used for the advertised TCP MSS (never for receiving).
     pub mtu: usize,
@@ -74,8 +74,9 @@ pub struct TunnelOptions {
     pub udp_idle: Duration,
     /// An idle TCP flow is closed after this long.
     pub tcp_idle: Duration,
-    /// Answer `:53` queries from the configured DNS instead of forwarding.
-    pub hijack_dns: bool,
+    /// Pinned `ShouldHijackDns`: exact targets, or an unspecified entry that
+    /// matches any target on port 53.
+    pub dns_hijack: Vec<SocketAddr>,
     /// Per-direction relay buffer.
     pub buffer_size: usize,
     /// Engine limits (dial timeouts, UDP association idle) for this host.
@@ -93,7 +94,7 @@ impl Default for TunnelOptions {
             datagram_queue: 256,
             udp_idle: Duration::from_secs(60),
             tcp_idle: Duration::from_secs(300),
-            hijack_dns: true,
+            dns_hijack: vec![SocketAddr::from(([0, 0, 0, 0], 53))],
             buffer_size: 16 * 1024,
             limits: Limits {
                 // The extension relays whole packets; a 16 KiB copy buffer per
@@ -103,6 +104,16 @@ impl Default for TunnelOptions {
                 ..Limits::default()
             },
         }
+    }
+}
+
+impl TunnelOptions {
+    /// Pinned `ShouldHijackDns`: exact target match, or an unspecified entry
+    /// matching any target on port 53.
+    pub fn should_hijack_dns(&self, target: SocketAddr) -> bool {
+        self.dns_hijack
+            .iter()
+            .any(|entry| *entry == target || (entry.ip().is_unspecified() && target.port() == 53))
     }
 }
 
@@ -363,6 +374,8 @@ impl Tunnel {
             .enable_all()
             .build()
             .map_err(|error| format!("tunnel runtime: {error}"))?;
+        let mtu = options.mtu;
+        let datagram_queue = options.datagram_queue;
         let inner = Arc::new(Inner {
             kernel: Mutex::new(Some(kernel)),
             config_path,
@@ -378,12 +391,12 @@ impl Tunnel {
             closed: AtomicBool::new(false),
             runtime: Mutex::new(Some(runtime.handle().clone())),
         });
-        let (udp_tx, udp_rx) = mpsc::channel::<UdpCommand>(options.datagram_queue.max(1));
+        let (udp_tx, udp_rx) = mpsc::channel::<UdpCommand>(datagram_queue.max(1));
         *inner
             .udp
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(udp_tx);
-        let (reply_tx, reply_rx) = mpsc::channel::<UdpReply>(options.datagram_queue.max(1));
+        let (reply_tx, reply_rx) = mpsc::channel::<UdpReply>(datagram_queue.max(1));
         let task_inner = inner.clone();
         runtime.spawn(udp_task(task_inner, udp_rx, reply_rx, reply_tx));
         tracing::info!(
@@ -391,7 +404,7 @@ impl Tunnel {
                 .session()
                 .map(|session| session.listen_port().to_string())
                 .unwrap_or_else(|| "?".to_string()),
-            mtu = options.mtu,
+            mtu = mtu,
             "tunnel data plane started"
         );
         Ok(Tunnel {
@@ -550,7 +563,7 @@ impl Tunnel {
         };
         let src = SocketAddr::new(datagram.src, datagram.src_port);
         let dst = SocketAddr::new(datagram.dst, datagram.dst_port);
-        if self.inner.options.hijack_dns && datagram.dst_port == 53 {
+        if self.inner.options.should_hijack_dns(dst) {
             if let Some(session) = self.inner.session() {
                 if let Some(dns) = session.runtime.dns.clone() {
                     let Ok(slot) = self.inner.dns_slots.clone().try_acquire_owned() else {
@@ -994,7 +1007,7 @@ async fn tcp_flow(
         }
     };
     let dns = session.runtime.dns.clone();
-    if inner.options.hijack_dns && key.dst.port() == 53 && dns.is_some() {
+    if inner.options.should_hijack_dns(key.dst) && dns.is_some() {
         dns_tcp_flow(inner, tcp, rx, dns.expect("checked above"), idle_limit).await;
         return;
     }

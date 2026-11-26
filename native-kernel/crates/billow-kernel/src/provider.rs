@@ -1068,7 +1068,7 @@ fn http_request(
         .map_err(|e| format!("resolve {addr}: {e}"))?
         .next()
         .ok_or_else(|| format!("resolve {addr}: no address"))?;
-    let tcp = TcpStream::connect_timeout(&socket, Duration::from_secs(15))
+    let tcp = crate::outbound::tcp_stream_std_blocking(socket, Duration::from_secs(15))
         .map_err(|e| format!("connect {addr}: {e}"))?;
     tcp.set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| format!("{addr}: {e}"))?;

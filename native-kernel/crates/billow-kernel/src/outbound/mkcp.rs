@@ -992,9 +992,14 @@ pub async fn connect(
     let target = super::resolve(address, port)
         .await
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).or_else(|_| {
-        std::net::UdpSocket::bind("[::]:0")
-    })?;
+    let socket = super::udp_socket_std_blocking(
+        if target.is_ipv4() {
+            "0.0.0.0:0".parse().expect("literal")
+        } else {
+            "[::]:0".parse().expect("literal")
+        },
+        &crate::proxies::DialerOptions::default(),
+    )?;
     socket.connect(target)?;
     socket.set_read_timeout(Some(Duration::from_millis(50)))?;
     connect_packet_io(Box::new(UdpIo { socket }), options)

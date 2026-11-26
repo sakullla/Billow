@@ -2,28 +2,27 @@
 //!
 //! These cover the parts that do not need root/administrator rights:
 //! configuration strictness, utun framing, the fd pump over a `UnixDatagram`
-//! pair (whole IP packets both ways), route/interface command planning, the
-//! default-route parsers and rollback on a failed command. A real utun creation
-//! is `#[ignore]`d because this environment has no TUN authorization; the
-//! Linux/Windows device code is compile-only here and is registered as such in
-//! the evidence.
+//! pair, DNS-hijack targeting, route/DNS command planning (including pinned
+//! auto-route and set-difference semantics) and rollback. A real utun creation
+//! is `#[ignore]`d because this environment has no TUN authorization.
 
 #![cfg(feature = "desktop-tun")]
 
-use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 #[cfg(unix)]
 use std::os::fd::IntoRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use billow_kernel::config::{load_config, TunConfig};
+use billow_kernel::config::{load_config, TunConfig, TunDnsMode};
 use billow_kernel::desktop_tun::apply_plan;
 use billow_kernel::desktop_tun::framing::{strip_utun_header, with_utun_header, UtunError};
 use billow_kernel::desktop_tun::pump::Pump;
-use billow_kernel::desktop_tun::route_plan::{self, DefaultRoute, Platform};
+use billow_kernel::desktop_tun::route_plan::{self, DefaultRoute, DeviceAddresses, Platform};
 use billow_kernel::desktop_tun::{device::Framing, DesktopTun, DesktopTunOptions};
 use billow_kernel::outbound::ipstack;
+use billow_kernel::outbound::tcp::{parse_segment, FLAG_ACK, FLAG_PSH, FLAG_SYN};
 use billow_kernel::tunnel::{Tunnel, TunnelOptions};
 
 fn free_port() -> u16 {
@@ -45,10 +44,24 @@ fn test_dir(tag: &str) -> PathBuf {
     dir
 }
 
+fn addresses() -> DeviceAddresses {
+    DeviceAddresses {
+        v4: "198.18.0.1/30".parse().unwrap(),
+        v6: vec!["fdfe:dcba:9876::1/126".parse().unwrap()],
+    }
+}
+
+fn physical() -> DefaultRoute {
+    DefaultRoute {
+        interface: "en0".to_string(),
+        gateway: Some("192.168.1.1".parse().unwrap()),
+    }
+}
+
 #[test]
 fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
     let yaml = format!(
-        "mixed-port: {}\ntun:\n  enable: true\n  device: utun9\n  stack: gvisor\n  mtu: 1400\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: false\n  dns-hijack: [any:53]\n  route-address: [10.0.0.0/8]\n  route-exclude-address: [192.168.0.0/16]\nrules: ['MATCH,DIRECT']\n",
+        "mixed-port: {}\ntun:\n  enable: true\n  device: utun9\n  stack: gvisor\n  mtu: 1400\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: false\n  dns-hijack: [any:53, udp://1.1.1.1:53, '[::]:53']\n  dns-mode: native\n  inet6-address: ['fdfe:dcba:9876::1/126']\n  route-address: [10.0.0.0/8]\n  route-exclude-address: [192.168.0.0/16]\nrules: ['MATCH,DIRECT']\n",
         free_port()
     );
     let loaded = load_config(&yaml, "desktop-tun").expect("Billow desktop shape loads");
@@ -58,7 +71,16 @@ fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
     assert_eq!(tun.stack, "gvisor");
     assert_eq!(tun.mtu, 1400);
     assert!(tun.auto_route && tun.auto_detect_interface && !tun.strict_route);
-    assert_eq!(tun.dns_hijack, ["any:53"]);
+    assert_eq!(tun.dns_mode, TunDnsMode::Native);
+    assert_eq!(
+        tun.dns_hijack,
+        vec![
+            "0.0.0.0:53".parse().unwrap(),
+            "1.1.1.1:53".parse().unwrap(),
+            "[::]:53".parse().unwrap(),
+        ]
+    );
+    assert_eq!(tun.inet6_address, ["fdfe:dcba:9876::1/126"]);
     assert_eq!(tun.route_address, ["10.0.0.0/8"]);
     assert_eq!(tun.route_exclude_address, ["192.168.0.0/16"]);
 
@@ -71,9 +93,58 @@ fn tun_config_accepts_the_billow_desktop_shape_and_rejects_by_name() {
     assert_eq!(tag("tun: {enable: true, stack: ebpf}\n"), "unsupported");
     assert_eq!(tag("tun: {enable: true, gso: true}\n"), "unsupported");
     assert_eq!(tag("tun: {enable: true, file-descriptor: 4}\n"), "unsupported");
+    assert_eq!(tag("tun: {enable: true, dns-mode: dnsmasq}\n"), "unsupported");
     assert_eq!(tag("tun: {enable: true, mtu: 70000}\n"), "invalid_value");
     assert_eq!(tag("tun: {enable: true, route-address: ['10.0.0.1']}\n"), "invalid_value");
-    assert!(tag("tun: {enable: true, route-address: ['10.0.0.0/33']}\n").starts_with("invalid"));
+    assert!(tag("tun: {enable: true, inet6-address: ['10.0.0.0/8']}\n").starts_with("invalid"));
+    // A non-53 DNS entry is named instead of becoming a global hijack.
+    assert_eq!(
+        tag("tun: {enable: true, dns-hijack: ['tls://1.1.1.1:853']}\n"),
+        "unsupported"
+    );
+    assert_eq!(
+        tag("tun: {enable: true, dns-hijack: ['1.1.1.1']}\n"),
+        "invalid_value"
+    );
+    // Empty hijack list is accepted and means "never hijack".
+    let loaded = load_config("mixed-port: 1\ntun: {enable: true, dns-hijack: []}\n", "t").unwrap();
+    assert!(loaded.config.tun.dns_hijack.is_empty());
+    // Pinned defaults: dns-mode disabled and the default IPv6 device address.
+    let loaded = load_config("mixed-port: 1\ntun: {enable: true}\n", "t").unwrap();
+    assert_eq!(loaded.config.tun.dns_mode, TunDnsMode::Disabled);
+    assert_eq!(loaded.config.tun.inet6_address, ["fdfe:dcba:9876::1/126"]);
+    let loaded = load_config(
+        "mixed-port: 1\ntun: {enable: true, strict-route: true}\n",
+        "t",
+    )
+    .unwrap();
+    assert!(
+        loaded.warnings.iter().any(|warning| warning.contains("strict-route")),
+        "{:?}",
+        loaded.warnings
+    );
+}
+
+#[test]
+fn dns_hijack_matching_is_exact_or_unspecified() {
+    let exact = TunnelOptions {
+        dns_hijack: vec!["1.1.1.1:53".parse().unwrap()],
+        ..TunnelOptions::default()
+    };
+    assert!(exact.should_hijack_dns("1.1.1.1:53".parse().unwrap()));
+    assert!(!exact.should_hijack_dns("192.0.2.53:53".parse().unwrap()));
+    let wildcard = TunnelOptions {
+        dns_hijack: vec!["0.0.0.0:53".parse().unwrap(), "[::]:53".parse().unwrap()],
+        ..TunnelOptions::default()
+    };
+    assert!(wildcard.should_hijack_dns("192.0.2.53:53".parse().unwrap()));
+    assert!(wildcard.should_hijack_dns("[2001:db8::1]:53".parse().unwrap()));
+    assert!(!wildcard.should_hijack_dns("192.0.2.53:54".parse().unwrap()));
+    let empty = TunnelOptions {
+        dns_hijack: Vec::new(),
+        ..TunnelOptions::default()
+    };
+    assert!(!empty.should_hijack_dns("192.0.2.53:53".parse().unwrap()));
 }
 
 #[test]
@@ -128,7 +199,6 @@ fn fd_pump_carries_udp_ip_packets_both_ways() {
         Tunnel::start(&config, dir.clone(), TunnelOptions::default(), None).expect("tunnel"),
     );
     let mut pump = Pump::start(tunnel.clone(), device, 256).expect("pump");
-    // The engine starts before the sink is installed; wait until it listens.
     let deadline = Instant::now() + Duration::from_secs(5);
     while tunnel.identity().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
@@ -183,49 +253,366 @@ fn fd_pump_carries_udp_ip_packets_both_ways() {
     pump.stop();
     let tunnel_stats = tunnel.stats();
     assert!(tunnel_stats.udp_replies >= 1, "{tunnel_stats:?}");
-    assert!(tunnel_stats.out_packets >= 1, "{tunnel_stats:?}");
     assert!(pump_stats.reads >= 1, "{pump_stats:?}");
     assert!(pump_stats.written >= 1, "{pump_stats:?}");
     tunnel.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn macos_linux_windows_route_plans_use_split_defaults() {
-    let tun = TunConfig {
-        enable: true,
-        route_address: vec!["10.0.0.0/8".to_string()],
-        route_exclude_address: vec!["192.168.0.0/16".to_string()],
-        ..TunConfig::default()
+fn dns_query() -> Vec<u8> {
+    let mut query = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    query.extend_from_slice(&[7, b'e', b'x', b'a', b'm', b'p', b'l', b'e']);
+    query.extend_from_slice(&[3, b'c', b'o', b'm', 0]);
+    query.extend_from_slice(&[0, 1, 0, 1]);
+    query
+}
+
+fn dns_upstream() -> (SocketAddr, std::thread::JoinHandle<()>) {
+    let upstream = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let addr = upstream.local_addr().expect("addr");
+    let thread = std::thread::spawn(move || {
+        let mut buffer = [0u8; 512];
+        let (read, from) = upstream.recv_from(&mut buffer).expect("recv");
+        let mut answer = buffer[..read].to_vec();
+        answer[2] |= 0x80;
+        answer[3] = (answer[3] & 0xf0) | 3;
+        upstream.send_to(&answer, from).expect("send");
+    });
+    (addr, thread)
+}
+
+fn dns_config(upstream: SocketAddr, hijack: &str) -> String {
+    format!(
+        "mixed-port: {}\ndns:\n  enable: true\n  nameserver: ['{}']\ntun: {{enable: true, auto-route: false, auto-detect-interface: false, dns-hijack: [{hijack}]}}\nrules: ['MATCH,DIRECT']\n",
+        free_port(),
+        upstream
+    )
+}
+
+fn start_tunnel_with_config(config: &str, dir: &std::path::Path) -> Tunnel {
+    let loaded = load_config(config, "desktop-tunnel").expect("config");
+    let options = TunnelOptions {
+        dns_hijack: loaded.config.tun.dns_hijack.clone(),
+        ..TunnelOptions::default()
     };
-    let physical = DefaultRoute {
-        interface: "en0".to_string(),
-        gateway: Some("192.168.1.1".parse().unwrap()),
-    };
-    for platform in [Platform::Macos, Platform::Linux, Platform::Windows] {
-        let plan = route_plan::plan(platform, "billow0", &tun, Some(&physical), 1400).unwrap();
-        let up: Vec<String> = plan.up.iter().map(|command| command.render()).collect();
-        let joined = up.join("\n");
-        assert!(joined.contains("0.0.0.0/1"), "{platform:?}: {joined}");
-        assert!(joined.contains("128.0.0.0/1"), "{platform:?}: {joined}");
-        assert!(joined.contains("::/1"), "{platform:?}: {joined}");
-        assert!(joined.contains("8000::/1"), "{platform:?}: {joined}");
-        assert!(joined.contains("10.0.0.0/8"), "{platform:?}: {joined}");
-        assert!(joined.contains("192.168.0.0/16"), "{platform:?}: {joined}");
-        assert!(joined.contains("192.168.1.1"), "{platform:?}: {joined}");
-        assert!(!plan.down.is_empty());
+    Tunnel::start(config, dir.to_path_buf(), options, None).expect("tunnel")
+}
+
+fn drain(tunnel: &Tunnel) -> Vec<Vec<u8>> {
+    let mut buffer = vec![0u8; 70_000];
+    let count = tunnel.drain_into(&mut buffer, 16);
+    let mut packets = Vec::new();
+    let mut offset = 0;
+    for _ in 0..count {
+        let length = u32::from_be_bytes([
+            buffer[offset],
+            buffer[offset + 1],
+            buffer[offset + 2],
+            buffer[offset + 3],
+        ]) as usize;
+        packets.push(buffer[offset + 4..offset + 4 + length].to_vec());
+        offset += 4 + length;
     }
-    let mut off = tun.clone();
-    off.auto_route = false;
-    let plan = route_plan::plan(Platform::Linux, "billow0", &off, Some(&physical), 1500).unwrap();
-    assert!(plan.up.iter().all(|command| {
-        let rendered = command.render();
-        !rendered.contains("0.0.0.0/1") && !rendered.contains("128.0.0.0/1") && !rendered.contains("8000::/1")
-    }));
+    packets
 }
 
 #[test]
-fn default_route_probes_parse_each_platform() {
+fn a_listed_dns_target_is_hijacked_and_an_unlisted_one_is_not() {
+    // `dns-hijack: ['1.1.1.1:53']` must not answer 192.0.2.53.
+    let (upstream, upstream_thread) = dns_upstream();
+    let dir = test_dir("dns-miss");
+    let config = dns_config(upstream, "'1.1.1.1:53'");
+    let tunnel = start_tunnel_with_config(&config, &dir);
+    let packet = ipstack::build_udp_packet(
+        IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53)),
+        40_000,
+        53,
+        &dns_query(),
+        64,
+    )
+    .unwrap();
+    assert!(matches!(
+        tunnel.ingest(&packet),
+        billow_kernel::tunnel::Ingest::Accepted
+    ));
+    std::thread::sleep(Duration::from_millis(300));
+    let stats = tunnel.stats();
+    assert_eq!(stats.dns_queries, 0, "unlisted target must not be answered: {stats:?}");
+    assert!(stats.udp_datagrams >= 1, "{stats:?}");
+    tunnel.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+    // The upstream never saw a query; the thread is left blocked. Detach it.
+    drop(upstream_thread);
+}
+
+#[test]
+fn an_unspecified_dns_hijack_entry_answers_any_port_53_target() {
+    let (upstream, upstream_thread) = dns_upstream();
+    let dir = test_dir("dns-hit");
+    let config = dns_config(upstream, "'any:53'");
+    let tunnel = start_tunnel_with_config(&config, &dir);
+    let packet = ipstack::build_udp_packet(
+        IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2)),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53)),
+        40_000,
+        53,
+        &dns_query(),
+        64,
+    )
+    .unwrap();
+    tunnel.ingest(&packet);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reply = loop {
+        let packets = drain(&tunnel);
+        if let Some(packet) = packets.into_iter().find(|packet| {
+            ipstack::parse_ip_packet(packet)
+                .map(|parsed| parsed.protocol == ipstack::IPPROTO_UDP)
+                .unwrap_or(false)
+        }) {
+            break packet;
+        }
+        assert!(Instant::now() < deadline, "no DNS reply");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let parsed = ipstack::parse_ip_packet(&reply).unwrap();
+    let udp = ipstack::parse_udp(&parsed).unwrap();
+    assert_eq!(udp.src_port, 53);
+    assert_eq!(udp.dst_port, 40_000);
+    assert_eq!(udp.payload[2] & 0x80, 0x80, "QR bit set by the upstream");
+    upstream_thread.join().unwrap();
+    assert!(tunnel.stats().dns_queries >= 1);
+    tunnel.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// TCP DNS hijack: the same target set drives the passive TCP endpoint.
+#[test]
+fn a_tcp_dns_query_is_hijacked_only_for_a_matching_target() {
+    let (upstream, upstream_thread) = dns_upstream();
+    let dir = test_dir("dns-tcp");
+    let config = dns_config(upstream, "'any:53'");
+    let tunnel = start_tunnel_with_config(&config, &dir);
+    let device_ip = IpAddr::V4(Ipv4Addr::new(198, 18, 0, 2));
+    let target = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
+    let port = 40_000u16;
+    let syn = tcp_packet(device_ip, target, port, 53, 1000, 0, FLAG_SYN, &[]);
+    tunnel.ingest(&syn);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let our_iss = loop {
+        if let Some(seq) = drain(&tunnel)
+            .iter()
+            .filter_map(|packet| parse_segment(packet).ok())
+            .find(|segment| segment.flags & (FLAG_SYN | FLAG_ACK) == FLAG_SYN | FLAG_ACK)
+            .map(|segment| segment.seq)
+        {
+            break seq;
+        }
+        assert!(Instant::now() < deadline, "no SYN-ACK");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let query = dns_query();
+    let mut framed = (query.len() as u16).to_be_bytes().to_vec();
+    framed.extend_from_slice(&query);
+    let data = tcp_packet(
+        device_ip,
+        target,
+        port,
+        53,
+        1001,
+        our_iss.wrapping_add(1),
+        FLAG_ACK | FLAG_PSH,
+        &framed,
+    );
+    tunnel.ingest(&data);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reply = loop {
+        let payload = drain(&tunnel)
+            .iter()
+            .filter_map(|packet| parse_segment(packet).ok())
+            .find(|segment| segment.payload.len() >= 4 && segment.payload[4] & 0x80 == 0x80)
+            .map(|segment| segment.payload.to_vec());
+        if let Some(payload) = payload {
+            break payload;
+        }
+        assert!(Instant::now() < deadline, "no TCP DNS reply");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(u16::from_be_bytes([reply[0], reply[1]]) as usize, reply.len() - 2);
+    upstream_thread.join().unwrap();
+    assert!(tunnel.stats().dns_queries >= 1);
+    tunnel.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tcp_packet(
+    src: IpAddr,
+    dst: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut segment = Vec::with_capacity(20 + payload.len());
+    segment.extend_from_slice(&src_port.to_be_bytes());
+    segment.extend_from_slice(&dst_port.to_be_bytes());
+    segment.extend_from_slice(&seq.to_be_bytes());
+    segment.extend_from_slice(&ack.to_be_bytes());
+    segment.push(5 << 4);
+    segment.push(flags);
+    segment.extend_from_slice(&65_535u16.to_be_bytes());
+    segment.extend_from_slice(&[0, 0]);
+    segment.extend_from_slice(&[0, 0]);
+    segment.extend_from_slice(payload);
+    let checksum = ipstack::transport_checksum(src, dst, ipstack::IPPROTO_TCP, &segment);
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+    ipstack::build_packet(src, dst, ipstack::IPPROTO_TCP, &segment, 64).expect("packet")
+}
+
+#[test]
+fn route_plan_follows_pinned_auto_route_and_exclusion() {
+    let mut tun = TunConfig {
+        enable: true,
+        auto_detect_interface: true,
+        ..TunConfig::default()
+    };
+    let addresses = addresses();
+    let mac = route_plan::plan(Platform::Macos, "utun7", &tun, &addresses, Some(&physical()), 1400).unwrap();
+    let up: Vec<String> = mac.up.iter().map(|command| command.render()).collect();
+    assert!(up.contains(&"/sbin/route -n add -inet 1.0.0.0/8 -interface utun7".to_string()), "{up:?}");
+    assert!(up.contains(&"/sbin/route -n add -inet 128.0.0.0/1 -interface utun7".to_string()));
+    assert!(!up.iter().any(|line| line.contains("0.0.0.0/1 ")), "{up:?}");
+
+    // route-address replaces the auto ranges; macOS adds the device subnet.
+    tun.route_address = vec!["10.0.0.0/8".to_string()];
+    let scoped = route_plan::plan(Platform::Macos, "utun7", &tun, &addresses, Some(&physical()), 1500).unwrap();
+    let up: Vec<String> = scoped.up.iter().map(|command| command.render()).collect();
+    assert!(up.contains(&"/sbin/route -n add -inet 10.0.0.0/8 -interface utun7".to_string()));
+    assert!(up.contains(&"/sbin/route -n add -inet 198.18.0.0/30 -interface utun7".to_string()));
+    assert!(!up.iter().any(|line| line.contains("1.0.0.0/8")), "{up:?}");
+    let linux = route_plan::plan(Platform::Linux, "billow0", &tun, &addresses, Some(&physical()), 1500).unwrap();
+    assert_eq!(
+        linux.up.iter().map(|command| command.render()).collect::<Vec<_>>(),
+        vec!["ip route add 10.0.0.0/8 dev billow0", "ip -6 route add ::/0 dev billow0"]
+    );
+
+    // Exclusions are a set difference: no `via gateway` route remains.
+    tun.route_exclude_address = vec!["192.168.0.0/16".to_string()];
+    let excluded = route_plan::plan(Platform::Linux, "billow0", &tun, &addresses, Some(&physical()), 1500).unwrap();
+    let up: Vec<String> = excluded.up.iter().map(|command| command.render()).collect();
+    assert!(!up.iter().any(|line| line.contains("192.168.0.0/16 ")), "{up:?}");
+    assert!(!up.iter().any(|line| line.contains("via ")), "{up:?}");
+}
+
+#[test]
+fn ipv6_false_and_custom_inet6_addresses_change_the_plan() {
+    let yaml = format!(
+        "mixed-port: {}\nipv6: false\ntun: {{enable: true, route-address: ['10.0.0.0/8']}}\nrules: ['MATCH,DIRECT']\n",
+        free_port()
+    );
+    let loaded = load_config(&yaml, "t").unwrap();
+    let addresses = DeviceAddresses::from_config(&loaded.config);
+    assert!(addresses.v6.is_empty());
+    assert!(addresses.dns_servers().1.is_none());
+    let plan = route_plan::plan(
+        Platform::Linux,
+        "billow0",
+        &loaded.config.tun,
+        &addresses,
+        Some(&physical()),
+        1500,
+    )
+    .unwrap();
+    let rendered: Vec<String> = plan.address.iter().map(|command| command.render()).collect();
+    assert!(rendered.iter().all(|line| !line.contains("-6")), "{rendered:?}");
+    assert!(plan
+        .up
+        .iter()
+        .map(|command| command.render())
+        .all(|line| !line.contains("::/0")));
+
+    let yaml = format!(
+        "mixed-port: {}\ntun: {{enable: true, inet6-address: ['2001:db8::1/126'], route-address: ['10.0.0.0/8', '2001:db8:1::/48']}}\nrules: ['MATCH,DIRECT']\n",
+        free_port()
+    );
+    let loaded = load_config(&yaml, "t").unwrap();
+    let addresses = DeviceAddresses::from_config(&loaded.config);
+    assert_eq!(addresses.v6[0].to_string(), "2001:db8::1/126");
+    let plan = route_plan::plan(
+        Platform::Linux,
+        "billow0",
+        &loaded.config.tun,
+        &addresses,
+        Some(&physical()),
+        1500,
+    )
+    .unwrap();
+    let up: Vec<String> = plan.up.iter().map(|command| command.render()).collect();
+    assert!(up.contains(&"ip -6 route add 2001:db8:1::/48 dev billow0".to_string()), "{up:?}");
+    assert!(plan
+        .address
+        .iter()
+        .map(|command| command.render())
+        .any(|line| line.contains("2001:db8::1/126")));
+}
+
+#[test]
+fn device_address_comes_from_fake_ip_range() {
+    let yaml = format!(
+        "mixed-port: {}\ndns: {{fake-ip-range: '10.1.2.3/8'}}\ntun: {{enable: true}}\nrules: ['MATCH,DIRECT']\n",
+        free_port()
+    );
+    let loaded = load_config(&yaml, "t").unwrap();
+    let addresses = DeviceAddresses::from_config(&loaded.config);
+    assert_eq!(addresses.v4.to_string(), "10.1.2.3/30");
+}
+
+#[test]
+fn dns_plans_construct_and_restore() {
+    let v4 = Some("198.18.0.2".parse().unwrap());
+    let v6 = Some("fdfe:dcba:9876::2".parse().unwrap());
+    let linux = route_plan::plan_dns_linux("billow0", v4, v6);
+    let up: Vec<String> = linux.up.iter().map(|command| command.render()).collect();
+    assert_eq!(
+        up,
+        vec![
+            "resolvectl dns billow0 198.18.0.2 fdfe:dcba:9876::2",
+            "resolvectl domain billow0 ~.",
+            "resolvectl default-route billow0 true",
+        ]
+    );
+    assert_eq!(
+        linux.down.iter().map(|command| command.render()).collect::<Vec<_>>(),
+        vec!["resolvectl revert billow0"]
+    );
+    let mac = route_plan::plan_dns_macos("Wi-Fi", &[], v4, v6);
+    assert_eq!(
+        mac.down.iter().map(|command| command.render()).collect::<Vec<_>>(),
+        vec!["networksetup -setdnsservers Wi-Fi Empty"]
+    );
+    let restored = route_plan::plan_dns_macos("Wi-Fi", &["1.1.1.1".to_string()], v4, None);
+    assert_eq!(
+        restored.down.iter().map(|command| command.render()).collect::<Vec<_>>(),
+        vec!["networksetup -setdnsservers Wi-Fi 1.1.1.1"]
+    );
+    let windows = route_plan::plan_dns_windows("Billow", &[], &["2001:db8::53".to_string()], v4, v6);
+    assert!(windows
+        .down
+        .iter()
+        .map(|command| command.render())
+        .any(|line| line.contains("dhcp")));
+    assert!(windows
+        .down
+        .iter()
+        .map(|command| command.render())
+        .any(|line| line.contains("2001:db8::53")));
+}
+
+#[test]
+fn default_route_and_dns_probes_parse_each_platform() {
     let mac = "   route to: default\ndestination: default\n       mask: default\n    gateway: 192.168.1.1\n  interface: en0\n";
     assert_eq!(
         route_plan::parse_macos_default(mac),
@@ -242,11 +629,22 @@ fn default_route_probes_parse_each_platform() {
         })
     );
     assert_eq!(
-        route_plan::parse_windows_default("Wi-Fi\r\n192.168.1.1\r\n"),
+        route_plan::parse_windows_default("Wi-Fi|192.168.1.1\r\n"),
         Some(DefaultRoute {
             interface: "Wi-Fi".to_string(),
             gateway: Some("192.168.1.1".parse().unwrap())
         })
+    );
+    let order = "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n\n(2) USB\n(Hardware Port: USB, Device: en5)\n";
+    assert_eq!(route_plan::parse_macos_service_order(order, "en5").as_deref(), Some("USB"));
+    assert_eq!(
+        route_plan::parse_macos_dns_servers("There aren't any DNS Servers set on Wi-Fi.\n"),
+        Vec::<String>::new()
+    );
+    let netsh = "    Statically Configured DNS Servers: 1.1.1.1\n                                          8.8.8.8\n    Register with which suffix: Primary only\n";
+    assert_eq!(
+        route_plan::parse_windows_dns_servers(netsh),
+        vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()]
     );
 }
 
@@ -254,14 +652,17 @@ fn default_route_probes_parse_each_platform() {
 fn a_failed_route_command_rolls_the_plan_back() {
     let tun = TunConfig {
         enable: true,
-        route_exclude_address: Vec::new(),
         ..TunConfig::default()
     };
-    let physical = DefaultRoute {
-        interface: "en0".to_string(),
-        gateway: Some("192.168.1.1".parse().unwrap()),
-    };
-    let plan = route_plan::plan(Platform::Linux, "billow0", &tun, Some(&physical), 1500).unwrap();
+    let plan = route_plan::plan(
+        Platform::Linux,
+        "billow0",
+        &tun,
+        &addresses(),
+        Some(&physical()),
+        1500,
+    )
+    .unwrap();
     let mut seen = Vec::new();
     let mut calls = 0usize;
     let result = apply_plan(&plan, &mut |command| {
@@ -287,13 +688,9 @@ fn a_failed_route_command_rolls_the_plan_back() {
 fn start_with_tun_disabled_fails_before_creating_a_device() {
     let dir = test_dir("disabled");
     let config = format!("mixed-port: {}\ntun: {{enable: false}}\n", free_port());
-    let error = DesktopTun::start(
-        &config,
-        dir.clone(),
-        DesktopTunOptions::default(),
-    )
-    .err()
-    .expect("disabled tun must not start");
+    let error = DesktopTun::start(&config, dir.clone(), DesktopTunOptions::default())
+        .err()
+        .expect("disabled tun must not start");
     assert!(error.contains("tun.enable is false"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }

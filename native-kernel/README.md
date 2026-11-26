@@ -149,36 +149,50 @@ traffic remains pending.
 T34 adds the desktop TUN data plane behind `--features desktop-tun` and the
 CLI's `--tun`. The kernel parses `tun` strictly (`enable`, `device`, `stack`,
 `mtu`, `auto-route`, `auto-detect-interface`, `strict-route`, `dns-hijack`,
-`route-address`, `route-exclude-address`); `stack: mips|mixed|gvisor` is
-**recorded but served by this kernel's in-tree userspace IP stack** (not the
-pinned MipsSoft/gVisor implementation), `system` and unknown keys are named
-rejections, and an enabled block is no longer stripped for desktop
-`Engine::Rust`. `src/desktop_tun/` creates macOS `utun` (control socket +
-`UTUN_OPT_IFNAME`, 4-byte big-endian `AF_INET`/`AF_INET6` framing), Linux
+`dns-mode`, `inet6-address`, `route-address`, `route-exclude-address`);
+`stack: mips|mixed|gvisor` is **recorded but served by this kernel's in-tree
+userspace IP stack** (not the pinned MipsSoft/gVisor implementation),
+`system`, unknown keys, non-53 `dns-hijack` entries and other unsupported
+values are named rejections, and an enabled block is no longer stripped for
+desktop `Engine::Rust`. `dns-hijack` is parsed into an address-port set with
+pinned `ShouldHijackDns` matching (exact target, or an unspecified entry for
+any target on port 53); unlisted targets use the normal flow. `src/desktop_tun/`
+creates macOS `utun` (control socket + `UTUN_OPT_IFNAME`, `tun.device: utunN`
+selects a unit, 4-byte big-endian `AF_INET`/`AF_INET6` framing), Linux
 `/dev/net/tun` (`TUNSETIFF`, `IFF_TUN|IFF_NO_PI`, raw IP) or Windows Wintun
-(the shipped `wintun.dll`), assigns the pinned default addresses
-(`198.18.0.1/30`, `fdfe:dcba:9876::1/126`; `tun.mtu` absent means 9000), and
-installs split routes (`0.0.0.0/1` + `128.0.0.0/1`, `::/1` + `8000::/1`) so the
-physical default route is never replaced. `route-address` appends through the
-device and `route-exclude-address` goes through the detected physical gateway;
-`strict-route` requires a detected physical interface or fails by name.
-`auto-detect-interface` parses `route -n get default` / `ip route show default`
-/ the Windows PowerShell route probe and installs that interface as the
-process-wide default bind for kernel-originated sockets (proxy-server dials,
-DIRECT TCP/UDP, DNS queries), so TUN cannot capture the kernel's own traffic
-(mirrors Mihomo's `dialer.DefaultInterfaceFinder`). The reader thread feeds
-`Tunnel::ingest` (the same T7 stack), the bounded device sink/writer thread
-writes replies, and stop (including a partial route apply) removes exactly the
-routes/addresses this process added, clears the bind and closes the device.
-The host writes `tun.enable` from its TUN switch and launches the Rust process
-with `--tun`; `--check` validates the configuration and never creates a
-device. Configuration strictness, utun framing, the fd pump over a
-`UnixDatagram` pair, route/default-route planning and rollback are covered by
-`tests/desktop_tunnel.rs`; `tests/desktop_cli.rs` proves `--check`/`--tun
---check` do not create a device. Real `utun` creation needs root or the
-`TunGrant` setuid authorization and is an `#[ignore]`d test here; Linux and
-Windows device code compiles by `cfg` but has no run on this host, so their
-real-device acceptance remains pending.
+(the shipped `wintun.dll`; a full send ring is a counted drop). The IPv4
+address is derived from `dns.fake-ip-range` (pinned: address part narrowed to
+/30; absent = `198.18.0.1/30`), IPv6 uses `tun.inet6-address` (default
+`fdfe:dcba:9876::1/126`), `ipv6: false` clears the IPv6 address/routes/DNS and
+`tun.mtu` absent means 9000. Routes follow pinned `BuildAutoRouteRanges`: a
+non-empty `route-address` installs only those prefixes (macOS also adds the TUN
+subnet); otherwise macOS installs the sub-ranges `1.0.0.0/8` … `128.0.0.0/1`
+(IPv6 mirrors it with `100::/8` … `8000::/1`), while Linux/Windows use the
+pinned full `0.0.0.0/0` / `::/0`. `route-exclude-address` is a CIDR set
+difference over those ranges, not a gateway route. `dns-mode: native|hijack`
+points the system resolver at `tun4+1`/`tun6+1` (Linux `resolvectl`, Windows
+`netsh` with saved restore, macOS `networksetup` service lookup/save; a utun
+has no networksetup service, so macOS warns and leaves DNS unchanged); the
+default is disabled. `strict-route` requires a detected physical interface and
+is registered as a weak semantic with a warning. `auto-detect-interface` parses
+`route -n get default` / `ip route show default` / the Windows PowerShell route
+probe and installs that interface as the process-wide default bind for
+kernel-originated sockets (proxy-server dials, DIRECT TCP/UDP, DNS queries,
+mKCP, provider downloads, group/controller probes), so TUN cannot capture the
+kernel's own traffic (mirrors Mihomo's `dialer.DefaultInterfaceFinder`). The
+reader thread feeds `Tunnel::ingest` (the same T7 stack), the bounded device
+sink/writer thread writes replies, and stop (including a partial route/DNS
+apply) removes exactly the routes/addresses/DNS changes this process added,
+clears the bind and closes the device. The host writes `tun.enable` from its
+TUN switch and launches the Rust process with `--tun`; `--check` validates the
+configuration and never creates a device. Configuration strictness, utun
+framing, the fd pump over a `UnixDatagram` pair, DNS-hijack targeting, route
+and DNS planning/rollback are covered by `tests/desktop_tunnel.rs`;
+`tests/desktop_cli.rs` proves `--check`/`--tun --check` do not create a device.
+Real `utun` creation needs root or the `TunGrant` setuid authorization and is
+an `#[ignore]`d test here; Linux and Windows device/DNS/route code compiles by
+`cfg` but has no run on this host, so their real-device acceptance remains
+pending.
 
 ## License
 

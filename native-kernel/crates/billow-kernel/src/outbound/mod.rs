@@ -768,6 +768,22 @@ pub(crate) async fn bind_udp_str(bind: &str) -> io::Result<tokio::net::UdpSocket
 
 /// The raw bound socket for QUIC endpoints, which need to own the socket.
 pub(crate) fn udp_socket_std(addr: SocketAddr, options: &DialerOptions) -> io::Result<std::net::UdpSocket> {
+    let socket = build_udp_socket(addr, options)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
+/// A bound UDP socket that stays in blocking mode (mKCP's packet loop uses
+/// `set_read_timeout` + blocking reads).
+pub(crate) fn udp_socket_std_blocking(
+    addr: SocketAddr,
+    options: &DialerOptions,
+) -> io::Result<std::net::UdpSocket> {
+    let socket = build_udp_socket(addr, options)?;
+    Ok(socket.into())
+}
+
+fn build_udp_socket(addr: SocketAddr, options: &DialerOptions) -> io::Result<socket2::Socket> {
     let options = merge_default_interface(options);
     let domain = if addr.is_ipv4() {
         socket2::Domain::IPV4
@@ -778,7 +794,25 @@ pub(crate) fn udp_socket_std(addr: SocketAddr, options: &DialerOptions) -> io::R
     apply_interface(&socket, addr, options.interface_name.as_deref())?;
     apply_routing_mark(&socket, options.routing_mark)?;
     socket.bind(&addr.into())?;
-    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+/// A blocking TCP connection with the process-wide interface binding (provider
+/// downloads and other synchronous kernel-originated requests).
+pub(crate) fn tcp_stream_std_blocking(
+    addr: SocketAddr,
+    timeout: Duration,
+) -> io::Result<std::net::TcpStream> {
+    let options = merge_default_interface(&DialerOptions::default());
+    let domain = if addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    apply_interface(&socket, addr, options.interface_name.as_deref())?;
+    apply_routing_mark(&socket, options.routing_mark)?;
+    socket.connect_timeout(&addr.into(), timeout)?;
     Ok(socket.into())
 }
 
@@ -1189,5 +1223,36 @@ mod tests {
         set_default_interface(None);
         accept.await.unwrap();
         assert!(dialed.is_ok(), "{dialed:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn blocking_udp_helper_stays_blocking_and_binds_the_interface() {
+        set_default_interface(Some("lo0".to_string()));
+        let socket = udp_socket_std_blocking(
+            "0.0.0.0:0".parse().unwrap(),
+            &DialerOptions::default(),
+        );
+        set_default_interface(None);
+        let socket = socket.expect("blocking UDP bind with the interface");
+        use std::os::fd::AsRawFd;
+        let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::O_NONBLOCK, 0, "mKCP needs blocking reads");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn blocking_tcp_helper_connects_on_the_process_interface() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        set_default_interface(Some("lo0".to_string()));
+        let stream = tcp_stream_std_blocking(addr, Duration::from_secs(2));
+        set_default_interface(None);
+        accept.join().unwrap();
+        assert!(stream.is_ok(), "{stream:?}");
     }
 }

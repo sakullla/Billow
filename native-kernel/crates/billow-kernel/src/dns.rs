@@ -271,7 +271,7 @@ impl Default for DnsConfig {
             fallback_lazy_query: false,
             listen: None,
             enhanced_mode: EnhancedMode::RedirHost,
-            fake_ip_range: Some("198.18.0.0/16".parse().expect("valid default fake-ip range")),
+            fake_ip_range: Some("198.18.0.1/16".parse().expect("valid default fake-ip range")),
             fake_ip_range6: None,
             fake_ip_filter: vec![
                 "dns.msftnsci.com".to_string(),

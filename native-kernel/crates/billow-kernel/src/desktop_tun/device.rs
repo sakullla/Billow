@@ -55,8 +55,7 @@ impl Framing {
 pub fn create(tun: &TunConfig) -> Result<Arc<dyn TunDevice>, String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = tun;
-        platform::open()
+        platform::open(tun)
     }
     #[cfg(target_os = "linux")]
     {
@@ -314,6 +313,7 @@ mod platform {
     use std::sync::Arc;
 
     use super::{FdDevice, Framing, TunDevice};
+    use crate::config::TunConfig;
 
     const PF_SYSTEM: libc::c_int = 32;
     const SYSPROTO_CONTROL: libc::c_int = 2;
@@ -339,7 +339,22 @@ mod platform {
         sc_reserved: [u32; 5],
     }
 
-    pub fn open() -> Result<Arc<dyn TunDevice>, String> {
+    fn utun_unit(device: &str) -> Result<Option<u32>, String> {
+        if device.is_empty() {
+            return Ok(None);
+        }
+        let Some(rest) = device.strip_prefix("utun") else {
+            return Err(format!(
+                "desktop-tun: macOS tun.device '{device}' must be utunN or empty"
+            ));
+        };
+        rest.parse::<u32>().map(Some).map_err(|_| {
+            format!("desktop-tun: macOS tun.device '{device}' must be utunN or empty")
+        })
+    }
+
+    pub fn open(tun: &TunConfig) -> Result<Arc<dyn TunDevice>, String> {
+        let requested_unit = utun_unit(&tun.device)?;
         let fd = unsafe { libc::socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL) };
         if fd < 0 {
             let error = io::Error::last_os_error();
@@ -366,7 +381,11 @@ mod platform {
         };
         let mut opened = false;
         let mut last = None;
-        for unit in 0..16u32 {
+        let units: Vec<u32> = match requested_unit {
+            Some(unit) => vec![unit],
+            None => (0..16u32).collect(),
+        };
+        for unit in units {
             address.sc_unit = unit;
             let result = unsafe {
                 libc::connect(
@@ -523,7 +542,16 @@ mod platform {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet is larger than u32"))?;
             let slot = unsafe { (self.api.allocate)(self.session, size) };
             if slot.is_null() {
-                return Err(io::Error::last_os_error());
+                let error = unsafe { GetLastError() };
+                // Ring full: the packet is dropped and counted by the pump, not
+                // a reason to tear the session down.
+                if error == 111 || error == ERROR_NO_MORE_ITEMS {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("Wintun send ring is full (OS error {error})"),
+                    ));
+                }
+                return Err(io::Error::from_raw_os_error(error as i32));
             }
             unsafe { std::ptr::copy_nonoverlapping(packet.as_ptr(), slot, packet.len()) };
             unsafe { (self.api.send)(self.session, slot) };
@@ -593,6 +621,15 @@ mod platform {
         } else {
             tun.device.clone()
         };
+        if name.len() > 128
+            || name
+                .chars()
+                .any(|character| character.is_control() || "\\/:*?\"<>|".contains(character))
+        {
+            return Err(format!(
+                "desktop-tun: Windows tun.device '{name}' is not a valid adapter name (max 128 characters, no control or \\ / : * ? \" < > |)"
+            ));
+        }
         let adapter_name = wide(&name);
         let tunnel_type = wide("Billow");
         // Reuse the adapter a previous run left behind (Created by us with the

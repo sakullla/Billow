@@ -199,6 +199,13 @@ fn writer_loop(
                 Ok(()) => {
                     counters.written.fetch_add(1, Ordering::Relaxed);
                 }
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut =>
+                {
+                    // A full device ring is a counted drop, not a dead device.
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                }
                 Err(error) => {
                     counters.write_errors.fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(%error, "desktop TUN write failed; stopping the pump");

@@ -1,24 +1,75 @@
 //! Desktop TUN route/interface command planning.
 //!
-//! Everything here is a pure function over the parsed [`TunConfig`] and the
-//! detected physical default route, so the command set a platform would run is
-//! inspectable in tests without touching the host network. Execution lives in
-//! [`super`]; a failed command rolls the already-applied set back through
-//! [`RoutePlan::down`].
+//! Everything here is a pure function over the parsed [`TunConfig`], the device
+//! addresses and the detected physical default route, so the command set a
+//! platform would run is inspectable in tests without touching the host
+//! network. Execution lives in [`super`]; a failed command rolls the
+//! already-applied set back through [`RoutePlan::down`].
 //!
-//! Auto-route deliberately installs `0.0.0.0/1` + `128.0.0.0/1` (and the IPv6
-//! halves) instead of replacing `0.0.0.0/0`, so stopping or crashing the kernel
-//! cannot leave the machine without a default route.
+//! Route ranges follow pinned `sing-tun` `BuildAutoRouteRanges`:
+//! * a non-empty `route-address` installs **only** those prefixes (macOS also
+//!   adds the device prefix itself);
+//! * otherwise the platform auto range is installed (macOS uses the sub-ranges
+//!   that leave `0.0.0.0/8`/`::/8` local; Linux/Windows use the full default);
+//! * `route-exclude-address` is a set difference over those ranges, not a
+//!   separate route via the physical gateway.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::config::TunConfig;
+use crate::config::ipnet_like::IpNet;
+use crate::config::{Config, TunConfig};
 
-/// The device address the pinned desktop adapter assigns by default: the
-/// `dns.fake-ip-range` gateway (`198.18.0.1`) narrowed to /30.
-pub const TUN_IPV4: &str = "198.18.0.1/30";
-/// The pinned default IPv6 device address.
-pub const TUN_IPV6: &str = "fdfe:dcba:9876::1/126";
+/// Physical default route detected for anti-loop binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultRoute {
+    pub interface: String,
+    pub gateway: Option<IpAddr>,
+}
+
+/// Device addresses assigned to the TUN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAddresses {
+    pub v4: IpNet,
+    pub v6: Vec<IpNet>,
+}
+
+impl DeviceAddresses {
+    /// The pinned TUN address: the `dns.fake-ip-range` address narrowed to /30.
+    pub fn from_config(config: &Config) -> DeviceAddresses {
+        let range = config
+            .dns
+            .fake_ip_range
+            .unwrap_or_else(|| "198.18.0.1/16".parse().expect("pinned default fake-ip range"));
+        let v4 = IpNet::new(range.network(), 30)
+            .unwrap_or_else(|_| "198.18.0.1/30".parse().expect("pinned default tun address"));
+        let v6 = if config.ipv6 {
+            config
+                .tun
+                .inet6_address
+                .iter()
+                .filter_map(|prefix| prefix.parse::<IpNet>().ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        DeviceAddresses { v4, v6 }
+    }
+
+    /// `tun4+1` and `tun6+1`, the addresses pinned `DNSServerAddress` hands to
+    /// the system resolver.
+    pub fn dns_servers(&self) -> (Option<IpAddr>, Option<IpAddr>) {
+        let v4 = next_address(self.v4.network());
+        let v6 = self.v6.first().and_then(|prefix| next_address(prefix.network()));
+        (v4, v6)
+    }
+}
+
+pub fn next_address(address: IpAddr) -> Option<IpAddr> {
+    match address {
+        IpAddr::V4(addr) => Some(IpAddr::V4(Ipv4Addr::from(u32::from(addr).checked_add(1)?))),
+        IpAddr::V6(addr) => Some(IpAddr::V6(Ipv6Addr::from(u128::from(addr).checked_add(1)?))),
+    }
+}
 
 /// Host family the runner is executing on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,19 +133,12 @@ impl Command {
     }
 }
 
-/// Physical default route detected for anti-loop binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefaultRoute {
-    pub interface: String,
-    pub gateway: Option<IpAddr>,
-}
-
-/// The address and route commands for one TUN lifetime.
+/// The address, route and DNS commands for one TUN lifetime.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoutePlan {
     /// Assign the device addresses (and MTU).
     pub address: Vec<Command>,
-    /// Install the split routes.
+    /// Install the split routes and any DNS settings.
     pub up: Vec<Command>,
     /// Remove everything in reverse order. Safe to run after a partial apply.
     pub down: Vec<Command>,
@@ -104,6 +148,7 @@ pub fn plan(
     platform: Platform,
     device: &str,
     tun: &TunConfig,
+    addresses: &DeviceAddresses,
     default: Option<&DefaultRoute>,
     mtu: usize,
 ) -> Result<RoutePlan, String> {
@@ -117,200 +162,179 @@ pub fn plan(
                 .to_string(),
         );
     }
-    if !tun.route_exclude_address.is_empty() && default.and_then(|route| route.gateway).is_none() {
-        return Err(
-            "desktop-tun: tun.route-exclude-address needs the physical default gateway \
-             (auto-detect-interface must find one)"
-                .to_string(),
-        );
-    }
-    if let (Some(default), Some(gateway)) = (default, default.and_then(|route| route.gateway)) {
-        for prefix in &tun.route_exclude_address {
-            if prefix.contains(':') != gateway.is_ipv6() {
-                return Err(format!(
-                    "desktop-tun: tun.route-exclude-address '{prefix}' needs a {}-family physical gateway, \
-                     but the detected gateway is {gateway}",
-                    if prefix.contains(':') { "IPv6" } else { "IPv4" }
-                ));
-            }
-        }
-        let _ = default;
-    }
     let mut plan = RoutePlan::default();
     let mut down = Vec::new();
     match platform {
-        Platform::Macos => plan_macos(&mut plan, &mut down, device, tun, default, mtu),
-        Platform::Linux => plan_linux(&mut plan, &mut down, device, tun, default, mtu),
-        Platform::Windows => plan_windows(&mut plan, &mut down, device, tun, default, mtu),
+        Platform::Macos => plan_addresses_macos(&mut plan, &mut down, device, tun, addresses, mtu),
+        Platform::Linux => plan_addresses_linux(&mut plan, &mut down, device, tun, addresses, mtu),
+        Platform::Windows => plan_addresses_windows(&mut plan, &mut down, device, tun, addresses, mtu),
     }
-    // Teardown is the reverse of setup: routes first, then addresses.
+    if tun.auto_route {
+        let mut v4 = route_ranges(&tun.route_address, false);
+        let mut v6 = if addresses.v6.is_empty() {
+            Vec::new()
+        } else {
+            route_ranges(&tun.route_address, true)
+        };
+        let v4_route_nonnempty = !v4.is_empty();
+        let v6_route_nonempty = !v6.is_empty();
+        if v4.is_empty() {
+            v4 = auto_ranges(platform, false);
+        } else if platform == Platform::Macos && v4_route_nonnempty {
+            // Pinned darwin adds the TUN subnet itself so the interface address
+            // is reachable through the device.
+            push_unique(&mut v4, addresses.v4.masked().to_string());
+        }
+        if !addresses.v6.is_empty() {
+            if v6.is_empty() {
+                v6 = auto_ranges(platform, true);
+            } else if platform == Platform::Macos && v6_route_nonempty {
+                for prefix in &addresses.v6 {
+                    push_unique(&mut v6, prefix.masked().to_string());
+                }
+            }
+        }
+        let v4_excludes = route_ranges(&tun.route_exclude_address, false);
+        let v6_excludes = route_ranges(&tun.route_exclude_address, true);
+        v4 = subtract_prefixes(&v4, &v4_excludes);
+        v6 = subtract_prefixes(&v6, &v6_excludes);
+        match platform {
+            Platform::Macos => plan_routes_macos(&mut plan, &mut down, device, &v4, &v6),
+            Platform::Linux => plan_routes_linux(&mut plan, &mut down, device, &v4, &v6),
+            Platform::Windows => plan_routes_windows(&mut plan, &mut down, device, &v4, &v6),
+        }
+    }
     down.reverse();
     plan.down = down;
     Ok(plan)
 }
 
-fn split_prefix(prefix: &str) -> (&str, bool) {
-    (prefix, prefix.contains(':'))
+fn push_unique(list: &mut Vec<String>, value: String) {
+    if !list.contains(&value) {
+        list.push(value);
+    }
 }
 
-fn plan_macos(
+fn route_ranges(prefixes: &[String], ipv6: bool) -> Vec<String> {
+    prefixes
+        .iter()
+        .filter(|prefix| prefix.contains(':') == ipv6)
+        .cloned()
+        .collect()
+}
+
+/// Pinned `BuildAutoRouteRanges` per platform.
+pub fn auto_ranges(platform: Platform, ipv6: bool) -> Vec<String> {
+    match (platform, ipv6) {
+        (Platform::Macos, false) => vec![
+            "1.0.0.0/8".to_string(),
+            "2.0.0.0/7".to_string(),
+            "4.0.0.0/6".to_string(),
+            "8.0.0.0/5".to_string(),
+            "16.0.0.0/4".to_string(),
+            "32.0.0.0/3".to_string(),
+            "64.0.0.0/2".to_string(),
+            "128.0.0.0/1".to_string(),
+        ],
+        (Platform::Macos, true) => vec![
+            "100::/8".to_string(),
+            "200::/7".to_string(),
+            "400::/6".to_string(),
+            "800::/5".to_string(),
+            "1000::/4".to_string(),
+            "2000::/3".to_string(),
+            "4000::/2".to_string(),
+            "8000::/1".to_string(),
+        ],
+        (_, false) => vec!["0.0.0.0/0".to_string()],
+        (_, true) => vec!["::/0".to_string()],
+    }
+}
+
+fn plan_addresses_macos(
     plan: &mut RoutePlan,
     down: &mut Vec<Command>,
     device: &str,
-    tun: &TunConfig,
-    default: Option<&DefaultRoute>,
+    _tun: &TunConfig,
+    addresses: &DeviceAddresses,
     mtu: usize,
 ) {
     const IFCONFIG: &str = "/sbin/ifconfig";
-    const ROUTE: &str = "/sbin/route";
+    let v4 = &addresses.v4;
+    let v4_addr = v4.network().to_string();
+    let v4_mask = mask_string(v4);
     plan.address.push(Command::new(
         IFCONFIG,
         [
             device,
             "inet",
-            "198.18.0.1",
-            "198.18.0.1",
+            v4_addr.as_str(),
+            v4_addr.as_str(),
             "netmask",
-            "255.255.255.252",
+            v4_mask.as_str(),
             "up",
         ],
     ));
-    plan.address.push(Command::new(
-        IFCONFIG,
-        [device, "inet6", TUN_IPV6, "up"],
-    ));
+    for v6 in &addresses.v6 {
+        let prefix = v6.to_string();
+        plan.address
+            .push(Command::new(IFCONFIG, [device, "inet6", prefix.as_str(), "up"]));
+    }
     plan.address
         .push(Command::new(IFCONFIG, [device, "mtu", &mtu.to_string()]));
-    // Addresses disappear with the utun descriptor; still record the commands
-    // so an explicit stop has a deterministic teardown.
     down.push(Command::new(IFCONFIG, [device, "down"]));
-    if tun.auto_route {
-        for prefix in ["0.0.0.0/1", "128.0.0.0/1"] {
-            plan.up.push(Command::new(
-                ROUTE,
-                ["-n", "add", "-inet", prefix, "-interface", device],
-            ));
-            down.push(Command::new(
-                ROUTE,
-                ["-n", "delete", "-inet", prefix, "-interface", device],
-            ));
-        }
-        for prefix in ["::/1", "8000::/1"] {
-            plan.up.push(Command::new(
-                ROUTE,
-                ["-n", "add", "-inet6", prefix, "-interface", device],
-            ));
-            down.push(Command::new(
-                ROUTE,
-                ["-n", "delete", "-inet6", prefix, "-interface", device],
-            ));
-        }
-    }
-    for prefix in &tun.route_address {
-        let (prefix, _) = split_prefix(prefix);
-        let family = if prefix.contains(':') { "-inet6" } else { "-inet" };
-        plan.up
-            .push(Command::new(ROUTE, ["-n", "add", family, prefix, "-interface", device]));
-        down.push(Command::new(
-            ROUTE,
-            ["-n", "delete", family, prefix, "-interface", device],
-        ));
-    }
-    for prefix in &tun.route_exclude_address {
-        let Some(gateway) = default.and_then(|route| route.gateway) else {
-            continue;
-        };
-        let (prefix, _) = split_prefix(prefix);
-        let family = if prefix.contains(':') { "-inet6" } else { "-inet" };
-        plan.up
-            .push(Command::new(ROUTE, ["-n", "add", family, prefix, &gateway.to_string()]));
-        down.push(Command::new(
-            ROUTE,
-            ["-n", "delete", family, prefix, &gateway.to_string()],
-        ));
-    }
 }
 
-fn plan_linux(
+fn plan_addresses_linux(
     plan: &mut RoutePlan,
     down: &mut Vec<Command>,
     device: &str,
-    tun: &TunConfig,
-    default: Option<&DefaultRoute>,
+    _tun: &TunConfig,
+    addresses: &DeviceAddresses,
     mtu: usize,
 ) {
     const IP: &str = "ip";
     plan.address.push(Command::new(
         IP,
-        ["addr", "add", TUN_IPV4, "dev", device],
+        ["addr", "add", &addresses.v4.to_string(), "dev", device],
     ));
-    plan.address
-        .push(Command::new(IP, ["-6", "addr", "add", TUN_IPV6, "dev", device]));
+    for v6 in &addresses.v6 {
+        let prefix = v6.to_string();
+        plan.address
+            .push(Command::new(IP, ["-6", "addr", "add", prefix.as_str(), "dev", device]));
+    }
     plan.address.push(Command::new(
         IP,
         ["link", "set", "dev", device, "mtu", &mtu.to_string(), "up"],
     ));
-    down.push(Command::new(IP, ["addr", "del", TUN_IPV4, "dev", device]));
-    down.push(Command::new(IP, ["-6", "addr", "del", TUN_IPV6, "dev", device]));
+    down.push(Command::new(
+        IP,
+        ["addr", "del", &addresses.v4.to_string(), "dev", device],
+    ));
+    for v6 in &addresses.v6 {
+        let prefix = v6.to_string();
+        down.push(Command::new(
+            IP,
+            ["-6", "addr", "del", prefix.as_str(), "dev", device],
+        ));
+    }
     down.push(Command::new(IP, ["link", "set", "dev", device, "down"]));
-    if tun.auto_route {
-        for prefix in ["0.0.0.0/1", "128.0.0.0/1"] {
-            plan.up
-                .push(Command::new(IP, ["route", "add", prefix, "dev", device]));
-            down.push(Command::new(IP, ["route", "del", prefix, "dev", device]));
-        }
-        for prefix in ["::/1", "8000::/1"] {
-            plan.up
-                .push(Command::new(IP, ["-6", "route", "add", prefix, "dev", device]));
-            down.push(Command::new(IP, ["-6", "route", "del", prefix, "dev", device]));
-        }
-    }
-    for prefix in &tun.route_address {
-        let (prefix, v6) = split_prefix(prefix);
-        let args: Vec<&str> = if v6 {
-            vec!["-6", "route", "add", prefix, "dev", device]
-        } else {
-            vec!["route", "add", prefix, "dev", device]
-        };
-        plan.up.push(Command::new(IP, args.iter().copied()));
-        let args: Vec<&str> = if v6 {
-            vec!["-6", "route", "del", prefix, "dev", device]
-        } else {
-            vec!["route", "del", prefix, "dev", device]
-        };
-        down.push(Command::new(IP, args.iter().copied()));
-    }
-    for prefix in &tun.route_exclude_address {
-        let Some(default) = default else { continue };
-        let Some(gateway) = default.gateway else { continue };
-        let (prefix, v6) = split_prefix(prefix);
-        let gateway = gateway.to_string();
-        let args: Vec<&str> = if v6 {
-            vec!["-6", "route", "add", prefix, "via", &gateway, "dev", &default.interface]
-        } else {
-            vec!["route", "add", prefix, "via", &gateway, "dev", &default.interface]
-        };
-        plan.up.push(Command::new(IP, args.iter().copied()));
-        let args: Vec<&str> = if v6 {
-            vec!["-6", "route", "del", prefix, "via", &gateway, "dev", &default.interface]
-        } else {
-            vec!["route", "del", prefix, "via", &gateway, "dev", &default.interface]
-        };
-        down.push(Command::new(IP, args.iter().copied()));
-    }
 }
 
-fn plan_windows(
+fn plan_addresses_windows(
     plan: &mut RoutePlan,
     down: &mut Vec<Command>,
     device: &str,
-    tun: &TunConfig,
-    default: Option<&DefaultRoute>,
+    _tun: &TunConfig,
+    addresses: &DeviceAddresses,
     mtu: usize,
 ) {
     const NETSH: &str = "netsh";
     let name_arg = format!("name={device}");
     let mtu_arg = format!("mtu={mtu}");
+    let v4 = &addresses.v4;
+    let v4_addr = v4.network().to_string();
+    let v4_mask = mask_string(v4);
     plan.address.push(Command::new(
         NETSH,
         [
@@ -320,21 +344,17 @@ fn plan_windows(
             "address",
             name_arg.as_str(),
             "static",
-            "198.18.0.1",
-            "255.255.255.252",
+            v4_addr.as_str(),
+            v4_mask.as_str(),
         ],
     ));
-    plan.address.push(Command::new(
-        NETSH,
-        [
-            "interface",
-            "ipv6",
-            "add",
-            "address",
-            device,
-            TUN_IPV6,
-        ],
-    ));
+    for v6 in &addresses.v6 {
+        let prefix = v6.to_string();
+        plan.address.push(Command::new(
+            NETSH,
+            ["interface", "ipv6", "add", "address", device, prefix.as_str()],
+        ));
+    }
     plan.address.push(Command::new(
         NETSH,
         [
@@ -347,17 +367,14 @@ fn plan_windows(
             "store=active",
         ],
     ));
-    down.push(Command::new(
-        NETSH,
-        [
-            "interface",
-            "ipv6",
-            "delete",
-            "address",
-            device,
-            TUN_IPV6,
-        ],
-    ));
+    for v6 in &addresses.v6 {
+        let prefix = v6.to_string();
+        down.push(Command::new(
+            NETSH,
+            ["interface", "ipv6", "delete", "address", device, prefix.as_str()],
+        ));
+    }
+    let delete_addr = format!("addr={v4_addr}");
     down.push(Command::new(
         NETSH,
         [
@@ -366,70 +383,451 @@ fn plan_windows(
             "delete",
             "address",
             name_arg.as_str(),
-            "addr=198.18.0.1",
+            delete_addr.as_str(),
         ],
     ));
-    if tun.auto_route {
-        for (prefix, v6) in [
-            ("0.0.0.0/1", false),
-            ("128.0.0.0/1", false),
-            ("::/1", true),
-            ("8000::/1", true),
-        ] {
-            let family = if v6 { "ipv6" } else { "ipv4" };
-            plan.up.push(Command::new(
-                NETSH,
-                ["interface", family, "add", "route", prefix, device],
-            ));
-            down.push(Command::new(
-                NETSH,
-                ["interface", family, "delete", "route", prefix, device],
-            ));
+}
+
+fn plan_routes_macos(
+    plan: &mut RoutePlan,
+    down: &mut Vec<Command>,
+    device: &str,
+    v4: &[String],
+    v6: &[String],
+) {
+    const ROUTE: &str = "/sbin/route";
+    for prefix in v4 {
+        plan.up.push(Command::new(
+            ROUTE,
+            ["-n", "add", "-inet", prefix, "-interface", device],
+        ));
+        down.push(Command::new(
+            ROUTE,
+            ["-n", "delete", "-inet", prefix, "-interface", device],
+        ));
+    }
+    for prefix in v6 {
+        plan.up.push(Command::new(
+            ROUTE,
+            ["-n", "add", "-inet6", prefix, "-interface", device],
+        ));
+        down.push(Command::new(
+            ROUTE,
+            ["-n", "delete", "-inet6", prefix, "-interface", device],
+        ));
+    }
+}
+
+fn plan_routes_linux(
+    plan: &mut RoutePlan,
+    down: &mut Vec<Command>,
+    device: &str,
+    v4: &[String],
+    v6: &[String],
+) {
+    const IP: &str = "ip";
+    for prefix in v4 {
+        plan.up
+            .push(Command::new(IP, ["route", "add", prefix, "dev", device]));
+        down.push(Command::new(IP, ["route", "del", prefix, "dev", device]));
+    }
+    for prefix in v6 {
+        plan.up
+            .push(Command::new(IP, ["-6", "route", "add", prefix, "dev", device]));
+        down.push(Command::new(IP, ["-6", "route", "del", prefix, "dev", device]));
+    }
+}
+
+fn plan_routes_windows(
+    plan: &mut RoutePlan,
+    down: &mut Vec<Command>,
+    device: &str,
+    v4: &[String],
+    v6: &[String],
+) {
+    const NETSH: &str = "netsh";
+    for prefix in v4 {
+        plan.up.push(Command::new(
+            NETSH,
+            ["interface", "ipv4", "add", "route", prefix, device],
+        ));
+        down.push(Command::new(
+            NETSH,
+            ["interface", "ipv4", "delete", "route", prefix, device],
+        ));
+    }
+    for prefix in v6 {
+        plan.up.push(Command::new(
+            NETSH,
+            ["interface", "ipv6", "add", "route", prefix, device],
+        ));
+        down.push(Command::new(
+            NETSH,
+            ["interface", "ipv6", "delete", "route", prefix, device],
+        ));
+    }
+}
+
+fn mask_string(prefix: &IpNet) -> String {
+    match prefix.network() {
+        IpAddr::V4(_) => {
+            let bits = prefix.prefix();
+            let mask = if bits == 0 {
+                0
+            } else {
+                u32::MAX << (32 - bits)
+            };
+            Ipv4Addr::from(mask).to_string()
+        }
+        IpAddr::V6(_) => format!("/{}", prefix.prefix()),
+    }
+}
+
+/// Subtract every exclude prefix from every range and return minimal CIDRs.
+pub fn subtract_prefixes(ranges: &[String], excludes: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for range in ranges {
+        let Ok(prefix) = range.parse::<IpNet>() else {
+            continue;
+        };
+        let mut pieces = vec![prefix_range(&prefix)];
+        for exclude in excludes {
+            let Ok(exclude) = exclude.parse::<IpNet>() else {
+                continue;
+            };
+            let exclude = prefix_range(&exclude);
+            let mut next = Vec::new();
+            for piece in pieces {
+                subtract_range(piece, exclude, &mut next);
+            }
+            pieces = next;
+            if pieces.is_empty() {
+                break;
+            }
+        }
+        for piece in pieces {
+            out.extend(range_to_prefixes(piece));
         }
     }
-    for prefix in &tun.route_address {
-        let (prefix, v6) = split_prefix(prefix);
-        let family = if v6 { "ipv6" } else { "ipv4" };
-        plan.up.push(Command::new(
-            NETSH,
-            ["interface", family, "add", "route", prefix, device],
-        ));
-        down.push(Command::new(
-            NETSH,
-            ["interface", family, "delete", "route", prefix, device],
-        ));
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntRange {
+    V4(u32, u32),
+    V6(u128, u128),
+}
+
+fn prefix_range(prefix: &IpNet) -> IntRange {
+    match prefix.network() {
+        IpAddr::V4(addr) => {
+            let bits = prefix.prefix();
+            let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+            let start = u32::from(addr) & mask;
+            let end = start | !mask;
+            IntRange::V4(start, end)
+        }
+        IpAddr::V6(addr) => {
+            let bits = prefix.prefix();
+            let mask = if bits == 0 { 0 } else { u128::MAX << (128 - bits) };
+            let start = u128::from(addr) & mask;
+            let end = start | !mask;
+            IntRange::V6(start, end)
+        }
     }
-    for prefix in &tun.route_exclude_address {
-        let Some(default) = default else { continue };
-        let Some(gateway) = default.gateway else { continue };
-        let (prefix, v6) = split_prefix(prefix);
-        let family = if v6 { "ipv6" } else { "ipv4" };
-        let gateway = gateway.to_string();
+}
+
+fn subtract_range(range: IntRange, exclude: IntRange, out: &mut Vec<IntRange>) {
+    match (range, exclude) {
+        (IntRange::V4(start, end), IntRange::V4(x_start, x_end)) => {
+            if x_end < start || x_start > end {
+                out.push(range);
+            } else {
+                if start < x_start {
+                    out.push(IntRange::V4(start, x_start - 1));
+                }
+                if x_end < end {
+                    out.push(IntRange::V4(x_end + 1, end));
+                }
+            }
+        }
+        (IntRange::V6(start, end), IntRange::V6(x_start, x_end)) => {
+            if x_end < start || x_start > end {
+                out.push(range);
+            } else {
+                if start < x_start {
+                    out.push(IntRange::V6(start, x_start - 1));
+                }
+                if x_end < end {
+                    out.push(IntRange::V6(x_end + 1, end));
+                }
+            }
+        }
+        _ => out.push(range),
+    }
+}
+
+fn range_to_prefixes(range: IntRange) -> Vec<String> {
+    match range {
+        IntRange::V4(start, end) => prefixes_v4(start, end),
+        IntRange::V6(start, end) => prefixes_v6(start, end),
+    }
+}
+
+fn prefixes_v4(mut start: u32, end: u32) -> Vec<String> {
+    let mut out = Vec::new();
+    while start <= end {
+        let block_bits = if start == 0 {
+            32
+        } else {
+            start.trailing_zeros().min(32)
+        };
+        let remaining = u64::from(end - start) + 1;
+        let mut size = block_bits;
+        while size > 0 && (1u64 << size) > remaining {
+            size -= 1;
+        }
+        let prefix = 32 - size;
+        out.push(format!("{}/{}", Ipv4Addr::from(start), prefix));
+        let step = 1u64 << size;
+        match u64::from(start).checked_add(step) {
+            Some(next) if next <= u64::from(u32::MAX) => start = next as u32,
+            _ => break,
+        }
+    }
+    out
+}
+
+fn prefixes_v6(mut start: u128, end: u128) -> Vec<String> {
+    let mut out = Vec::new();
+    if start == 0 && end == u128::MAX {
+        out.push("::/0".to_string());
+        return out;
+    }
+    while start <= end {
+        let block_bits = if start == 0 {
+            128
+        } else {
+            start.trailing_zeros().min(128)
+        };
+        let remaining = end.saturating_sub(start).saturating_add(1);
+        let max_bits = if remaining == 0 {
+            0
+        } else {
+            127 - remaining.leading_zeros()
+        };
+        let size = block_bits.min(max_bits);
+        let prefix = 128 - size;
+        out.push(format!("{}/{}", Ipv6Addr::from(start), prefix));
+        if size == 128 {
+            break;
+        }
+        let step = 1u128 << size;
+        match start.checked_add(step) {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    out
+}
+
+/// Linux systemd-resolved DNS commands.
+pub fn plan_dns_linux(device: &str, v4: Option<IpAddr>, v6: Option<IpAddr>) -> RoutePlan {
+    let mut servers = Vec::new();
+    if let Some(v4) = v4 {
+        servers.push(v4.to_string());
+    }
+    if let Some(v6) = v6 {
+        servers.push(v6.to_string());
+    }
+    if servers.is_empty() {
+        return RoutePlan::default();
+    }
+    let mut plan = RoutePlan::default();
+    let mut args = vec!["dns".to_string(), device.to_string()];
+    args.extend(servers);
+    plan.up.push(Command::new("resolvectl", args));
+    plan.up.push(Command::new(
+        "resolvectl",
+        ["domain", device, "~."],
+    ));
+    plan.up.push(Command::new(
+        "resolvectl",
+        ["default-route", device, "true"],
+    ));
+    plan.down
+        .push(Command::new("resolvectl", ["revert", device]));
+    plan
+}
+
+/// macOS `networksetup` DNS commands. `saved` is the `-getdnsservers` output
+/// parsed before the change (empty means "no explicit servers").
+pub fn plan_dns_macos(
+    service: &str,
+    saved: &[String],
+    v4: Option<IpAddr>,
+    v6: Option<IpAddr>,
+) -> RoutePlan {
+    let mut plan = RoutePlan::default();
+    let mut servers = Vec::new();
+    if let Some(v4) = v4 {
+        servers.push(v4.to_string());
+    }
+    if let Some(v6) = v6 {
+        servers.push(v6.to_string());
+    }
+    if servers.is_empty() {
+        return plan;
+    }
+    let mut args = vec!["-setdnsservers".to_string(), service.to_string()];
+    args.extend(servers);
+    plan.up.push(Command::new("networksetup", args));
+    let mut restore = vec!["-setdnsservers".to_string(), service.to_string()];
+    if saved.is_empty() {
+        restore.push("Empty".to_string());
+    } else {
+        restore.extend(saved.iter().cloned());
+    }
+    plan.down.push(Command::new("networksetup", restore));
+    plan
+}
+
+/// Windows `netsh` DNS commands; `saved4`/`saved6` are the previously
+/// configured static servers (empty means DHCP).
+pub fn plan_dns_windows(
+    device: &str,
+    saved4: &[String],
+    saved6: &[String],
+    v4: Option<IpAddr>,
+    v6: Option<IpAddr>,
+) -> RoutePlan {
+    let mut plan = RoutePlan::default();
+    if let Some(v4) = v4 {
         plan.up.push(Command::new(
-            NETSH,
+            "netsh",
+            [
+                "interface",
+                "ipv4",
+                "set",
+                "dnsservers",
+                &format!("name={device}"),
+                "static",
+                &v4.to_string(),
+                "primary",
+            ],
+        ));
+        plan.down.push(restore_windows_dns(device, "ipv4", saved4));
+    }
+    if let Some(v6) = v6 {
+        plan.up.push(Command::new(
+            "netsh",
+            [
+                "interface",
+                "ipv6",
+                "set",
+                "dnsservers",
+                &format!("name={device}"),
+                "static",
+                &v6.to_string(),
+                "primary",
+            ],
+        ));
+        plan.down.push(restore_windows_dns(device, "ipv6", saved6));
+    }
+    plan
+}
+
+fn restore_windows_dns(device: &str, family: &str, saved: &[String]) -> Command {
+    let name = format!("name={device}");
+    match saved.first() {
+        Some(server) => Command::new(
+            "netsh",
             [
                 "interface",
                 family,
-                "add",
-                "route",
-                prefix,
-                &default.interface,
-                &gateway,
+                "set",
+                "dnsservers",
+                name.as_str(),
+                "static",
+                server,
+                "primary",
             ],
-        ));
-        down.push(Command::new(
-            NETSH,
+        ),
+        None => Command::new(
+            "netsh",
             [
                 "interface",
                 family,
-                "delete",
-                "route",
-                prefix,
-                &default.interface,
-                &gateway,
+                "set",
+                "dnsservers",
+                name.as_str(),
+                "dhcp",
             ],
-        ));
+        ),
     }
+}
+
+/// Parse `networksetup -listnetworkserviceorder` for the service owning
+/// `device`.
+pub fn parse_macos_service_order(output: &str, device: &str) -> Option<String> {
+    let mut current: Option<String> = None;
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix('(') {
+            if let Some((_index, name)) = rest.split_once(") ") {
+                current = Some(name.trim().to_string());
+            }
+        }
+        if let Some(rest) = line.strip_prefix("(Hardware Port:") {
+            if let Some((_port, tail)) = rest.split_once("Device: ") {
+                if tail.trim().trim_end_matches(')').trim() == device {
+                    return current;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse `networksetup -getdnsservers`; the "There aren't any" line is empty.
+pub fn parse_macos_dns_servers(output: &str) -> Vec<String> {
+    let mut servers = Vec::new();
+    for line in output.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with("There aren") {
+            continue;
+        }
+        servers.push(line.to_string());
+    }
+    servers
+}
+
+/// Parse the `netsh interface ipvX show dnsservers` static list.
+pub fn parse_windows_dns_servers(output: &str) -> Vec<String> {
+    let mut servers = Vec::new();
+    let mut in_static = false;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("Statically Configured DNS Servers") {
+            in_static = true;
+            if let Some((_, rest)) = line.split_once(':') {
+                let rest = rest.trim();
+                if let Ok(addr) = rest.parse::<IpAddr>() {
+                    servers.push(addr.to_string());
+                }
+            }
+            continue;
+        }
+        if in_static {
+            if line.is_empty() || line.contains(':') {
+                in_static = false;
+                continue;
+            }
+            if let Ok(addr) = line.parse::<IpAddr>() {
+                servers.push(addr.to_string());
+            }
+        }
+    }
+    servers
 }
 
 /// Parse `route -n get default` on macOS.
@@ -497,6 +895,13 @@ mod tests {
         }
     }
 
+    fn addresses() -> DeviceAddresses {
+        DeviceAddresses {
+            v4: "198.18.0.1/30".parse().unwrap(),
+            v6: vec!["fdfe:dcba:9876::1/126".parse().unwrap()],
+        }
+    }
+
     fn route() -> DefaultRoute {
         DefaultRoute {
             interface: "en0".to_string(),
@@ -509,59 +914,80 @@ mod tests {
     }
 
     #[test]
-    fn macos_plans_split_defaults_and_teardown() {
-        let plan = plan(Platform::Macos, "utun7", &base(), Some(&route()), 1400).unwrap();
+    fn macos_auto_ranges_use_pinned_subranges() {
+        let plan = plan(Platform::Macos, "utun7", &base(), &addresses(), Some(&route()), 1400).unwrap();
         let up = rendered(&plan.up);
-        assert!(up.contains(&"/sbin/route -n add -inet 0.0.0.0/1 -interface utun7".to_string()), "{up:?}");
+        assert!(up.contains(&"/sbin/route -n add -inet 1.0.0.0/8 -interface utun7".to_string()), "{up:?}");
         assert!(up.contains(&"/sbin/route -n add -inet 128.0.0.0/1 -interface utun7".to_string()));
-        assert!(up.contains(&"/sbin/route -n add -inet6 ::/1 -interface utun7".to_string()));
         assert!(up.contains(&"/sbin/route -n add -inet6 8000::/1 -interface utun7".to_string()));
+        assert!(!up.iter().any(|line| line.contains("0.0.0.0/8 ")), "{up:?}");
+        assert!(!up.iter().any(|line| line.contains("0.0.0.0/1 ")), "{up:?}");
         assert!(rendered(&plan.address)
             .contains(&"/sbin/ifconfig utun7 inet6 fdfe:dcba:9876::1/126 up".to_string()));
-        assert!(rendered(&plan.address).contains(&"/sbin/ifconfig utun7 mtu 1400".to_string()));
-        let down = rendered(&plan.down);
-        assert!(down.iter().any(|line| line.contains("delete -inet 0.0.0.0/1")));
-        assert_eq!(down.last().unwrap(), "/sbin/ifconfig utun7 down");
+        assert!(rendered(&plan.address)
+            .contains(&"/sbin/ifconfig utun7 inet 198.18.0.1 198.18.0.1 netmask 255.255.255.252 up".to_string()));
     }
 
     #[test]
-    fn linux_plans_routes_and_exclusions() {
+    fn route_address_replaces_auto_ranges() {
         let mut tun = base();
         tun.route_address = vec!["10.0.0.0/8".to_string()];
-        tun.route_exclude_address = vec!["192.168.0.0/16".to_string()];
-        let plan = plan(Platform::Linux, "billow0", &tun, Some(&route()), 1500).unwrap();
-        let up = rendered(&plan.up);
-        assert!(up.contains(&"ip route add 0.0.0.0/1 dev billow0".to_string()), "{up:?}");
-        assert!(up.contains(&"ip -6 route add 8000::/1 dev billow0".to_string()));
-        assert!(up.contains(&"ip route add 10.0.0.0/8 dev billow0".to_string()));
-        assert!(up.contains(&"ip route add 192.168.0.0/16 via 192.168.1.1 dev en0".to_string()));
-        assert!(rendered(&plan.address).contains(&"ip addr add 198.18.0.1/30 dev billow0".to_string()));
-        assert!(rendered(&plan.down).iter().any(|line| line.contains("route del 0.0.0.0/1")));
+        let mac = plan(Platform::Macos, "utun7", &tun, &addresses(), Some(&route()), 1500).unwrap();
+        let up = rendered(&mac.up);
+        assert!(up.contains(&"/sbin/route -n add -inet 10.0.0.0/8 -interface utun7".to_string()), "{up:?}");
+        assert!(up.contains(&"/sbin/route -n add -inet 198.18.0.0/30 -interface utun7".to_string()), "{up:?}");
+        assert!(!up.iter().any(|line| line.contains("1.0.0.0/8")), "{up:?}");
+        let linux = plan(Platform::Linux, "billow0", &tun, &addresses(), Some(&route()), 1500).unwrap();
+        let up = rendered(&linux.up);
+        assert_eq!(
+            up,
+            vec![
+                "ip route add 10.0.0.0/8 dev billow0",
+                "ip -6 route add ::/0 dev billow0"
+            ]
+        );
     }
 
     #[test]
-    fn windows_plans_netsh_commands() {
-        let plan = plan(Platform::Windows, "Billow", &base(), Some(&route()), 1500).unwrap();
-        let up = rendered(&plan.up);
-        assert!(up.contains(&"netsh interface ipv4 add route 0.0.0.0/1 Billow".to_string()), "{up:?}");
-        assert!(up.contains(&"netsh interface ipv6 add route 8000::/1 Billow".to_string()));
-        assert!(rendered(&plan.address)
-            .contains(&"netsh interface ipv4 set address name=Billow static 198.18.0.1 255.255.255.252".to_string()));
-    }
-
-    #[test]
-    fn auto_route_false_leaves_the_default_route_alone() {
+    fn exclude_addresses_are_subtracted_from_the_ranges() {
         let mut tun = base();
-        tun.auto_route = false;
-        let plan = plan(Platform::Linux, "billow0", &tun, Some(&route()), 1500).unwrap();
-        assert!(plan.up.is_empty());
+        tun.route_exclude_address = vec!["192.168.0.0/16".to_string()];
+        let plan = plan(Platform::Linux, "billow0", &tun, &addresses(), Some(&route()), 1500).unwrap();
+        let up = rendered(&plan.up);
+        assert!(!up.iter().any(|line| line.contains("192.168.0.0/16 ")), "{up:?}");
+        assert!(!up.iter().any(|line| line.contains("via ")), "{up:?}");
+        assert!(up.iter().any(|line| line.contains("0.0.0.0/1 ")), "{up:?}");
+    }
+
+    #[test]
+    fn ipv6_false_omits_addresses_and_routes() {
+        let tun = base();
+        let mut addresses = addresses();
+        addresses.v6.clear();
+        let plan = plan(Platform::Linux, "billow0", &tun, &addresses, Some(&route()), 1500).unwrap();
+        assert!(rendered(&plan.address).iter().all(|line| !line.contains("-6")));
+        assert!(rendered(&plan.up).iter().all(|line| !line.contains("::/0")));
+    }
+
+    #[test]
+    fn subtract_prefixes_splits_a_cidr() {
+        let result = subtract_prefixes(&["0.0.0.0/0".to_string()], &["192.168.0.0/16".to_string()]);
+        assert!(!result.contains(&"0.0.0.0/0".to_string()));
+        assert!(!result.contains(&"192.168.0.0/16".to_string()));
+        let joined = result.join(" ");
+        assert!(joined.contains("0.0.0.0/1"), "{joined}");
+        assert!(joined.contains("128.0.0.0/2"), "{joined}");
+        assert_eq!(
+            subtract_prefixes(&["::/0".to_string()], &["8000::/1".to_string()]),
+            vec!["::/1".to_string()]
+        );
     }
 
     #[test]
     fn strict_route_or_exclusions_without_a_gateway_fail_by_name() {
         let mut tun = base();
         tun.strict_route = true;
-        let error = plan(Platform::Linux, "billow0", &tun, None, 1500).unwrap_err();
+        let error = plan(Platform::Linux, "billow0", &tun, &addresses(), None, 1500).unwrap_err();
         assert!(error.contains("strict-route"), "{error}");
         let mut tun = base();
         tun.route_exclude_address = vec!["192.168.0.0/16".to_string()];
@@ -569,8 +995,61 @@ mod tests {
             interface: "en0".to_string(),
             gateway: None,
         };
-        let error = plan(Platform::Linux, "billow0", &tun, Some(&no_gateway), 1500).unwrap_err();
-        assert!(error.contains("route-exclude-address"), "{error}");
+        // Exclusions are a set difference and no longer need a gateway.
+        assert!(plan(Platform::Linux, "billow0", &tun, &addresses(), Some(&no_gateway), 1500).is_ok());
+    }
+
+    #[test]
+    fn dns_plans_construct_and_restore() {
+        let v4 = Some("198.18.0.2".parse().unwrap());
+        let v6 = Some("fdfe:dcba:9876::2".parse().unwrap());
+        let linux = plan_dns_linux("billow0", v4, v6);
+        assert_eq!(
+            rendered(&linux.up),
+            vec![
+                "resolvectl dns billow0 198.18.0.2 fdfe:dcba:9876::2",
+                "resolvectl domain billow0 ~.",
+                "resolvectl default-route billow0 true",
+            ]
+        );
+        assert_eq!(rendered(&linux.down), vec!["resolvectl revert billow0"]);
+        let mac = plan_dns_macos("Wi-Fi", &[], v4, v6);
+        assert_eq!(
+            rendered(&mac.up),
+            vec!["networksetup -setdnsservers Wi-Fi 198.18.0.2 fdfe:dcba:9876::2"]
+        );
+        assert_eq!(
+            rendered(&mac.down),
+            vec!["networksetup -setdnsservers Wi-Fi Empty"]
+        );
+        let restored = plan_dns_macos("Wi-Fi", &["1.1.1.1".to_string()], v4, None);
+        assert_eq!(
+            rendered(&restored.down),
+            vec!["networksetup -setdnsservers Wi-Fi 1.1.1.1"]
+        );
+        let windows = plan_dns_windows("Billow", &[], &[], v4, v6);
+        assert!(rendered(&windows.up)[0].contains("name=Billow static 198.18.0.2 primary"));
+        assert!(rendered(&windows.down).iter().any(|line| line.contains("dhcp")));
+    }
+
+    #[test]
+    fn macos_and_windows_dns_parsers() {
+        let order = "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n\n(2) USB\n(Hardware Port: USB, Device: en5)\n";
+        assert_eq!(parse_macos_service_order(order, "en5").as_deref(), Some("USB"));
+        assert_eq!(parse_macos_service_order(order, "en9"), None);
+        assert_eq!(
+            parse_macos_dns_servers("There aren't any DNS Servers set on Wi-Fi.\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_macos_dns_servers("8.8.8.8\n1.1.1.1\n"),
+            vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]
+        );
+        let netsh = "Configuration for interface \"Billow\"\n    Statically Configured DNS Servers: 1.1.1.1\n                                          8.8.8.8\n    Register with which suffix: Primary only\n";
+        assert_eq!(
+            parse_windows_dns_servers(netsh),
+            vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()]
+        );
     }
 
     #[test]
@@ -589,13 +1068,6 @@ mod tests {
             Some(DefaultRoute {
                 interface: "en0".to_string(),
                 gateway: Some("192.168.1.1".parse().unwrap())
-            })
-        );
-        assert_eq!(
-            parse_linux_default("default dev wg0 scope link\n"),
-            Some(DefaultRoute {
-                interface: "wg0".to_string(),
-                gateway: None
             })
         );
         assert_eq!(

@@ -2329,7 +2329,7 @@ async fn measure_delay(
     let start = Instant::now();
     let mut stream: Box<dyn crate::outbound::Stream> = match &selected {
         crate::groups::Selected::Direct => {
-            let stream = tokio::net::TcpStream::connect((host.as_str(), port))
+            let stream = crate::outbound::connect_bound_str(&host, port)
                 .await
                 .map_err(|error| DelayError::Failed(format!("connect: {error}")))?;
             Box::new(stream)

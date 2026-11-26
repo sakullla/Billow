@@ -105,13 +105,21 @@ impl DesktopTun {
             );
         }
         let device = device::create(&tun)?;
-        let plan = route_plan::plan(
+        let addresses = route_plan::DeviceAddresses::from_config(&loaded.config);
+        let routes = route_plan::plan(
             platform,
             device.name(),
             &tun,
+            &addresses,
             physical.as_ref(),
             tun.effective_mtu(),
         )?;
+        let dns = plan_dns(platform, device.name(), &tun, &addresses)?;
+        let mut plan = routes;
+        plan.up.extend(dns.up);
+        let mut down = dns.down;
+        down.extend(plan.down);
+        plan.down = down;
         apply_plan(&plan, &mut |command| run_command(command))?;
 
         let bound_interface = physical.as_ref().map(|route| route.interface.clone());
@@ -124,7 +132,7 @@ impl DesktopTun {
 
         let tunnel_options = TunnelOptions {
             mtu: tun.effective_mtu(),
-            hijack_dns: tun.hijack_dns(),
+            dns_hijack: tun.dns_hijack.clone(),
             ..options.tunnel
         };
         let tunnel = match Tunnel::start_at(
@@ -312,9 +320,81 @@ fn run_command(command: &Command) -> Result<(), String> {
     })
 }
 
-/// Detect the physical default interface/gateway for `auto-detect-interface`.
-pub fn detect_default_route(platform: Platform) -> Option<DefaultRoute> {
+/// Build the system-DNS command set for `dns-mode`. Capture commands (macOS
+/// service lookup / saved servers, Windows saved servers) run here so the
+/// generated teardown can restore the previous resolver configuration.
+fn plan_dns(
+    platform: Platform,
+    device: &str,
+    tun: &TunConfig,
+    addresses: &route_plan::DeviceAddresses,
+) -> Result<RoutePlan, String> {
+    if !tun.dns_mode.touches_system_resolver() {
+        return Ok(RoutePlan::default());
+    }
+    let (v4, v6) = addresses.dns_servers();
+    if v4.is_none() && v6.is_none() {
+        return Err("desktop-tun: dns-mode needs a usable TUN address + 1".to_string());
+    }
     match platform {
+        Platform::Linux => Ok(route_plan::plan_dns_linux(device, v4, v6)),
+        Platform::Macos => {
+            let Some(order) = command_output(
+                "/usr/sbin/networksetup",
+                &["-listnetworkserviceorder"],
+            )
+            .or_else(|| command_output("networksetup", &["-listnetworkserviceorder"]))
+            else {
+                tracing::warn!(
+                    "desktop-tun: dns-mode cannot run `networksetup -listnetworkserviceorder`; the system resolver is left unchanged"
+                );
+                return Ok(RoutePlan::default());
+            };
+            let Some(service) = route_plan::parse_macos_service_order(&order, device) else {
+                tracing::warn!(
+                    device,
+                    "desktop-tun: dns-mode found no networksetup service for this interface (utun interfaces have none); the system resolver is left unchanged"
+                );
+                return Ok(RoutePlan::default());
+            };
+            let saved = command_output("networksetup", &["-getdnsservers", service.as_str()])
+                .map(|text| route_plan::parse_macos_dns_servers(&text))
+                .unwrap_or_default();
+            Ok(route_plan::plan_dns_macos(&service, &saved, v4, v6))
+        }
+        Platform::Windows => {
+            let name = format!("name={device}");
+            let saved4 = command_output(
+                "netsh",
+                &["interface", "ipv4", "show", "dnsservers", name.as_str()],
+            )
+            .map(|text| route_plan::parse_windows_dns_servers(&text))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    device,
+                    "desktop-tun: dns-mode could not capture the previous Windows IPv4 DNS servers; restore falls back to DHCP"
+                );
+                Vec::new()
+            });
+            let saved6 = command_output(
+                "netsh",
+                &["interface", "ipv6", "show", "dnsservers", name.as_str()],
+            )
+            .map(|text| route_plan::parse_windows_dns_servers(&text))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    device,
+                    "desktop-tun: dns-mode could not capture the previous Windows IPv6 DNS servers; restore falls back to DHCP"
+                );
+                Vec::new()
+            });
+            Ok(route_plan::plan_dns_windows(device, &saved4, &saved6, v4, v6))
+        }
+    }
+}
+
+/// Detect the physical default interface/gateway for `auto-detect-interface`.
+pub fn detect_default_route(platform: Platform) -> Option<DefaultRoute> {    match platform {
         Platform::Macos => command_output("/sbin/route", &["-n", "get", "default"])
             .and_then(|text| route_plan::parse_macos_default(&text)),
         Platform::Linux => ["ip", "/sbin/ip", "/usr/sbin/ip"]

@@ -1552,16 +1552,16 @@ impl GroupRegistry {
                             let ip = ips.first().copied().ok_or_else(|| {
                                 "direct probe target resolved to no address".to_string()
                             })?;
-                            tokio::net::TcpStream::connect((ip, parsed.port))
-                                .await
-                                .map_err(|e| e.to_string())?
+                            crate::outbound::connect_bound(std::net::SocketAddr::new(
+                                ip,
+                                parsed.port,
+                            ))
+                            .await
+                            .map_err(|e| e.to_string())?
                         }
-                        None => tokio::net::TcpStream::connect((
-                            parsed.host.as_str(),
-                            parsed.port,
-                        ))
-                        .await
-                        .map_err(|e| e.to_string())?,
+                        None => crate::outbound::connect_bound_str(&parsed.host, parsed.port)
+                            .await
+                            .map_err(|e| e.to_string())?,
                     };
                     Box::new(stream)
                 }
