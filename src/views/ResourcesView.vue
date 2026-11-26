@@ -171,6 +171,10 @@ const isInline = (row: ProviderRow) => row.vehicle.toLowerCase().includes('inlin
 const keyOf = (row: ProviderRow) => `${row.kind}:${row.name}`
 const stateOf = (row: ProviderRow) => progress[keyOf(row)] ?? null
 const fruitless = (row: ProviderRow) => stateOf(row)?.state === 'pending'
+const hasPendingInKind = (kind: 'proxy' | 'rule') =>
+  Object.entries(progress).some(([key, value]) => key.startsWith(`${kind}:`) && value.state === 'pending')
+const sectionBusy = (kind: 'proxy' | 'rule') =>
+  batchState[kind].running || hasPendingInKind(kind)
 const updatedMs = (row: ProviderRow) => {
   const ms = Date.parse(row.updated_at)
   return Number.isNaN(ms) || ms < 86_400_000 ? null : ms
@@ -210,6 +214,7 @@ async function load(quiet = false) {
 }
 
 async function act(row: ProviderRow, action: Action, quiet = false, expectedEpoch = batchEpoch) {
+  if (fruitless(row)) return false
   const key = keyOf(row)
   progress[key] = { state: 'pending', action, reason: null, at: null }
   try {
@@ -229,14 +234,26 @@ async function act(row: ProviderRow, action: Action, quiet = false, expectedEpoc
   }
 }
 
-async function single(row: ProviderRow, action: Action) {
-  if (fruitless(row)) return
+async function single(row: ProviderRow, action: Action): Promise<boolean> {
+  if (!snap.value.kernel_running || sectionBusy(row.kind)) return false
   const epoch = batchEpoch
   const ok = await act(row, action, false, epoch)
-  if (disposed || epoch !== batchEpoch) return
+  if (disposed || epoch !== batchEpoch) return false
   if (ok) await load(true)
   // A health check only touches its own row; no full page reload and no other row state.
   if (action === 'healthcheck') void store.refresh()
+  return ok
+}
+
+async function runDetailAction(action: Action) {
+  const row = detail.value?.row
+  if (!row) return
+  const ok = await single(row, action)
+  if (!ok || disposed) return
+  const current = detail.value?.row
+  if (current && current.kind === row.kind && current.name === row.name) {
+    await openDetail(current)
+  }
 }
 
 const failedRows = (rows: ProviderRow[]) =>
@@ -257,7 +274,7 @@ async function runBatch(
   action: Action,
   onlyFailed = false,
 ) {
-  if (batchState[kind].running) return
+  if (!snap.value.kernel_running || sectionBusy(kind)) return
   const targets: { row: ProviderRow; action: Action }[] = onlyFailed
     ? failedRows(rows).map((row) => ({ row, action: stateOf(row)?.action ?? action }))
     : rows
@@ -764,6 +781,7 @@ onMounted(() => {
               v-if="!batchState[section.kind].running && failedRows(section.all).length > 0"
               type="button"
               class="btn ghost sm danger-text"
+              :disabled="sectionBusy(section.kind)"
               :data-testid="`retry-failed-${section.kind}`"
               @click="retryFailed(section.all, section.kind)"
             >
@@ -773,7 +791,7 @@ onMounted(() => {
               v-if="section.kind === 'proxy'"
               type="button"
               class="btn ghost sm"
-              :disabled="batchState.proxy.running"
+              :disabled="sectionBusy('proxy')"
               :aria-busy="(batchState.proxy.running && batchState.proxy.action === 'healthcheck') || undefined"
               data-testid="healthcheck-all-proxy"
               @click="runBatch(section.all, 'proxy', 'healthcheck')"
@@ -787,7 +805,7 @@ onMounted(() => {
             <button
               type="button"
               class="btn ghost sm"
-              :disabled="batchState[section.kind].running"
+              :disabled="sectionBusy(section.kind)"
               :aria-busy="(batchState[section.kind].running && batchState[section.kind].action === 'update') || undefined"
               :data-testid="`update-all-${section.kind}`"
               @click="runBatch(section.all, section.kind, 'update')"
@@ -858,7 +876,7 @@ onMounted(() => {
             <p v-if="stateOf(row)?.state === 'error'" class="provider-note field-error small" role="alert" data-provider-state="error">
               <Icon name="alert" :size="13" />
               {{ stateOf(row)?.action === 'healthcheck' ? tr('健康检查失败') : tr('更新失败') }}：{{ stateOf(row)?.reason }}
-              <button type="button" class="btn ghost sm" data-testid="retry-provider" @click="retry(row)">{{ tr('重试') }}</button>
+              <button type="button" class="btn ghost sm" :disabled="sectionBusy(row.kind)" data-testid="retry-provider" @click="retry(row)">{{ tr('重试') }}</button>
             </p>
           </div>
           <div class="provider-actions">
@@ -868,7 +886,7 @@ onMounted(() => {
               class="icon-btn"
               :aria-label="tr('{0} 健康检查', { 0: row.name })"
               :title="tr('{0} 健康检查', { 0: row.name })"
-              :disabled="fruitless(row)"
+              :disabled="sectionBusy(row.kind)"
               @click="single(row, 'healthcheck')"
             >
               <span v-if="stateOf(row)?.state === 'pending' && stateOf(row)?.action === 'healthcheck'" class="spinner sm" />
@@ -879,7 +897,7 @@ onMounted(() => {
               class="icon-btn"
               :aria-label="isInline(row) ? tr('{0} 无需更新', { 0: row.name }) : tr('更新 {0}', { 0: row.name })"
               :title="isInline(row) ? tr('内联资源无需更新') : tr('更新 {0}', { 0: row.name })"
-              :disabled="isInline(row) || fruitless(row)"
+              :disabled="isInline(row) || sectionBusy(row.kind)"
               @click="single(row, 'update')"
             >
               <span v-if="stateOf(row)?.state === 'pending' && stateOf(row)?.action === 'update'" class="spinner sm" />
@@ -1218,7 +1236,7 @@ onMounted(() => {
       <!-- The sheet's work action is primary; closing is the quiet way out. -->
       <template #footer>
         <button
-          v-if="store.connectionReturn.value"
+          v-if="store.connectionReturn.value?.targetPage === 'resources'"
           type="button"
           class="btn ghost"
           data-testid="provider-return-connection"
@@ -1238,9 +1256,9 @@ onMounted(() => {
           v-if="detail && detail.row.kind === 'proxy'"
           type="button"
           class="btn primary"
-          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :disabled="!snap.kernel_running || sectionBusy(detail.row.kind)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="detail && single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
+          @click="runDetailAction('healthcheck')"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="zap" :size="15" />{{ fruitless(detail.row) ? tr('检查中') : tr('健康检查') }}
@@ -1249,9 +1267,9 @@ onMounted(() => {
           v-else-if="detail && !isInline(detail.row)"
           type="button"
           class="btn primary"
-          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :disabled="!snap.kernel_running || sectionBusy(detail.row.kind)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="detail && single(detail.row, 'update').then(() => detail && openDetail(detail.row))"
+          @click="runDetailAction('update')"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="refresh" :size="15" />{{ fruitless(detail.row) ? tr('更新中') : tr('更新规则集') }}
