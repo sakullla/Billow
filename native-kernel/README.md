@@ -149,7 +149,9 @@ traffic remains pending.
 T34 adds the desktop TUN data plane behind `--features desktop-tun` and the
 CLI's `--tun`. The kernel parses `tun` strictly (`enable`, `device`, `stack`,
 `mtu`, `auto-route`, `auto-detect-interface`, `strict-route`, `dns-hijack`,
-`dns-mode`, `inet6-address`, `route-address`, `route-exclude-address`);
+`dns-mode`, `inet6-address`, `iproute2-table-index` (default 2022; 0 and
+reserved 253/254/255 rejected), `iproute2-rule-index` (default 9000; 0
+rejected), `route-address`, `route-exclude-address`);
 `stack: mips|mixed|gvisor` is **recorded but served by this kernel's in-tree
 userspace IP stack** (not the pinned MipsSoft/gVisor implementation),
 `system`, unknown keys, non-53 `dns-hijack` entries and other unsupported
@@ -172,8 +174,11 @@ non-empty `route-address` installs only those prefixes (macOS also adds the TUN
 subnet); otherwise macOS installs the sub-ranges `1.0.0.0/8` … `128.0.0.0/1`
 (IPv6 mirrors it with `100::/8` … `8000::/1`). Linux installs the routes in a
 dedicated policy table (default 2022) with a rule (default 9000) and refuses an
-occupied table/priority before touching the device; `route-exclude-address` is
-a CIDR set difference that stays covered by the main table. Windows sets the
+occupied table/priority before touching the device; a missing table
+(`FIB table does not exist.`/`Dump terminated`) is treated as empty, and other
+precheck failures are wrapped as `desktop-tun: Linux route precheck failed`.
+`route-exclude-address` is a CIDR set difference that stays covered by the main
+table. Windows sets the
 interface metric to 0 and installs `add route prefix=... interface=...
 metric=0`, restoring `metric=automatic` on teardown. `dns-mode: native|hijack`
 points the system resolver at `tun4+1`/`tun6+1` (Linux `resolvectl`, Windows

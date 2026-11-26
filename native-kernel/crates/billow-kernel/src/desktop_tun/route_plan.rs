@@ -737,6 +737,56 @@ pub fn linux_precheck_commands(tun: &TunConfig, ipv6: bool) -> Vec<Command> {
     commands
 }
 
+/// `iproute2` reports a missing table as a non-zero exit with this stderr;
+/// that means the table is empty, not that the precheck failed.
+pub fn linux_missing_table(stdout: &str, stderr: &str) -> bool {
+    let combined = format!("{stderr}\n{stdout}");
+    combined.contains("FIB table does not exist") || combined.contains("Dump terminated")
+}
+
+/// Normalise `ip route show table <t>` output. Missing tables are an empty
+/// result; every other failure is wrapped with the command name.
+pub fn linux_precheck_route_result(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    table: u32,
+) -> Result<String, String> {
+    if success {
+        return Ok(stdout.to_string());
+    }
+    if linux_missing_table(stdout, stderr) {
+        return Ok(String::new());
+    }
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(format!(
+        "desktop-tun: Linux route precheck failed: ip route show table {table}: {detail}"
+    ))
+}
+
+/// Normalise `ip [-6] rule show` output; a non-zero exit is always an error.
+pub fn linux_precheck_rule_result(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<String, String> {
+    if success {
+        return Ok(stdout.to_string());
+    }
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(format!(
+        "desktop-tun: Linux route precheck failed: ip rule show: {detail}"
+    ))
+}
+
 /// Name a pre-existing table/priority conflict instead of overwriting it.
 pub fn linux_conflict(
     rules: &str,
@@ -1160,6 +1210,39 @@ mod tests {
         assert!(linux_conflict("", "default dev eth0", 2022, 9000)
             .unwrap()
             .contains("2022"));
+        // A not-yet-created table is an empty result, not a precheck failure.
+        assert_eq!(
+            linux_precheck_route_result(
+                false,
+                "",
+                "Error: ipv4: FIB table does not exist.\nDump terminated\n",
+                2022
+            )
+            .unwrap(),
+            ""
+        );
+        assert_eq!(
+            linux_precheck_route_result(
+                false,
+                "",
+                "Error: ipv6: FIB table does not exist.\nDump terminated\n",
+                2022
+            )
+            .unwrap(),
+            ""
+        );
+        let error = linux_precheck_route_result(
+            false,
+            "",
+            "RTNETLINK answers: Operation not permitted",
+            2022,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("desktop-tun: Linux route precheck failed:"), "{error}");
+        assert!(error.contains("ip route show table 2022"), "{error}");
+        let error = linux_precheck_rule_result(false, "", "Operation not permitted").unwrap_err();
+        assert!(error.starts_with("desktop-tun: Linux route precheck failed:"), "{error}");
+        assert!(error.contains("ip rule show"), "{error}");
 
         let plan = plan(Platform::Windows, "Billow", &tun, &addresses(), Some(&route()), 1500)
             .unwrap();

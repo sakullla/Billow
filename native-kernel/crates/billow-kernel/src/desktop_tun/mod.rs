@@ -346,8 +346,15 @@ pub fn effective_dns_hijack(tun: &TunConfig, addresses: &route_plan::DeviceAddre
 /// is created so a conflict cannot leave a half-installed TUN.
 fn check_linux_precheck(tun: &TunConfig, ipv6: bool) -> Result<(), String> {
     let commands = route_plan::linux_precheck_commands(tun, ipv6);
-    let rules = run_capture(&commands[0])?;
-    let routes = run_capture(&commands[1])?;
+    let rules = run_precheck_capture(&commands[0])?;
+    let routes = run_precheck_capture(&commands[1])?;
+    let rules = route_plan::linux_precheck_rule_result(rules.success, &rules.stdout, &rules.stderr)?;
+    let routes = route_plan::linux_precheck_route_result(
+        routes.success,
+        &routes.stdout,
+        &routes.stderr,
+        tun.iproute2_table_index,
+    )?;
     if let Some(conflict) = route_plan::linux_conflict(
         &rules,
         &routes,
@@ -357,8 +364,15 @@ fn check_linux_precheck(tun: &TunConfig, ipv6: bool) -> Result<(), String> {
         return Err(conflict);
     }
     if ipv6 {
-        let rules6 = run_capture(&commands[2])?;
-        let routes6 = run_capture(&commands[3])?;
+        let rules6 = run_precheck_capture(&commands[2])?;
+        let routes6 = run_precheck_capture(&commands[3])?;
+        let rules6 = route_plan::linux_precheck_rule_result(rules6.success, &rules6.stdout, &rules6.stderr)?;
+        let routes6 = route_plan::linux_precheck_route_result(
+            routes6.success,
+            &routes6.stdout,
+            &routes6.stderr,
+            tun.iproute2_table_index,
+        )?;
         if let Some(conflict) = route_plan::linux_conflict(
             &rules6,
             &routes6,
@@ -369,6 +383,31 @@ fn check_linux_precheck(tun: &TunConfig, ipv6: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+struct PrecheckCapture {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Read-only precheck command: a spawn failure is wrapped, never a bare OS
+/// error, so the host reports a named Linux precheck failure.
+fn run_precheck_capture(command: &Command) -> Result<PrecheckCapture, String> {
+    let output = ProcessCommand::new(&command.program)
+        .args(&command.args)
+        .output()
+        .map_err(|error| {
+            format!(
+                "desktop-tun: Linux route precheck failed: {}: {error}",
+                command.render()
+            )
+        })?;
+    Ok(PrecheckCapture {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /// Build the system-DNS command set for `dns-mode`. Capture commands (macOS

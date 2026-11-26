@@ -8,7 +8,9 @@ Date: 2026-11-26. Host: macOS arm64 (darwin 25.x), non-root. Workspace: `native-
   `--tun` and the desktop packaging script builds with `--features desktop-tun`.
 - Strict `tun` parsing in `config.rs`: `enable`, `device`, `stack`, `mtu`,
   `auto-route`, `auto-detect-interface`, `strict-route`, `dns-hijack`,
-  `dns-mode`, `inet6-address`, `route-address`, `route-exclude-address`.
+  `dns-mode`, `inet6-address`, `iproute2-table-index` (default 2022; 0 and
+  reserved 253/254/255 rejected), `iproute2-rule-index` (default 9000; 0
+  rejected), `route-address`, `route-exclude-address`.
   - `stack: mips|mixed|gvisor` loads and is **served by the in-tree userspace
     IP stack**, not the pinned MipsSoft/gVisor implementation (recorded as a
     warning).
@@ -44,7 +46,10 @@ Date: 2026-11-26. Host: macOS arm64 (darwin 25.x), non-root. Workspace: `native-
     ... `8000::/1`). Linux uses a dedicated policy table + rule (default table
     2022, rule 9000): `ip route add ... table <t>` plus `ip rule add priority
     <r> lookup <t>`; a precheck refuses an occupied table/priority instead of
-    overwriting it, and teardown deletes the rules and table routes. Excluded
+    overwriting it, and treats a missing table (`FIB table does not exist.` /
+    `Dump terminated`, exit 2) as empty, IPv4 and IPv6 independently; any other
+    precheck failure is wrapped with `desktop-tun: Linux route precheck failed`.
+    Teardown deletes the rules and table routes. Excluded
     prefixes are a CIDR set difference and stay covered by the main table, not
     written into the TUN table. Windows sets interface metric 0 and installs
     `add route prefix=... interface=... metric=0`, restoring `metric=automatic`
@@ -95,6 +100,21 @@ All commands used an isolated `CARGO_TARGET_DIR` under the session temp dir and
 | `cargo check --features ios-vpn` | pass |
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1` | pass: 252 passed, 0 failed, 10 ignored |
 | `node --test tool/kernel-compat/runner.test.mjs` | pass: 10/10 |
+
+Isolated Docker netns check (no host routes touched): `ubuntu:22.04` with
+iproute2 5.15 reports a fresh table 2022 as non-zero, and our normaliser maps
+that to empty:
+
+```
+$ ip route show table 2022
+Error: ipv4: FIB table does not exist.
+Dump terminated
+v4=2
+$ ip -6 route show table 2022
+Error: ipv6: FIB table does not exist.
+Dump terminated
+v6=2
+```
 
 Manual non-root probe of the real binary (no privilege):
 
