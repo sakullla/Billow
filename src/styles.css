@@ -4227,35 +4227,51 @@ html[data-col-resizing] * {
 }
 .log-line {
   display: grid;
-  grid-template-columns: 68px 38px minmax(0, 1fr) 24px;
+  grid-template-columns: 68px 38px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
   padding: 5px var(--space-4);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
-  content-visibility: auto;
-  contain-intrinsic-size: auto 30px;
 }
 .log-line:last-child {
   border-bottom: 0;
 }
-.log-line:hover {
+.log-line:hover,
+.log-line.menu-open {
   background: var(--hover);
 }
-.log-copy {
+.log-line-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.log-copy,
+.log-more-btn {
   width: 24px;
   height: 24px;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
 .log-line:hover .log-copy,
-.log-line:focus-within .log-copy {
+.log-line:focus-within .log-copy,
+.log-line.menu-open .log-copy,
+.log-line:hover .log-more-btn,
+.log-line:focus-within .log-more-btn,
+.log-line.menu-open .log-more-btn {
   opacity: 1;
 }
-.compact .log-copy { opacity: 1; }
+.compact .log-copy,
+.compact .log-more-btn { opacity: 1; }
 @media (hover: none), (pointer: coarse) {
-  .log-copy { opacity: 1; }
+  .log-copy,
+  .log-more-btn { opacity: 1; }
+}
+.log-spacer {
+  padding: 0;
+  pointer-events: none;
 }
 .log-scroll.no-wrap {
   overflow-x: auto;
@@ -4328,7 +4344,7 @@ button.log-level:hover {
   white-space: pre-wrap;
 }
 .compact .log-line {
-  grid-template-columns: 38px minmax(0, 1fr) 24px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   padding: 5px var(--space-3);
 }
 .compact .log-time {
@@ -10374,4 +10390,212 @@ details.cfg-section[open] .cfg-fold-icon {
   .toast-action {
     transition: none;
   }
+}
+
+/* ───────────── Diagnostic tools polish (R1–R5) ───────────── */
+/* Desktop single-row compact toolbars across Connections, Rules, Logs, Resources */
+.shell:not(.compact) .conn-toolbar,
+.shell:not(.compact) .rule-toolbar,
+.shell:not(.compact) .log-toolbar,
+.shell:not(.compact) .res-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shell:not(.compact) .conn-toolbar .search,
+.shell:not(.compact) .rule-toolbar .search,
+.shell:not(.compact) .log-toolbar .search,
+.shell:not(.compact) .res-toolbar .search {
+  flex: 1 1 160px;
+  min-width: 140px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.shell:not(.compact) .conn-toolbar .segmented,
+.shell:not(.compact) .rule-toolbar .segmented,
+.shell:not(.compact) .log-toolbar .segmented,
+.shell:not(.compact) .res-toolbar .segmented {
+  height: 34px;
+  padding: 3px;
+  border-radius: 10px;
+}
+
+.shell:not(.compact) .conn-toolbar .segmented .segment,
+.shell:not(.compact) .rule-toolbar .segmented .segment,
+.shell:not(.compact) .log-toolbar .segmented .segment,
+.shell:not(.compact) .res-toolbar .segmented .segment {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: var(--text-xs);
+}
+
+.shell:not(.compact) .conn-toolbar > .btn.sm,
+.shell:not(.compact) .rule-toolbar > .btn.sm,
+.shell:not(.compact) .rule-toolbar > .chip-btn,
+.shell:not(.compact) .rule-toolbar > .rule-filter,
+.shell:not(.compact) .log-toolbar > .btn.sm,
+.shell:not(.compact) .res-toolbar .toolbar-options > .btn.sm {
+  height: 34px;
+  border-radius: 10px;
+}
+
+.search .search-match-count,
+.search .search-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 0 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Connections quick filter drawer & mobile card rule summary */
+.conn-filter-toggle {
+  gap: 5px;
+}
+.conn-filter-drawer {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.conn-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.conn-quick-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.conn-quick-chip {
+  max-width: 190px;
+  gap: 5px;
+}
+.conn-quick-reset {
+  margin-left: auto;
+}
+.conn-card-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.conn-rule-kind {
+  flex: none;
+}
+.conn-rule-payload {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.conn-card-menu {
+  flex: none;
+}
+.compact .conn-toolbar > .conn-filter-toggle,
+.compact .conn-toolbar > [data-testid='reset-connection-toolbar'] {
+  order: 4;
+}
+
+/* Rules matcher panel & locate highlight */
+.rule-matcher {
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.rule-matcher-hit {
+  background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+.rule-matcher-item {
+  background: var(--surface-2);
+}
+@keyframes rule-highlight-pulse {
+  0% {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  55% {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .rule-row.highlighted {
+    animation: rule-highlight-pulse 0.9s var(--ease);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rule-row.highlighted {
+    animation: none;
+  }
+}
+
+/* Logs narrow-window & mobile level filter */
+.log-level-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.log-level-filter::-webkit-scrollbar {
+  display: none;
+}
+.compact .log-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.compact .log-toolbar .log-level-filter {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* Resources permanent toolbar & detail progressive expansion / copy */
+.res-toolbar .toolbar-options {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.compact .res-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.compact .res-toolbar .toolbar-options {
+  width: 100%;
+  justify-content: space-between;
+}
+.detail-copy-btn {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.detail-list > li:hover .detail-copy-btn,
+.detail-list > li:focus-within .detail-copy-btn {
+  opacity: 1;
+}
+.compact .detail-copy-btn {
+  opacity: 1;
+}
+@media (hover: none), (pointer: coarse) {
+  .detail-copy-btn {
+    opacity: 1;
+  }
+}
+.detail-more-row {
+  justify-content: center;
+  padding: 8px var(--space-3);
 }

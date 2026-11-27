@@ -206,4 +206,42 @@ describe('T8 Latin demo', () => {
     await settle(30)
     expectEnglish('settings kernel after switching')
   })
+
+  it('renders diagnostic tool panels (connections, rules matcher, logs, resources) in English', async () => {
+    const wrapper = await mountApp({})
+    const store = (wrapper.vm as unknown as { store: any }).store
+    await wrapper.find('[data-testid="power"]').trigger('click')
+    await settle(1500)
+
+    store.go('connections')
+    await settle(100)
+    const toggleFilters = wrapper.find('[data-testid="toggle-conn-filters"]')
+    if (toggleFilters.exists()) {
+      await toggleFilters.trigger('click')
+      await settle(40)
+    }
+    expectEnglish('connections with quick filters')
+
+    store.go('rules')
+    await settle(100)
+    await wrapper.find('[data-testid="rule-match-toggle"]').trigger('click')
+    await settle(40)
+    await wrapper.find('[data-testid="rule-match-target"]').setValue('api.github.com')
+    await wrapper.find('[data-testid="rule-match-form"]').trigger('submit')
+    await settle(80)
+    expectEnglish('rules match tester')
+
+    store.go('logs')
+    await settle(100)
+    const issuesBtn = wrapper.find('.log-level-filter [data-value="issues"]')
+    if (issuesBtn.exists()) {
+      await issuesBtn.trigger('click')
+      await settle(40)
+    }
+    expectEnglish('logs issues filter')
+
+    store.go('resources')
+    await settle(100)
+    expectEnglish('resources permanent toolbar')
+  })
 })

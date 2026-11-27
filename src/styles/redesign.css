@@ -897,12 +897,24 @@ html[data-keyboard] .shell.compact::after {
 .group-test:focus-visible,
 .node-picker-item:focus-visible,
 .connect-control:focus-visible,
-.compact .tab:focus-visible {
+.compact .tab:focus-visible,
+.tag-btn:focus-visible,
+.rule-proxy-badge:focus-visible,
+.rule-matcher-toggle:focus-visible,
+.rule-open-provider:focus-visible,
+.rule-row-more:focus-visible,
+.conn-quick-chip:focus-visible,
+.conn-card-menu:focus-visible,
+.log-level:focus-visible,
+.log-more-btn:focus-visible,
+.detail-copy-btn:focus-visible,
+.provider-fold:focus-visible {
   outline: 1.5px solid var(--accent-ring);
   outline-offset: 2px;
 }
 
-.group-toggle:focus-visible {
+.group-toggle:focus-visible,
+.provider-open:focus-visible {
   outline: 1.5px solid var(--accent-ring);
   outline-offset: -1px;
 }
@@ -914,11 +926,16 @@ html[data-keyboard] .shell.compact::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .main > .page {
+  .main > .page,
+  .rule-row.highlighted {
     animation: none;
   }
   .nav-item .icon,
-  .page.proxies .node {
+  .page.proxies .node,
+  .log-copy,
+  .log-more-btn,
+  .detail-copy-btn,
+  .rule-open-provider {
     transition: none;
   }
 }
