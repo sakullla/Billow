@@ -36,6 +36,7 @@
 pub mod config;
 pub(crate) mod controller;
 pub mod dns;
+mod domain_index;
 pub mod engine;
 pub mod geodata;
 pub mod groups;

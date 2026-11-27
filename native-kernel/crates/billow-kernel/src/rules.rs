@@ -15,7 +15,7 @@ use crate::config::{
     Rule,
 };
 use crate::geodata::{DomainPattern, DomainSet, GeoIpMatcher, Geodata};
-use crate::provider::{ProviderPayload, RuleProviders};
+use crate::provider::{IndexedProvider, ProviderPayload, RuleProviders};
 
 /// Destination and connection metadata available before dialling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +197,7 @@ pub struct CompiledRuleSet {
     pub domain: DomainSet,
     pub cidr: Vec<crate::config::ipnet_like::IpNet>,
     pub classical: Vec<CompiledRule>,
+    pub(crate) indexed: Option<IndexedProvider>,
     /// Number of entries as reported by the provider payload.
     pub count: usize,
 }
@@ -220,14 +221,25 @@ impl CompiledRuleSet {
                 flag(ip.is_some_and(|ip| self.cidr.iter().any(|net| net.contains(ip))))
             }
             crate::config::RuleBehavior::Classical => {
-                for rule in &self.classical {
+                let first_domain = self.indexed.as_ref().and_then(|index| {
+                    index.domains.first_match(&target.host).unwrap_or_else(|error| {
+                        tracing::error!(%error, "cannot read the rule-provider domain index");
+                        None
+                    })
+                });
+                for (position, rule) in self.classical.iter().enumerate() {
+                    if let (Some(domain), Some(index)) = (first_domain, &self.indexed) {
+                        if domain < index.other_positions[position] {
+                            return Outcome::Yes;
+                        }
+                    }
                     match rule.matches_state(target, state, set, allow_resolve) {
                         Outcome::Yes => return Outcome::Yes,
                         Outcome::Resolve => return Outcome::Resolve,
                         Outcome::No => {}
                     }
                 }
-                Outcome::No
+                flag(first_domain.is_some())
             }
         }
     }
@@ -444,7 +456,8 @@ impl CompiledMatcher {
         let hit = match self {
             CompiledMatcher::Domain(value) => target.host == *value,
             CompiledMatcher::DomainSuffix(value) => {
-                target.host == *value || target.host.ends_with(&format!(".{value}"))
+                target.host == *value
+                    || target.host.strip_suffix(value).is_some_and(|prefix| prefix.ends_with('.'))
             }
             CompiledMatcher::DomainKeyword(value) => target.host.contains(value),
             CompiledMatcher::DomainRegex(regex) => regex.is_match(&target.host),
@@ -814,6 +827,7 @@ pub(crate) fn compile_provider_payload(
             }
         }
         crate::config::RuleBehavior::Classical => {
+            classical.reserve_exact(payload.entries.len());
             let names = slots.keys().cloned().collect::<std::collections::BTreeSet<_>>();
             for entry in &payload.entries {
                 let rule = crate::config::parse_rule_without_target_in(entry, &names)
@@ -834,16 +848,20 @@ pub(crate) fn compile_provider_payload(
             }
         }
     }
+    let count = match behavior {
+        crate::config::RuleBehavior::Domain => domain.len(),
+        crate::config::RuleBehavior::IpCidr => cidr.len(),
+        crate::config::RuleBehavior::Classical => {
+            payload.indexed.as_ref().map_or(classical.len(), |index| index.count)
+        }
+    };
     Ok(CompiledRuleSet {
         behavior,
-        domain: domain.clone(),
-        count: match behavior {
-            crate::config::RuleBehavior::Domain => domain.len(),
-            crate::config::RuleBehavior::IpCidr => cidr.len(),
-            crate::config::RuleBehavior::Classical => classical.len(),
-        },
+        domain,
+        count,
         cidr,
         classical,
+        indexed: payload.indexed.clone(),
     })
 }
 

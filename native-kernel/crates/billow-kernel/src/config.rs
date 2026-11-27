@@ -2068,15 +2068,12 @@ pub(crate) fn parse_rule_without_target_in(
     parse_rule_line(line, false, &context)
 }
 
+pub(crate) fn trim_rule_field(field: &str) -> &str {
+    field.trim().trim_matches(['"', '\''])
+}
+
 fn split_rule_fields(line: &str) -> Vec<String> {
-    line.split(',')
-        .map(|field| {
-            field
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'')
-                .to_string()
-        })
-        .collect()
+    line.split(',').map(|field| trim_rule_field(field).to_string()).collect()
 }
 
 fn parse_rule_line(

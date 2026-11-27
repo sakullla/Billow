@@ -267,6 +267,58 @@ fn provider_paths_are_confined_to_the_configuration_root() {
 }
 
 #[test]
+fn indexed_classical_provider_keeps_resolve_order_and_switches_snapshots() {
+    use billow_kernel::geodata::Geodata;
+    use billow_kernel::outbound::tls::ClientTls;
+    use billow_kernel::rules::{MatchInput, MatchStep, RuleSet};
+
+    let dir = temp_dir("indexed-classical");
+    let path = dir.join("large.yaml");
+    // Pad with comments to exercise the large-file path with three rules.
+    let comment = format!("#{}\n", " ".repeat(32 * 1024));
+    let mut data = comment.repeat(32);
+    data.push_str(
+        "payload:\n  - DOMAIN,early.test\n  - IP-CIDR,192.0.2.0/24\n  - DOMAIN-SUFFIX,late.test\n",
+    );
+    std::fs::write(&path, data).unwrap();
+    let loaded = billow_kernel::load_config(
+        "mixed-port: 7890\nrule-providers:\n  p: {type: file, path: large.yaml, behavior: classical, format: yaml}\nrules: ['RULE-SET,p,REJECT', 'MATCH,DIRECT']\n",
+        "indexed.yaml",
+    )
+    .unwrap();
+    let tls = Arc::new(ClientTls::new(&[]));
+    let prepared = billow_kernel::provider::prepare(&loaded.config, &dir, &tls).unwrap();
+    let providers = billow_kernel::provider::finish(
+        &loaded.config,
+        prepared,
+        Arc::new(Geodata::default()),
+        &dir,
+        tls,
+    )
+    .unwrap();
+    let set = RuleSet::compile(&loaded.config, providers.clone()).unwrap();
+    let snapshot = providers.rule_provider("p").unwrap().snapshot();
+    assert_eq!(snapshot.compiled.count, 3);
+    assert_eq!(snapshot.compiled.classical.len(), 1);
+
+    let unresolved = MatchInput { ip: None, resolved: false };
+    let early = Target::new("early.test", None);
+    let late = Target::new("child.late.test", None);
+    assert!(matches!(set.evaluate_step(&early, unresolved, 0), MatchStep::Matched(rule) if rule.action == Action::Reject));
+    assert_eq!(set.evaluate_step(&late, unresolved, 0), MatchStep::NeedResolve);
+    assert_eq!(set.evaluate(&late).action, Action::Reject);
+    assert_eq!(set.evaluate(&Target::new("notlate.test", None)).action, Action::Direct);
+
+    std::fs::write(&path, "payload: ['DOMAIN,replacement.test']\n").unwrap();
+    assert_eq!(set.evaluate(&late).action, Action::Reject);
+    assert_eq!(providers.update_rule_provider("p").unwrap().entries, 1);
+    assert_eq!(set.evaluate(&late).action, Action::Direct);
+    assert_eq!(set.evaluate(&Target::new("replacement.test", None)).action, Action::Reject);
+    drop((snapshot, set, providers));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn classical_provider_names_unsupported_rule_types_instead_of_dropping_them() {
     let dir = temp_dir("classical-reject");
     std::fs::create_dir_all(dir.join("providers")).unwrap();

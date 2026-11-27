@@ -17,9 +17,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::Read;
+use std::fs::File;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -1158,10 +1160,125 @@ impl fmt::Display for MmdbValue {
     }
 }
 
+#[derive(Debug, Clone)]
+enum MmdbStorage {
+    Memory(Arc<Vec<u8>>),
+    File { file: Arc<File>, len: usize },
+}
+
+impl MmdbStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(bytes) => bytes.len(),
+            Self::File { len, .. } => *len,
+        }
+    }
+}
+
+const MMDB_READ_PAGE: usize = 4096;
+
+/// A small window caches nearby tree nodes and data values for one lookup.
+/// Holding the open file also keeps existing matchers on their original
+/// database when the host installs an update by renaming a replacement.
+struct MmdbReader<'a> {
+    storage: &'a MmdbStorage,
+    page: [u8; MMDB_READ_PAGE],
+    page_start: usize,
+    page_end: usize,
+    large_value: Vec<u8>,
+}
+
+impl<'a> MmdbReader<'a> {
+    fn new(storage: &'a MmdbStorage) -> Self {
+        Self {
+            storage,
+            page: [0; MMDB_READ_PAGE],
+            page_start: 0,
+            page_end: 0,
+            large_value: Vec::new(),
+        }
+    }
+
+    fn read(&mut self, at: usize, size: usize) -> Result<&[u8], String> {
+        let file_len = self.storage.len();
+        let end = at
+            .checked_add(size)
+            .filter(|end| *end <= file_len)
+            .ok_or_else(|| format!("MMDB value is truncated at {at} (len {file_len})"))?;
+        let file = match self.storage {
+            MmdbStorage::Memory(bytes) => return Ok(&bytes[at..end]),
+            MmdbStorage::File { file, .. } => file,
+        };
+        if size == 0 {
+            return Ok(&[]);
+        }
+        let read_at = |target: &mut [u8], offset: usize| {
+            read_file_at(file, target, offset as u64)
+                .map_err(|error| format!("cannot read MMDB at offset {offset}: {error}"))
+        };
+        if size > MMDB_READ_PAGE {
+            self.large_value.resize(size, 0);
+            read_at(&mut self.large_value, at)?;
+            return Ok(&self.large_value);
+        }
+        if at < self.page_start || end > self.page_end {
+            let aligned = at - at % MMDB_READ_PAGE;
+            let start = aligned.max(end.saturating_sub(MMDB_READ_PAGE));
+            let len = (file_len - start).min(MMDB_READ_PAGE);
+            read_at(&mut self.page[..len], start)?;
+            self.page_start = start;
+            self.page_end = start + len;
+        }
+        Ok(&self.page[at - self.page_start..end - self.page_start])
+    }
+
+    fn metadata_marker(&mut self) -> Result<usize, String> {
+        let mut end = self.storage.len();
+        while end >= MMDB_MARKER.len() {
+            let start = end.saturating_sub(MMDB_READ_PAGE);
+            if let Some(offset) = self
+                .read(start, end - start)?
+                .windows(MMDB_MARKER.len())
+                .rposition(|bytes| bytes == MMDB_MARKER)
+            {
+                return Ok(start + offset);
+            }
+            if start == 0 {
+                break;
+            }
+            end = start + MMDB_MARKER.len() - 1;
+        }
+        Err("missing MaxMind DB metadata marker".to_string())
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn read_file_at(file: &File, out: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(out, offset)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_file_at(file: &File, mut out: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !out.is_empty() {
+        match file.seek_read(out, offset) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                out = &mut out[read..];
+                offset += read as u64;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// A parsed MaxMind DB file (format version 2).
 #[derive(Debug, Clone)]
 pub struct Mmdb {
-    bytes: Vec<u8>,
+    storage: MmdbStorage,
     database_type: String,
     ip_version: u8,
     node_count: u64,
@@ -1173,25 +1290,35 @@ pub struct Mmdb {
 
 impl Mmdb {
     pub fn open(path: &Path) -> Result<Mmdb, ConfigError> {
-        let bytes = std::fs::read(path).map_err(|e| {
+        let read_error = |e| {
             ConfigError::Unsupported(format!("cannot read {}: {e}", path.display()))
-        })?;
-        Mmdb::parse(bytes)
+        };
+        let file = File::open(path).map_err(read_error)?;
+        let len = usize::try_from(file.metadata().map_err(read_error)?.len())
+            .map_err(|_| ConfigError::Unsupported(format!("MMDB {} is too large", path.display())))?;
+        Mmdb::from_storage(MmdbStorage::File {
+            file: Arc::new(file),
+            len,
+        })
             .map_err(|e| ConfigError::Unsupported(format!("{}: {e}", path.display())))
     }
 
     pub fn parse(bytes: Vec<u8>) -> Result<Mmdb, String> {
-        let marker = find_last(&bytes, MMDB_MARKER)
-            .ok_or_else(|| "missing MaxMind DB metadata marker".to_string())?;
+        Mmdb::from_storage(MmdbStorage::Memory(Arc::new(bytes)))
+    }
+
+    fn from_storage(storage: MmdbStorage) -> Result<Mmdb, String> {
+        let mut reader = MmdbReader::new(&storage);
+        let marker = reader.metadata_marker()?;
         let at = marker + MMDB_MARKER.len();
         // First pass: no data-section base is known yet. This is enough to
         // read `node_count`/`record_size`; real files keep metadata pointers
         // (when any) inside the data section, so decode again below.
-        let (metadata, end) = decode_value(&bytes, at, 0, 0, 0)?;
-        if end != bytes.len() {
+        let (metadata, end) = decode_value(&mut reader, at, 0, 0)?;
+        if end != storage.len() {
             return Err(format!(
                 "{} trailing bytes after MMDB metadata",
-                bytes.len().saturating_sub(end)
+                storage.len().saturating_sub(end)
             ));
         }
         let node_count = metadata
@@ -1221,18 +1348,18 @@ impl Mmdb {
             .ok_or_else(|| "MMDB tree size overflows".to_string())?;
         let data_start = tree_size
             .checked_add(16)
-            .filter(|start| *start <= bytes.len())
+            .filter(|start| *start <= storage.len())
             .ok_or_else(|| "MMDB tree does not fit in the file".to_string())?;
         if marker < data_start {
             return Err("MMDB metadata marker is inside the search tree".to_string());
         }
         // Second pass resolves metadata pointers against the data section.
-        let (metadata, _) = decode_value(&bytes, at, data_start, data_start, 0)?;
+        let (metadata, _) = decode_value(&mut reader, at, data_start, 0)?;
         if metadata.get("node_count").and_then(MmdbValue::as_u64) != Some(node_count) {
             return Err("MMDB metadata is inconsistent between passes".to_string());
         }
         let mut db = Mmdb {
-            bytes,
+            storage,
             database_type,
             ip_version,
             node_count,
@@ -1273,6 +1400,7 @@ impl Mmdb {
     }
 
     pub fn lookup(&self, ip: IpAddr) -> Result<Option<MmdbValue>, String> {
+        let mut reader = MmdbReader::new(&self.storage);
         // In a v6 database, IPv4 addresses live below 96 zero bits.
         let mapped_v4 = matches!((self.ip_version, ip), (6, IpAddr::V4(_)));
         let raw = match ip {
@@ -1287,7 +1415,7 @@ impl Mmdb {
             (128, 0)
         };
         for bit in (0..total).rev() {
-            let record = self.read_record(node, (raw >> bit) & 1 == 1)?;
+            let record = self.read_record(&mut reader, node, (raw >> bit) & 1 == 1)?;
             if record == self.node_count {
                 return Ok(None);
             }
@@ -1297,11 +1425,10 @@ impl Mmdb {
                     .and_then(|delta| usize::try_from(delta).ok())
                     .and_then(|delta| delta.checked_add(self.tree_size))
                     .ok_or_else(|| "MMDB data pointer is invalid".to_string())?;
-                if offset >= self.bytes.len() {
+                if offset >= self.storage.len() {
                     return Err("MMDB data pointer is outside the file".to_string());
                 }
-                let (value, _) =
-                    decode_value(&self.bytes, offset, self.data_start, self.data_start, 0)?;
+                let (value, _) = decode_value(&mut reader, offset, self.data_start, 0)?;
                 return Ok(Some(value));
             }
             node = record;
@@ -1309,7 +1436,7 @@ impl Mmdb {
         Ok(None)
     }
 
-    fn read_record(&self, node: u64, right: bool) -> Result<u64, String> {
+    fn read_record(&self, reader: &mut MmdbReader<'_>, node: u64, right: bool) -> Result<u64, String> {
         if node >= self.node_count {
             return Err("MMDB node index is outside the tree".to_string());
         }
@@ -1319,21 +1446,12 @@ impl Mmdb {
             .and_then(|node| node.checked_mul(record_bytes))
             .ok_or_else(|| "MMDB node offset overflows".to_string())?;
         let half = record_bytes / 2;
-        let offset = base + if right { half } else { 0 };
-        let end = offset
-            .checked_add(half)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| "MMDB record is outside the file".to_string())?;
-        let bytes = &self.bytes[offset..end];
+        let all = reader.read(base, record_bytes)?;
+        let bytes = if right { &all[half..half * 2] } else { &all[..half] };
         let value = match self.record_size {
             16 => u64::from(u16::from_be_bytes([bytes[0], bytes[1]])),
             24 => u64::from(bytes[0]) << 16 | u64::from(bytes[1]) << 8 | u64::from(bytes[2]),
             28 => {
-                let end = base
-                    .checked_add(7)
-                    .filter(|end| *end <= self.bytes.len())
-                    .ok_or_else(|| "MMDB 28-bit record is outside the file".to_string())?;
-                let all: [u8; 7] = self.bytes[base..end].try_into().expect("7 bytes");
                 if right {
                     (u64::from(all[3] & 0x0f) << 24)
                         | (u64::from(all[4]) << 16)
@@ -1360,9 +1478,10 @@ impl Mmdb {
         if self.ip_version != 6 {
             return Ok(0);
         }
+        let mut reader = MmdbReader::new(&self.storage);
         let mut node = 0u64;
         for _ in 0..96 {
-            let record = self.read_record(node, false)?;
+            let record = self.read_record(&mut reader, node, false)?;
             if record >= self.node_count {
                 return Ok(0);
             }
@@ -1434,61 +1553,39 @@ impl Mmdb {
     }
 }
 
-fn find_last(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .rposition(|window| window == needle)
-}
-
 /// Decode one MaxMind DB data value at `at`. Pointers are resolved against the
-/// data section (`data_start`); metadata pointers are relative to `base`.
+/// data section, or the temporary base used to parse metadata.
 fn decode_value(
-    bytes: &[u8],
+    reader: &mut MmdbReader<'_>,
     at: usize,
-    data_start: usize,
     pointer_base: usize,
     depth: usize,
 ) -> Result<(MmdbValue, usize), String> {
     if depth > MMDB_MAX_DEPTH {
         return Err("MMDB value nesting is too deep".to_string());
     }
-    let control = *bytes
-        .get(at)
-        .ok_or_else(|| format!("MMDB value is truncated at {at} (len {})", bytes.len()))?;
+    let control = reader.read(at, 1)?[0];
     let mut position = at + 1;
     let mut kind = control >> 5;
     if kind == 0 {
-        kind = *bytes
-            .get(position)
-            .ok_or_else(|| "MMDB extended type is truncated".to_string())?
-            + 7;
+        kind = reader.read(position, 1)?[0]
+            .checked_add(7)
+            .ok_or_else(|| "MMDB extended type is invalid".to_string())?;
         position += 1;
     }
     let mut size = u64::from(control & 0x1f);
     match size {
         29 => {
-            size = 29
-                + u64::from(
-                    *bytes
-                        .get(position)
-                        .ok_or_else(|| "MMDB size is truncated".to_string())?,
-                );
+            size = 29 + u64::from(reader.read(position, 1)?[0]);
             position += 1;
         }
         30 => {
-            let raw = bytes
-                .get(position..position + 2)
-                .ok_or_else(|| "MMDB size is truncated".to_string())?;
+            let raw = reader.read(position, 2)?;
             size = 285 + u64::from(u16::from_be_bytes([raw[0], raw[1]]));
             position += 2;
         }
         31 => {
-            let raw = bytes
-                .get(position..position + 3)
-                .ok_or_else(|| "MMDB size is truncated".to_string())?;
+            let raw = reader.read(position, 3)?;
             size = 65_821
                 + u64::from(raw[0]) * 65_536
                 + u64::from(raw[1]) * 256
@@ -1505,23 +1602,17 @@ fn decode_value(
             let value = u64::from(control & 0x7);
             let pointed = match pointer_size {
                 0 => {
-                    let next = *bytes
-                        .get(position)
-                        .ok_or_else(|| "MMDB pointer is truncated".to_string())?;
+                    let next = reader.read(position, 1)?[0];
                     position += 1;
                     (value << 8) | u64::from(next)
                 }
                 1 => {
-                    let raw = bytes
-                        .get(position..position + 2)
-                        .ok_or_else(|| "MMDB pointer is truncated".to_string())?;
+                    let raw = reader.read(position, 2)?;
                     position += 2;
                     ((value << 16) | u64::from(u16::from_be_bytes([raw[0], raw[1]]))) + 2048
                 }
                 2 => {
-                    let raw = bytes
-                        .get(position..position + 3)
-                        .ok_or_else(|| "MMDB pointer is truncated".to_string())?;
+                    let raw = reader.read(position, 3)?;
                     position += 3;
                     ((value << 24)
                         | (u64::from(raw[0]) << 16)
@@ -1530,9 +1621,7 @@ fn decode_value(
                         + 526_336
                 }
                 _ => {
-                    let raw = bytes
-                        .get(position..position + 4)
-                        .ok_or_else(|| "MMDB pointer is truncated".to_string())?;
+                    let raw = reader.read(position, 4)?;
                     position += 4;
                     u64::from(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
                 }
@@ -1541,36 +1630,28 @@ fn decode_value(
                 .ok()
                 .and_then(|pointed| pointed.checked_add(pointer_base))
                 .ok_or_else(|| "MMDB pointer overflows".to_string())?;
-            if target >= bytes.len() {
+            if target >= reader.storage.len() {
                 return Err("MMDB pointer is outside the data section".to_string());
             }
-            let (value, _) = decode_value(bytes, target, data_start, pointer_base, depth + 1)?;
+            let (value, _) = decode_value(reader, target, pointer_base, depth + 1)?;
             Ok((value, position))
         }
         2 => {
-            let raw = bytes
-                .get(position..position + size as usize)
-                .ok_or_else(|| "MMDB string is truncated".to_string())?;
+            let raw = reader.read(position, size as usize)?;
             let value = String::from_utf8_lossy(raw).to_string();
             Ok((MmdbValue::String(value), position + size as usize))
         }
         3 => {
-            let raw = bytes
-                .get(position..position + 8)
-                .ok_or_else(|| "MMDB double is truncated".to_string())?;
+            let raw = reader.read(position, 8)?;
             let value = f64::from_be_bytes(raw.try_into().expect("8 bytes"));
             Ok((MmdbValue::Double(value), position + 8))
         }
         4 => {
-            let raw = bytes
-                .get(position..position + size as usize)
-                .ok_or_else(|| "MMDB bytes are truncated".to_string())?;
+            let raw = reader.read(position, size as usize)?;
             Ok((MmdbValue::Bytes(raw.to_vec()), position + size as usize))
         }
         5 | 6 | 9 | 10 => {
-            let raw = bytes
-                .get(position..position + size as usize)
-                .ok_or_else(|| "MMDB unsigned integer is truncated".to_string())?;
+            let raw = reader.read(position, size as usize)?;
             let value = read_uint(raw);
             Ok((MmdbValue::UInt(value), position + size as usize))
         }
@@ -1579,10 +1660,10 @@ fn decode_value(
             let mut position = position;
             for _ in 0..size {
                 let (key, next) =
-                    decode_value(bytes, position, data_start, pointer_base, depth + 1)?;
+                    decode_value(reader, position, pointer_base, depth + 1)?;
                 position = next;
                 let (value, next) =
-                    decode_value(bytes, position, data_start, pointer_base, depth + 1)?;
+                    decode_value(reader, position, pointer_base, depth + 1)?;
                 position = next;
                 let MmdbValue::String(key) = key else {
                     return Err("MMDB map key is not a string".to_string());
@@ -1592,9 +1673,7 @@ fn decode_value(
             Ok((MmdbValue::Map(map), position))
         }
         8 => {
-            let raw = bytes
-                .get(position..position + size as usize)
-                .ok_or_else(|| "MMDB signed integer is truncated".to_string())?;
+            let raw = reader.read(position, size as usize)?;
             let value = if raw.is_empty() {
                 0
             } else {
@@ -1614,7 +1693,7 @@ fn decode_value(
             let mut position = position;
             for _ in 0..size {
                 let (value, next) =
-                    decode_value(bytes, position, data_start, pointer_base, depth + 1)?;
+                    decode_value(reader, position, pointer_base, depth + 1)?;
                 position = next;
                 array.push(value);
             }
@@ -1622,9 +1701,7 @@ fn decode_value(
         }
         14 => Ok((MmdbValue::Bool(size != 0), position)),
         15 => {
-            let raw = bytes
-                .get(position..position + 4)
-                .ok_or_else(|| "MMDB float is truncated".to_string())?;
+            let raw = reader.read(position, 4)?;
             let value = f32::from_be_bytes(raw.try_into().expect("4 bytes")) as f64;
             Ok((MmdbValue::Double(value), position + 4))
         }
@@ -1892,11 +1969,10 @@ mod tests {
         assert!(db.matcher("!lan").unwrap().matches("1.1.1.1".parse().unwrap()));
     }
 
-    #[test]
-    fn mmdb_parses_a_minimal_country_database() {
-        // Build a one-node database holding {"country":{"iso_code":"ZZ"}}.
+    fn minimal_country_mmdb(code: &str) -> Vec<u8> {
+        // Build a one-node country database.
         // node 0: left -> data, right -> no data.
-        let country = map_value(1, &[str_value("iso_code"), str_value("ZZ")]);
+        let country = map_value(1, &[str_value("iso_code"), str_value(code)]);
         let data = map_value(1, &[str_value("country"), country]);
         let tree_size = 6u64; // record_size 24
         let mut bytes = vec![0u8; tree_size as usize];
@@ -1926,13 +2002,33 @@ mod tests {
         body.extend(b"MaxMind.com");
         let meta_bytes = map_value(4, &meta);
         body.extend(meta_bytes);
-        let db = match Mmdb::parse(body.clone()) {
-            Ok(db) => db,
-            Err(error) => panic!("minimal mmdb: {error}"),
-        };
+        body
+    }
+
+    #[test]
+    fn mmdb_parses_a_minimal_country_database() {
+        let db = Mmdb::parse(minimal_country_mmdb("ZZ")).expect("minimal mmdb");
         assert_eq!(db.database_type(), "GeoLite2-Country");
         assert_eq!(db.country_codes("1.2.3.4".parse().unwrap()), ["zz"]);
         assert!(db.country_codes("200.1.2.3".parse().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn open_mmdb_retains_its_generation_when_the_file_is_replaced() {
+        let dir = std::env::temp_dir().join(format!("billow-mmdb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let database = dir.join("Country.mmdb");
+        let replacement = dir.join("Country.mmdb.new");
+        std::fs::write(&database, minimal_country_mmdb("ZZ")).unwrap();
+        std::fs::write(&replacement, minimal_country_mmdb("CN")).unwrap();
+        let previous = Mmdb::open(&database).unwrap();
+        std::fs::rename(&replacement, &database).unwrap();
+        let current = Mmdb::open(&database).unwrap();
+        let ip = "1.2.3.4".parse().unwrap();
+        assert_eq!(previous.country_codes(ip), ["zz"]);
+        assert_eq!(current.country_codes(ip), ["cn"]);
+        drop((previous, current));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn str_value(value: &str) -> Vec<u8> {

@@ -19,6 +19,7 @@ use crate::config::{
     Config, ConfigError, GeodataRequirements, ProviderVehicle, ProxyOverride,
     ProxyProviderConfig, RuleBehavior, RuleFormat, RuleProviderConfig,
 };
+use crate::domain_index::{self, IndexedDomains};
 use crate::geodata::{decode_mrs, GeoIpSource, Geodata};
 use crate::outbound::tls::{self, ClientTls};
 use crate::proxies::{parse_proxies, Proxy};
@@ -30,6 +31,14 @@ pub struct ProviderPayload {
     pub entries: Vec<String>,
     pub format: RuleFormat,
     pub vehicle: &'static str,
+    pub(crate) indexed: Option<IndexedProvider>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedProvider {
+    pub domains: Arc<IndexedDomains>,
+    pub other_positions: Arc<[u64]>,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -158,18 +167,21 @@ impl RuleProviders {
             &self.geodata,
             &self.slots,
         )?;
+        let entries = payload.indexed.as_ref().map_or(payload.entries.len(), |index| index.count);
+        let vehicle = payload.vehicle;
+        let updated_at = SystemTime::now();
         let generation = slot.replace_next(RuleProviderSnapshot {
             generation: 0,
-            payload: payload.clone(),
+            payload,
             compiled: Arc::new(compiled),
-            updated_at: SystemTime::now(),
+            updated_at,
         });
         Ok(ProviderUpdate {
             name: name.to_string(),
             generation,
-            entries: payload.entries.len(),
-            vehicle: payload.vehicle,
-            updated_at: SystemTime::now(),
+            entries,
+            vehicle,
+            updated_at,
         })
     }
 
@@ -289,7 +301,7 @@ fn requirements_for_matcher(
 /// handle is stable and its snapshot is swapped in the second pass.
 pub fn finish(
     config: &Config,
-    prepared: PreparedProviders,
+    mut prepared: PreparedProviders,
     geodata: Arc<Geodata>,
     base_dir: &Path,
     tls: Arc<ClientTls>,
@@ -297,20 +309,12 @@ pub fn finish(
     verify_provider_references(&prepared)?;
     let mut slots: BTreeMap<String, Arc<RuleProviderSlot>> = BTreeMap::new();
     for provider in &config.rule_providers {
-        let payload = prepared
-            .rule
-            .get(&provider.name)
-            .cloned()
-            .unwrap_or(ProviderPayload {
-                entries: Vec::new(),
-                format: provider.format,
-                vehicle: provider.vehicle.as_str(),
-            });
         let empty = CompiledRuleSet {
             behavior: provider.behavior,
             domain: Default::default(),
             cidr: Vec::new(),
             classical: Vec::new(),
+            indexed: None,
             count: 0,
         };
         slots.insert(
@@ -320,7 +324,12 @@ pub fn finish(
                 provider.clone(),
                 RuleProviderSnapshot {
                     generation: 1,
-                    payload,
+                    payload: ProviderPayload {
+                        entries: Vec::new(),
+                        format: provider.format,
+                        vehicle: provider.vehicle.as_str(),
+                        indexed: None,
+                    },
                     compiled: Arc::new(empty),
                     updated_at: SystemTime::now(),
                 },
@@ -331,12 +340,12 @@ pub fn finish(
     for provider in &config.rule_providers {
         let payload = prepared
             .rule
-            .get(&provider.name)
-            .cloned()
+            .remove(&provider.name)
             .unwrap_or(ProviderPayload {
                 entries: Vec::new(),
                 format: provider.format,
                 vehicle: provider.vehicle.as_str(),
+                indexed: None,
             });
         let compiled =
             compile_provider_payload(&provider.name, provider.behavior, &payload, &geodata, &slots)?;
@@ -352,8 +361,7 @@ pub fn finish(
     for provider in &config.proxy_providers {
         let proxies = prepared
             .proxy
-            .get(&provider.name)
-            .cloned()
+            .remove(&provider.name)
             .unwrap_or_default();
         proxy_slots.insert(
             provider.name.clone(),
@@ -388,6 +396,15 @@ fn verify_provider_references(prepared: &PreparedProviders) -> Result<(), Config
         // patterns and cannot name another provider.
         if payload.format != RuleFormat::Mrs {
             for entry in &payload.entries {
+                // Also catches SRC-RULE-SET and references inside logic rules.
+                // Valid references always contain this literal rule type.
+                if !entry
+                    .as_bytes()
+                    .windows(b"RULE-SET".len())
+                    .any(|bytes| bytes.eq_ignore_ascii_case(b"RULE-SET"))
+                {
+                    continue;
+                }
                 if let Ok(rule) =
                     crate::config::parse_rule_without_target_in(entry, &names)
                 {
@@ -559,12 +576,45 @@ fn read_rule_payload(
             entries: provider.payload.clone(),
             format: provider.format,
             vehicle: "inline",
+            indexed: None,
         };
         return Ok(payload);
     }
     // A path outside the root is a configuration error, not a reason to use
     // the payload fallback: pinned `ParseRuleProvider` rejects it up front.
     validate_vehicle_path(&provider.name, "rule-provider", &provider.vehicle, base_dir)?;
+    if provider.behavior == RuleBehavior::Classical
+        && matches!(provider.format, RuleFormat::Text | RuleFormat::Yaml)
+    {
+        if let ProviderVehicle::File { path } = &provider.vehicle {
+            let path = resolve_provider_path(base_dir, path).map_err(ConfigError::Unsupported)?;
+            if let Ok(file) = std::fs::File::open(&path) {
+                if file.metadata().is_ok_and(|metadata| {
+                    metadata.len() >= 1024 * 1024
+                        && provider.size_limit.is_none_or(|limit| metadata.len() <= limit)
+                }) {
+                    let indexed = domain_index::index_file(file, provider.format).map_err(|error| {
+                        ConfigError::Unsupported(format!(
+                            "rule-provider '{}' could not build its domain index: {error}",
+                            provider.name
+                        ))
+                    })?;
+                    if let Some(indexed) = indexed {
+                        return Ok(ProviderPayload {
+                            entries: indexed.other_rules,
+                            format: provider.format,
+                            vehicle: provider.vehicle.as_str(),
+                            indexed: Some(IndexedProvider {
+                                domains: indexed.domains,
+                                other_positions: indexed.other_positions.into(),
+                                count: indexed.count,
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+    }
     if matches!(provider.vehicle, ProviderVehicle::Http { .. }) {
         if let Some(proxy) = &provider.proxy {
             if !proxy.is_empty() {
@@ -594,6 +644,7 @@ fn read_rule_payload(
                     entries: provider.payload.clone(),
                     format: RuleFormat::Yaml,
                     vehicle: provider.vehicle.as_str(),
+                    indexed: None,
                 });
             }
             return Err(ConfigError::Unsupported(format!(
@@ -614,6 +665,7 @@ fn read_rule_payload(
         entries,
         format: provider.format,
         vehicle: provider.vehicle.as_str(),
+        indexed: None,
     })
 }
 
@@ -654,23 +706,26 @@ fn parse_rule_payload_bytes(
         RuleFormat::Yaml => {
             let text = std::str::from_utf8(bytes)
                 .map_err(|e| format!("payload is not UTF-8: {e}"))?;
-            let value: serde_yaml::Value = serde_yaml::from_str(text)
+            let mut value: serde_yaml::Value = serde_yaml::from_str(text)
                 .map_err(|e| format!("payload is not YAML: {e}"))?;
-            let Some(mapping) = value.as_mapping() else {
+            let Some(mapping) = value.as_mapping_mut() else {
                 return Err("YAML payload must be a mapping with payload or rules".to_string());
             };
             for key in ["payload", "rules"] {
-                if let Some(entries) = mapping.get(serde_yaml::Value::String(key.to_string())) {
+                if let Some(entries) = mapping.get_mut(serde_yaml::Value::String(key.to_string())) {
                     let entries = entries
-                        .as_sequence()
+                        .as_sequence_mut()
                         .ok_or_else(|| format!("'{key}' must be a list"))?;
+                    let entries = std::mem::take(entries);
+                    drop(value);
                     return entries
-                        .iter()
-                        .map(|entry| {
-                            entry
+                        .into_iter()
+                        .map(|entry| match entry {
+                            serde_yaml::Value::String(text) => Ok(text),
+                            other => other
                                 .as_str()
                                 .map(str::to_string)
-                                .ok_or_else(|| format!("'{key}' entries must be strings"))
+                                .ok_or_else(|| format!("'{key}' entries must be strings")),
                         })
                         .collect();
                 }
