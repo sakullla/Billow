@@ -251,13 +251,27 @@ describe('Diagnostic tools polish (R1–R5)', () => {
 
       // Temporarily disabling the matched rule causes the next match to record it in skipped_disabled.
       const firstHitToggle = wrapper.find('[data-rule-highlighted="true"] [data-testid="rule-toggle"]')
-      if (firstHitToggle.exists()) {
-        await firstHitToggle.trigger('click')
-        await settle(120)
-        await wrapper.find('[data-testid="rule-match-form"]').trigger('submit')
-        await settle(120)
-        expect(wrapper.find('[data-testid="rule-match-skipped"]').exists()).toBe(true)
-      }
+      expect(firstHitToggle.exists()).toBe(true)
+      await firstHitToggle.trigger('click')
+      await settle(120)
+      await wrapper.find('[data-testid="rule-match-form"]').trigger('submit')
+      await settle(120)
+      expect(wrapper.find('[data-testid="rule-match-skipped"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="rule-match-skipped"]').text()).toContain('github.com')
+
+      // RULE-SET penetration: site000001.cn penetrates cn-domains (sub_rule) with preceding uncertain (telegram IPCIDR).
+      await wrapper.find('[data-testid="rule-match-port"]').setValue('')
+      await wrapper.find('[data-testid="rule-match-process"]').setValue('')
+      await wrapper.find('[data-testid="rule-match-target"]').setValue('site000001.cn')
+      await wrapper.find('[data-testid="rule-match-form"]').trigger('submit')
+      await settle(120)
+      expect(wrapper.find('[data-testid="rule-match-hit"]').text()).toContain('cn-domains')
+      const subRule = wrapper.find('[data-testid="rule-match-sub-rule"]')
+      expect(subRule.exists()).toBe(true)
+      expect(subRule.text()).toContain('site000001.cn')
+      const uncertain = wrapper.find('[data-testid="rule-match-uncertain"]')
+      expect(uncertain.exists()).toBe(true)
+      expect(uncertain.text()).toContain('telegram')
     })
 
     it('provides mobile rule row action menu', async () => {
@@ -303,6 +317,43 @@ describe('Diagnostic tools polish (R1–R5)', () => {
       const mountedCount = wrapper.findAll('.log-line').length
       expect(mountedCount).toBeGreaterThan(0)
       expect(mountedCount).toBeLessThan(80)
+
+      // Scrolling up disengages follow; appending logs, toggling wrap, or changing query must not jump back to bottom.
+      const scroller = wrapper.find('[data-testid="log-scroll"]')
+      const scrollerEl = scroller.element as HTMLElement
+      let scrollHeightValue = 32000
+      Object.defineProperty(scrollerEl, 'scrollHeight', {
+        get: () => scrollHeightValue,
+        configurable: true,
+      })
+      Object.defineProperty(scrollerEl, 'clientHeight', {
+        value: 500,
+        configurable: true,
+      })
+      scrollerEl.scrollTop = 1200
+      await scroller.trigger('scroll')
+      await settle(20)
+      expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+      logs.push({ level: 'info', message: 'appended-while-scrolled-up', time_ms: 1_700_000_200_000 })
+      scrollHeightValue = 32032
+      await storeOf(wrapper).refresh()
+      await settle(40)
+      expect(scrollerEl.scrollTop).toBe(1200)
+      expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="wrap-field"] .toggle').trigger('click')
+      await settle(40)
+      expect(scrollerEl.scrollTop).toBe(1200)
+      expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+      await wrapper.find('.log-toolbar input[type="search"]').setValue('normal-log-line')
+      await settle(40)
+      expect(scrollerEl.scrollTop).toBe(1200)
+      expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="clear-log-search"]').trigger('click')
+      await settle(40)
 
       // Filter by 'issues' (warning + error = 2 lines).
       await wrapper.find('.log-level-filter [data-value="issues"]').trigger('click')
@@ -378,23 +429,20 @@ describe('Diagnostic tools polish (R1–R5)', () => {
       await settle(1500)
       expect(wrapper.find('[data-testid="retry-failed-proxy"]').exists()).toBe(false)
 
-      // Open a large rule provider detail (> 400 rows) -> progressive "显示更多" & single-row copy.
-      const ruleOpenButtons = wrapper.findAll('[data-section="rule"] [data-testid^="open-provider-"]')
-      expect(ruleOpenButtons.length).toBeGreaterThan(0)
-      // Open the MRS rule provider (has > 400 rules in demo).
-      const largeRuleBtn =
-        ruleOpenButtons.find((b) => b.attributes('data-testid')?.includes('cn')) ?? ruleOpenButtons[0]!
+      // Open the large MRS rule provider (cn-domains, > 400 rows) -> progressive "显示更多" & single-row copy.
+      const largeRuleBtn = wrapper.find('[data-testid="open-provider-cn-domains"]')
+      expect(largeRuleBtn.exists()).toBe(true)
       await largeRuleBtn.trigger('click')
       await settle(300)
 
       const initialDetailRows = body().findAll('.detail-rules > li:not(.detail-more-row):not(.empty-line)').length
-      if (body().find('[data-testid="detail-show-more"]').exists()) {
-        expect(initialDetailRows).toBe(400)
-        await body().find('[data-testid="detail-show-more"]').trigger('click')
-        await settle(50)
-        const expandedRows = body().findAll('.detail-rules > li:not(.detail-more-row):not(.empty-line)').length
-        expect(expandedRows).toBeGreaterThan(400)
-      }
+      expect(initialDetailRows).toBe(400)
+      const showMoreBtn = body().find('[data-testid="detail-show-more"]')
+      expect(showMoreBtn.exists()).toBe(true)
+      await showMoreBtn.trigger('click')
+      await settle(50)
+      const expandedRows = body().findAll('.detail-rules > li:not(.detail-more-row):not(.empty-line)').length
+      expect(expandedRows).toBe(800)
 
       const copyRuleBtn = body().find('[data-testid="copy-detail-rule"]')
       expect(copyRuleBtn.exists()).toBe(true)
@@ -413,20 +461,19 @@ describe('Diagnostic tools polish (R1–R5)', () => {
 
       // Open a RULE-SET from Rules page.
       const openProviderBtn = wrapper.find('[data-testid="rule-open-provider"]')
-      if (openProviderBtn.exists()) {
-        await openProviderBtn.trigger('click')
-        await settle(300)
-        expect(storeOf(wrapper).page.value).toBe('resources')
-        expect(storeOf(wrapper).ruleReturn.value?.targetPage).toBe('resources')
+      expect(openProviderBtn.exists()).toBe(true)
+      await openProviderBtn.trigger('click')
+      await settle(300)
+      expect(storeOf(wrapper).page.value).toBe('resources')
+      expect(storeOf(wrapper).ruleReturn.value?.targetPage).toBe('resources')
 
-        // Detail modal footer offers "返回规则".
-        const backBtn = body().find('[data-testid="provider-return-rule"]')
-        expect(backBtn.exists()).toBe(true)
-        await backBtn.trigger('click')
-        await settle(150)
-        expect(storeOf(wrapper).page.value).toBe('rules')
-        expect(storeOf(wrapper).ruleReturn.value).toBeNull()
-      }
+      // Detail modal footer offers "返回规则".
+      const backBtn = body().find('[data-testid="provider-return-rule"]')
+      expect(backBtn.exists()).toBe(true)
+      await backBtn.trigger('click')
+      await settle(150)
+      expect(storeOf(wrapper).page.value).toBe('rules')
+      expect(storeOf(wrapper).ruleReturn.value).toBeNull()
 
       // Disconnecting clears any active ruleReturn context.
       storeOf(wrapper).ruleReturn.value = {
