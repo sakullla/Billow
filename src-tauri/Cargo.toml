@@ -1,6 +1,6 @@
 [package]
 name = "billow"
-version = "0.1.62"
+version = "0.1.63"
 description = "Billow"
 license = "GPL-3.0-only"
 edition = "2024"
