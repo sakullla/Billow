@@ -35,3 +35,13 @@ Frontend tests use Vitest, Vue Test Utils, and happy-dom. Name files `*.test.ts`
 ## Commit & Pull Request Guidelines
 
 Recent history uses `feat:` and `fix:` prefixes, often with Chinese descriptions. Keep commits focused and summaries specific. Pull requests should explain behavior changes, link relevant issues or requirements, report validation commands/results, and include screenshots for UI changes. Identify affected platforms and any untested native behavior.
+
+## Release Guidelines
+
+- **Release Granularity**: Keep each release scoped to a cohesive set of user-visible features or fixes instead of piling up unrelated changes across many days. Smaller, focused releases simplify regression isolation and keep in-app update prompts easy to read.
+- **AI-Authored Release Notes (`docs/releases/v<version>.md`)**: Before cutting a release tag, review all commits since the previous tag (`git log <prev-tag>..HEAD`) and write a concise, user-facing Chinese release note at `docs/releases/v<version>.md` (grouped by `### 新功能` / `### 问题修复` / `### 优化与调整` as applicable). Describe observable user impact in plain language rather than dumping raw internal commit hashes or refactor noise. Do not duplicate the platform installer footer or compare link—`.github/scripts/release-notes.mjs` automatically appends them (and falls back to grouped git commit notes only if the file is missing or empty) for both GitHub Releases and `latest.json` `notes`.
+- **Pre-Tag Checklist**:
+  1. Synchronize the stable SemVer `<version>` across `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+  2. Commit `docs/releases/v<version>.md` together with the version bump on `main`.
+  3. Run local verification (`npm test`, `npm run build`, `node --test .github/scripts/*.test.mjs`, and `cargo test --manifest-path src-tauri/Cargo.toml`).
+  4. Push `main`, confirm main CI succeeds on the target commit, and then push the matching tag `v<version>`.

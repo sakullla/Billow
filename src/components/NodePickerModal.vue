@@ -1,0 +1,809 @@
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import ChainPath from './ChainPath.vue'
+import EmptyState from './EmptyState.vue'
+import GroupIcon from './GroupIcon.vue'
+import Icon from './Icon.vue'
+import Modal from './Modal.vue'
+import Segmented from './Segmented.vue'
+import {
+  autoTypeLabel,
+  canPickNode,
+  delayText,
+  delayTone,
+  effectiveGroupDelay,
+  groupTypeLabel,
+  isInfoNode,
+  protocolLabel,
+  resolveChain,
+  splitNodePrefix,
+} from '../lib/format'
+import { tr } from '../lib/i18n'
+import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
+import { useStore } from '../lib/store'
+import type { NodeGroup, NodeItem } from '../lib/types'
+
+const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
+const PICKER_SORT_KEY = 'billow:node-picker-sort'
+const PICKER_HIDE_FAILED_KEY = 'billow:node-picker-hide-failed'
+
+type PickerSort = 'default' | 'delay'
+const SORT_OPTIONS: { id: PickerSort; label: string }[] = [
+  { id: 'default', get label() { return tr('默认') } },
+  { id: 'delay', get label() { return tr('延迟') } },
+]
+
+function readSortPref(): PickerSort {
+  try {
+    const raw = localStorage.getItem(PICKER_SORT_KEY)
+    if (!raw) return 'default'
+    const parsed = JSON.parse(raw)
+    return parsed === 'delay' ? 'delay' : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+function writeSortPref(value: PickerSort) {
+  try {
+    localStorage.setItem(PICKER_SORT_KEY, JSON.stringify(value))
+  } catch {
+    // Storage unavailable; keep in-memory state.
+  }
+}
+
+function readBoolPref(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'boolean' ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeBoolPref(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Storage unavailable; keep in-memory state.
+  }
+}
+
+const props = withDefaults(
+  defineProps<{
+    open?: boolean
+    group: NodeGroup | null
+    compact?: boolean
+  }>(),
+  { open: true },
+)
+const emit = defineEmits<{ close: [] }>()
+
+const store = useStore()
+const snap = computed(() => store.snapshot.value)
+const modalOpen = computed(() => props.open && Boolean(props.group))
+
+const query = ref('')
+const sortMode = ref<PickerSort>(readSortPref())
+const hideFailed = ref<boolean>(readBoolPref(PICKER_HIDE_FAILED_KEY, false))
+const switchingNode = ref<string | null>(null)
+const unfixing = ref(false)
+const failedNode = ref<{ name: string; reason: string } | null>(null)
+
+watch(sortMode, (value) => writeSortPref(value))
+watch(hideFailed, (value) => writeBoolPref(PICKER_HIDE_FAILED_KEY, value))
+
+watch(
+  () => [props.open, props.group?.name] as const,
+  ([isOpen], prev) => {
+    if (isOpen || (prev && prev[1] !== props.group?.name)) {
+      query.value = ''
+      switchingNode.value = null
+      unfixing.value = false
+      failedNode.value = null
+    }
+  },
+)
+
+/**
+ * Long groups open with the active row in view. Scrolling (not focusing) keeps touch
+ * screens from popping the keyboard or painting a focus ring (R4).
+ */
+watch(
+  modalOpen,
+  async (isOpen) => {
+    if (!isOpen) return
+    await nextTick()
+    const group = props.group
+    const activeName = group?.fixed || group?.now
+    if (!activeName || query.value) return
+    const run = () => {
+      const row = document.querySelector<HTMLElement>(
+        `[data-testid="node-picker-list"] [data-picker-node="${CSS.escape(activeName)}"]`,
+      )
+      const scroller = row?.closest<HTMLElement>('.modal-body')
+      if (!row || !scroller) return
+      const head = scroller.querySelector<HTMLElement>('.node-picker-head')
+      const view = scroller.getBoundingClientRect()
+      const rect = row.getBoundingClientRect()
+      const top = view.top + (head?.offsetHeight ?? 0)
+      if (rect.top >= top && rect.bottom <= view.bottom) return
+      row.scrollIntoView({ block: 'center' })
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+    else run()
+  },
+  { flush: 'post' },
+)
+
+const isSwitching = computed(
+  () =>
+    switchingNode.value !== null ||
+    unfixing.value ||
+    Boolean(props.group && store.busy[`select:${props.group.name}`]),
+)
+const offlineAutoGroup = computed(() => Boolean(props.group) && !snap.value.kernel_running && props.group!.kind !== 'manual')
+const rowDisabled = computed(() => isSwitching.value || offlineAutoGroup.value)
+
+const catalogByName = computed(() => new Map(snap.value.node_catalog.map((item) => [item.name, item])))
+const groupNames = computed(() => new Set(snap.value.node_catalog.map((item) => item.name)))
+
+function nestedGroupOf(node: NodeItem): NodeGroup | null {
+  return catalogByName.value.get(node.name) ?? null
+}
+
+function viaOf(node: NodeItem): string {
+  const chain = resolveChain(node.name, snap.value.node_catalog)
+  return chain[chain.length - 1] ?? catalogByName.value.get(node.name)?.now ?? ''
+}
+
+function tagLabel(node: NodeItem, tag: string): string {
+  if (tag === 'chained') {
+    return node.dialer_proxy ? tr('链式 · {0}', { 0: node.dialer_proxy }) : tr('链式')
+  }
+  return tag
+}
+
+const currentHops = computed(() => {
+  const group = props.group
+  if (!group) return []
+  const chain = resolveChain(group.name, snap.value.node_catalog)
+  return chain.length ? chain : group.now ? [group.now] : []
+})
+
+const currentDelay = computed(() => {
+  const none = { text: '—', tone: 'none' }
+  const group = props.group
+  if (!group || !snap.value.connected) return none
+  const state = effectiveGroupDelay(group, snap.value.node_catalog, store.testResults.value)
+  if (!state.target || (!state.failed && state.delay == null)) return none
+  return { text: delayText(state.delay, state.failed), tone: delayTone(state.delay, state.failed) }
+})
+
+const subtitle = computed(() => {
+  const group = props.group
+  if (!group) return ''
+  if (group.fixed) return tr('当前已固定为 {0}。', { 0: group.fixed })
+  if (group.kind !== 'manual') return tr('点选后固定使用该节点，可随时恢复自动')
+  return tr('选择后立即切换，无需离开首页')
+})
+
+function nodeState(node: NodeItem): { delay: number | null; failed: boolean } {
+  const live = store.testResults.value[node.name]
+  return live ? { delay: live.delay, failed: live.failed } : { delay: node.delay_ms, failed: node.failed }
+}
+
+function isSelected(node: NodeItem): boolean {
+  return node.selected || props.group?.now === node.name
+}
+
+const queryTokens = computed(() => splitQueryTokens(query.value))
+
+function nameParts(name: string) {
+  const { prefix, rest } = splitNodePrefix(name)
+  return { prefix: prefix ? highlightTokens(prefix, query.value) : [], rest: highlightTokens(rest, query.value) }
+}
+
+const failedNodeCount = computed(() => {
+  const group = props.group
+  if (!group) return 0
+  let count = 0
+  for (const node of group.nodes) {
+    if (!node.selected && isInfoNode(node.name)) continue
+    if (nodeState(node).failed) count += 1
+  }
+  return count
+})
+
+const hasActiveFilter = computed(
+  () => queryTokens.value.length > 0 || (hideFailed.value && failedNodeCount.value > 0),
+)
+
+function resetFilters() {
+  query.value = ''
+  hideFailed.value = false
+}
+
+function canTestNode(node: NodeItem): boolean {
+  if (nestedGroupOf(node)) return false
+  if (BUILTIN_POLICIES.has(node.name.toUpperCase()) || isInfoNode(node.name)) return false
+  return true
+}
+
+function isTestingNode(name: string): boolean {
+  return store.pendingTests.value.has(name)
+}
+
+const filteredNodes = computed(() => {
+  const group = props.group
+  if (!group) return []
+  const tokens = queryTokens.value
+  const matched = group.nodes.filter((node) => {
+    if (!tokens.length && !node.selected && isInfoNode(node.name)) return false
+    if (hideFailed.value && failedNodeCount.value > 0 && !node.selected && nodeState(node).failed) {
+      return false
+    }
+    if (!tokens.length) return true
+    const haystack = [
+      node.name,
+      node.node_type,
+      protocolLabel(node.node_type),
+      node.dialer_proxy ?? '',
+      viaOf(node),
+      ...node.tags,
+      ...node.tags.map((tag) => tagLabel(node, tag)),
+    ].join(' ')
+    return matchesTokens(haystack, tokens)
+  })
+  if (sortMode.value !== 'delay') return matched
+  const indexed = matched.map((node, index) => ({ node, index }))
+  const rank = (node: NodeItem): number => {
+    const state = nodeState(node)
+    if (state.failed) return Number.MAX_SAFE_INTEGER - 1
+    if (state.delay != null && state.delay > 0) return state.delay
+    return Number.MAX_SAFE_INTEGER - 2
+  }
+  indexed.sort((a, b) => rank(a.node) - rank(b.node) || a.index - b.index)
+  return indexed.map((entry) => entry.node)
+})
+
+const fastestCandidate = computed<{ node: NodeItem; delay: number } | null>(() => {
+  const group = props.group
+  if (!group || !canPickNode(group) || !snap.value.kernel_running) return null
+  let best: { node: NodeItem; delay: number } | null = null
+  for (const node of group.nodes) {
+    if (groupNames.value.has(node.name)) continue
+    if (BUILTIN_POLICIES.has(node.name.toUpperCase()) || isInfoNode(node.name)) continue
+    const state = nodeState(node)
+    if (state.failed || state.delay == null || state.delay <= 0) continue
+    if (!best || state.delay < best.delay) {
+      best = { node, delay: state.delay }
+    }
+  }
+  if (!best) return null
+  if (group.kind === 'manual' ? isSelected(best.node) : group.fixed === best.node.name || (!group.fixed && isSelected(best.node))) {
+    return null
+  }
+  return best
+})
+
+const testingGroup = computed(
+  () => Boolean(props.group) && (store.activeTest.value?.group === props.group!.name || Boolean(store.busy[`test:${props.group!.name}`])),
+)
+const testDisabled = computed(() => !snap.value.kernel_running || store.testing.value || isSwitching.value)
+const unfixDisabled = computed(() => !snap.value.kernel_running || isSwitching.value)
+
+function requestClose() {
+  if (isSwitching.value) return
+  emit('close')
+}
+
+function initialFocus(): HTMLElement | null | undefined {
+  const group = props.group
+  if (!group) return undefined
+  if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true) {
+    return undefined
+  }
+  const activeName = group.fixed || group.now || filteredNodes.value[0]?.name
+  if (!activeName) return undefined
+  return document.querySelector<HTMLElement>(`[data-picker-node="${CSS.escape(activeName)}"]`)
+}
+
+async function pickNode(node: NodeItem, fastestDelay?: number) {
+  const group = props.group
+  if (!group || !canPickNode(group) || isSwitching.value || offlineAutoGroup.value) return
+  const alreadyNoop = group.kind === 'manual' ? isSelected(node) : group.fixed === node.name
+  if (alreadyNoop) {
+    failedNode.value = null
+    emit('close')
+    return
+  }
+
+  switchingNode.value = node.name
+  failedNode.value = null
+  const beforeFailure = snap.value.failure
+  const beforeNodesError = snap.value.nodes_error
+  try {
+    const result = await store.selectNode(group.name, node.name)
+    const afterGroup = result?.node_catalog.find((item) => item.name === group.name)
+    const afterNode = afterGroup?.nodes.find((item) => item.name === node.name)
+    const targetActive = Boolean(
+      afterGroup &&
+        (group.kind === 'manual'
+          ? afterGroup.now === node.name || afterNode?.selected
+          : afterGroup.fixed === node.name || afterGroup.now === node.name || afterNode?.selected),
+    )
+    const newErr =
+      (result?.nodes_error && result.nodes_error !== beforeNodesError ? result.nodes_error : null) ||
+      (result?.failure && result.failure !== beforeFailure ? result.failure : null)
+
+    if (result && !newErr && targetActive) {
+      failedNode.value = null
+      if (fastestDelay != null) {
+        store.toast(tr('已切至最快节点：{0} ({1})', { 0: node.name, 1: delayText(fastestDelay, false) }), 'success')
+      }
+      emit('close')
+      return
+    }
+    const reason =
+      newErr ||
+      result?.nodes_error ||
+      result?.failure ||
+      result?.notice ||
+      store.lastRunError.value ||
+      tr('节点切换失败')
+    failedNode.value = { name: node.name, reason }
+  } finally {
+    switchingNode.value = null
+  }
+}
+
+function pickFastest() {
+  const best = fastestCandidate.value
+  if (!best) return
+  void pickNode(best.node, best.delay)
+}
+
+async function unfix() {
+  const group = props.group
+  if (!group || !group.fixed || unfixDisabled.value) return
+  unfixing.value = true
+  failedNode.value = null
+  const beforeFailure = snap.value.failure
+  const beforeNodesError = snap.value.nodes_error
+  try {
+    const result = await store.unfixGroup(group.name)
+    const afterGroup = result?.node_catalog.find((item) => item.name === group.name)
+    const newErr =
+      (result?.nodes_error && result.nodes_error !== beforeNodesError ? result.nodes_error : null) ||
+      (result?.failure && result.failure !== beforeFailure ? result.failure : null)
+    if (result && !newErr && !afterGroup?.fixed) {
+      emit('close')
+    }
+  } finally {
+    unfixing.value = false
+  }
+}
+
+function openInProxies() {
+  const group = props.group
+  if (!group || isSwitching.value) return
+  emit('close')
+  store.go('proxies', group.name)
+}
+
+function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && query.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    query.value = ''
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    const first = document.querySelector<HTMLElement>('[data-testid="node-picker-list"] [data-picker-node]:not(:disabled)')
+    if (first) {
+      event.preventDefault()
+      first.focus({ preventScroll: true })
+    }
+    return
+  }
+  if (event.key === 'Enter' && queryTokens.value.length > 0 && filteredNodes.value.length > 0) {
+    event.preventDefault()
+    if (filteredNodes.value.length === 1 && !rowDisabled.value) {
+      void pickNode(filteredNodes.value[0]!)
+      return
+    }
+    document.querySelector<HTMLElement>('[data-testid="node-picker-list"] [data-picker-node]:not(:disabled)')?.focus({ preventScroll: true })
+  }
+}
+</script>
+
+<template>
+  <Modal
+    :open="modalOpen"
+    :title="group?.name ?? ''"
+    :subtitle="subtitle"
+    :before-close="() => !isSwitching"
+    :initial-focus="initialFocus"
+    @close="requestClose"
+  >
+    <div v-if="group" class="node-picker" data-testid="home-node-picker" :data-group="group.name">
+      <div class="node-picker-head" data-testid="node-picker-head">
+        <div class="node-picker-summary">
+          <span class="group-row-icon"><GroupIcon :icon="group.icon" :type="group.group_type" :size="18" /></span>
+          <div class="node-picker-summary-body">
+            <span v-if="autoTypeLabel(group)" class="tag sm">{{ autoTypeLabel(group) }}</span>
+            <span v-if="group.fixed" class="tag sm accent" data-testid="node-picker-fixed-tag">{{ tr('已固定') }}</span>
+            <ChainPath
+              v-if="currentHops.length"
+              class="node-picker-chain"
+              :hops="currentHops"
+              :groups="groupNames"
+              fold
+            />
+            <span v-else class="muted small">{{ tr('未选择节点') }}</span>
+            <span
+              v-if="currentDelay.tone !== 'none'"
+              class="delay mono"
+              :class="currentDelay.tone"
+              data-testid="node-picker-current-delay"
+            >{{ currentDelay.text }}</span>
+          </div>
+          <div class="node-picker-summary-actions">
+          <button
+            v-if="group.fixed"
+            type="button"
+            class="btn ghost sm node-picker-unfix"
+            :disabled="unfixDisabled"
+            :aria-busy="unfixing || undefined"
+            :title="snap.kernel_running ? tr('解除固定，由组策略重新选择节点') : tr('内核没有运行')"
+            data-testid="node-picker-unfix"
+            @click="unfix"
+          >
+            <span v-if="unfixing" class="spinner xs" aria-hidden="true" />
+            {{ tr('恢复自动') }}
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm node-picker-open"
+            :disabled="isSwitching"
+            :aria-label="tr('前往代理页')"
+            :title="tr('在代理页查看该组全部节点与选项')"
+            data-testid="node-picker-open-proxies"
+            @click="openInProxies"
+          >
+            <span>{{ tr('代理页') }}</span><Icon name="chevron-right" :size="14" />
+          </button>
+          </div>
+        </div>
+
+        <div class="node-picker-toolbar">
+          <label class="search node-picker-search">
+            <Icon name="search" :size="15" />
+            <input
+              v-model="query"
+              type="search"
+              :placeholder="tr('搜索节点、协议或 UDP')"
+              :aria-label="tr('搜索节点、协议或 UDP')"
+              :disabled="isSwitching"
+              data-testid="node-picker-search"
+              @keydown="onSearchKeydown"
+            />
+            <button
+              v-if="query"
+              type="button"
+              class="icon-btn xs"
+              :aria-label="tr('清空筛选')"
+              data-testid="node-picker-search-clear"
+              @click="query = ''"
+            >
+              <Icon name="x" :size="13" />
+            </button>
+          </label>
+
+          <button
+            type="button"
+            class="btn ghost sm node-picker-tool"
+            :disabled="testDisabled"
+            :aria-busy="testingGroup || undefined"
+            :aria-label="testingGroup
+              ? store.testProgress.value.total > 0
+                ? tr('测速中 ({0}/{1})', { 0: store.testProgress.value.tested, 1: store.testProgress.value.total })
+                : tr('测速中')
+              : tr('测试该组延迟')"
+            :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
+            data-testid="node-picker-test"
+            @click="store.testGroup(group.name)"
+          >
+            <span v-if="testingGroup" class="spinner xs" aria-hidden="true" />
+            <Icon v-else name="zap" :size="14" />
+            <span v-if="testingGroup && store.testProgress.value.total > 0" class="mono">
+              {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}
+            </span>
+            <span v-else>{{ tr('测速') }}</span>
+          </button>
+
+          <button
+            v-if="fastestCandidate"
+            type="button"
+            class="btn ghost sm node-picker-tool group-fastest"
+            :disabled="isSwitching"
+            :title="tr('切换至当前最快的节点：{0} ({1})', { 0: fastestCandidate.node.name, 1: delayText(fastestCandidate.delay, false) })"
+            data-testid="node-picker-fastest"
+            @click="pickFastest"
+          >
+            <Icon name="zap" :size="13" />
+            {{ tr('最快') }}
+          </button>
+        </div>
+
+        <div class="node-picker-controls">
+          <Segmented
+            v-model="sortMode"
+            :options="SORT_OPTIONS"
+            size="sm"
+            :label="tr('排序')"
+            :disabled="isSwitching"
+            data-testid="node-picker-sort"
+          />
+          <button
+            v-if="failedNodeCount > 0 || hideFailed"
+            type="button"
+            class="chip sm node-picker-hide-failed"
+            :class="{ active: hideFailed }"
+            :aria-pressed="hideFailed"
+            :disabled="isSwitching"
+            data-testid="node-picker-hide-failed"
+            @click="hideFailed = !hideFailed"
+          >
+            <Icon name="eye-off" :size="13" />
+            <span>{{ tr('隐藏超时') }}</span>
+            <span v-if="failedNodeCount > 0" class="mono">{{ failedNodeCount }}</span>
+          </button>
+        </div>
+
+        <p v-if="!snap.kernel_running" class="muted small node-picker-offline" data-testid="node-picker-offline-hint">
+          {{ offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点、测速或恢复自动。') : tr('未连接时无法测速或恢复自动，连接后可用。') }}
+        </p>
+      </div>
+
+      <EmptyState
+        v-if="!filteredNodes.length && hasActiveFilter"
+        variant="no-match"
+        compact
+        data-testid="node-picker-empty"
+      >
+        <template #action>
+          <button type="button" class="btn ghost sm" data-testid="node-picker-clear-filter" @click="resetFilters">
+            {{ hideFailed && !queryTokens.length ? tr('重置筛选') : tr('清空筛选') }}
+          </button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="!filteredNodes.length"
+        variant="no-data"
+        compact
+        :title="tr('没有可选节点')"
+        :description="tr('当前代理组暂无可切换的节点。')"
+        data-testid="node-picker-empty"
+      />
+      <div v-else class="node-picker-list" data-testid="node-picker-list">
+        <div
+          v-for="(node, index) in filteredNodes"
+          :key="node.name"
+          class="node-picker-item"
+          :class="{
+            active: isSelected(node),
+            switching: switchingNode === node.name,
+            failed: failedNode?.name === node.name,
+          }"
+          :data-node-item="node.name"
+        >
+          <div class="node-picker-line">
+            <button
+              type="button"
+              class="node-picker-row"
+              :class="{ active: isSelected(node), switching: switchingNode === node.name }"
+              :data-picker-node="node.name"
+              :data-testid="`picker-node-${node.name}`"
+              :disabled="offlineAutoGroup"
+              :title="offlineAutoGroup ? tr('内核没有运行，连接后才能固定节点') : node.name"
+              :aria-current="isSelected(node) ? 'true' : undefined"
+              :aria-busy="switchingNode === node.name || undefined"
+              :aria-disabled="rowDisabled || undefined"
+              :aria-describedby="failedNode?.name === node.name ? `picker-error-${index}` : undefined"
+              @click="pickNode(node)"
+            >
+              <span class="node-picker-body">
+                <span class="node-picker-title-row">
+                  <span class="node-name node-picker-name">
+                    <span v-if="nameParts(node.name).prefix.length" class="node-prefix"><template v-for="(part, partIdx) in nameParts(node.name).prefix" :key="partIdx"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
+                    <template v-for="(part, partIdx) in nameParts(node.name).rest" :key="`r${partIdx}`">
+                      <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
+                    </template>
+                  </span>
+                  <span v-if="group.fixed === node.name" class="tag accent sm">{{ tr('已固定') }}</span>
+                  <span v-else-if="isSelected(node)" class="sr-only" data-testid="picker-current-tag">{{ tr('当前') }}</span>
+                </span>
+                <span v-if="nestedGroupOf(node)" class="node-meta node-via" data-testid="picker-node-via">
+                  <span class="node-type strategy">{{ groupTypeLabel(nestedGroupOf(node)!) }}</span>
+                  <span class="node-via-target" :title="viaOf(node) || undefined">
+                    {{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? tr('→ 等待测速') : tr('→ 连接后显示') }}
+                  </span>
+                </span>
+                <span v-else class="node-meta" data-testid="picker-node-meta">
+                  <span v-if="protocolLabel(node.node_type)" class="node-type">{{ protocolLabel(node.node_type) }}</span>
+                  <span
+                    v-for="tag in node.tags"
+                    :key="tag"
+                    class="node-tag"
+                    :class="{ udp: tag === 'UDP', chained: tag === 'chained' }"
+                  >{{ tagLabel(node, tag) }}</span>
+                  <span
+                    v-if="node.dialer_proxy && !node.tags.includes('chained')"
+                    class="node-tag chained"
+                  >{{ tr('链式 · {0}', { 0: node.dialer_proxy }) }}</span>
+                </span>
+              </span>
+
+              <span
+                v-if="switchingNode === node.name"
+                class="node-picker-state pending"
+                role="status"
+                data-testid="node-picker-switching"
+              >
+                <span class="spinner xs" aria-hidden="true" />
+                <span>{{ tr('切换中') }}</span>
+              </span>
+            </button>
+
+            <button
+              v-if="switchingNode !== node.name && canTestNode(node)"
+              type="button"
+              class="delay mono node-picker-node-test"
+              :class="[
+                delayTone(nodeState(node).delay, nodeState(node).failed),
+                { busy: isTestingNode(node.name), untested: !delayText(nodeState(node).delay, nodeState(node).failed) },
+              ]"
+              :disabled="!snap.kernel_running || store.testing.value || isSwitching"
+              :aria-busy="isTestingNode(node.name) || undefined"
+              :aria-label="tr('测速 {0}', { 0: node.name })"
+              :title="snap.kernel_running ? tr('测试延迟') : tr('连接后才能测速')"
+              :data-testid="`picker-test-node-${node.name}`"
+              @click.stop="store.testNode(node.name)"
+            >
+              <template v-if="isTestingNode(node.name)">
+                <span class="spinner xs" aria-hidden="true" />
+                <span class="sr-only">{{ tr('测速中') }}</span>
+              </template>
+              <template v-else-if="delayText(nodeState(node).delay, nodeState(node).failed)">
+                {{ delayText(nodeState(node).delay, nodeState(node).failed) }}
+              </template>
+              <Icon v-else name="zap" :size="13" class="delay-zap" />
+            </button>
+            <span
+              v-else-if="switchingNode !== node.name && delayText(nodeState(node).delay, nodeState(node).failed)"
+              class="delay mono node-picker-delay-static"
+              :class="delayTone(nodeState(node).delay, nodeState(node).failed)"
+            >{{ delayText(nodeState(node).delay, nodeState(node).failed) }}</span>
+          </div>
+
+          <div
+            v-if="failedNode?.name === node.name"
+            :id="`picker-error-${index}`"
+            class="node-picker-error field-error small"
+            role="alert"
+            data-testid="node-picker-error"
+          >
+            <Icon name="alert" :size="14" />
+            <span class="grow">{{ tr(failedNode.reason) }}</span>
+            <button
+              type="button"
+              class="btn ghost sm"
+              :disabled="isSwitching"
+              data-testid="node-picker-retry"
+              @click="pickNode(node)"
+            >{{ tr('重试') }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Modal>
+</template>
+
+<style scoped>
+.node-picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.node-picker-hide-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 560;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.node-picker-hide-failed:hover:not(:disabled) {
+  border-color: var(--border-input);
+  color: var(--text);
+}
+
+.node-picker-hide-failed.active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+  color: var(--accent-ink);
+  font-weight: 640;
+}
+
+.node-picker-hide-failed:focus-visible,
+.node-picker-node-test:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.node-picker-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.node-picker-line .node-picker-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.node-picker-node-test {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  height: 30px;
+  margin-right: 6px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.node-picker-node-test:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.node-picker-node-test.untested {
+  color: var(--text-3);
+}
+
+.node-picker-node-test:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.node-picker-delay-static {
+  flex: none;
+  margin-right: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .node-picker-hide-failed,
+  .node-picker-node-test {
+    transition: none;
+  }
+}
+</style>

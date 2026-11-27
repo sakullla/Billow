@@ -1,27 +1,60 @@
 import type { Backend, NodeTestEvent } from './backend'
+import { locale, resolveLanguage, translate } from './i18n'
 import { ruleKeys } from './rule-keys'
 import {
+  CUSTOM_PROFILE_ID,
+  DEFAULT_LANDING_PRESETS,
   DNS_QUERY_TYPES,
+  LANDING_GROUP_NAME,
+  defaultLandingPresets,
   emptyConfigValues,
+  emptyCustomNodesState,
   emptyKernelSettings,
   isCidrEntry,
   isPortEntry,
   isValidDnsName,
   emptySnapshot,
+  localDateKey,
+  normalizeCustomNodesState,
+  normalizePalette,
+  shiftDateKey,
   type AppInfo,
+  type CustomNode,
+  type CustomNodeWarning,
+  type DialerTarget,
   type KernelSettings,
   type ConfigOverview,
   type ConnectionRow,
   type DnsQueryResult,
   type EnginesState,
+  type ExitIpInfo,
+  type HotkeyAction,
+  type HotkeySettings,
   type KernelStatus,
+  type LandingRule,
+  type LanguagePreference,
+  type Locale,
   type LogLine,
   type NodeGroup,
+  type PalettePreference,
+  type ParseItemError,
+  type ParseNodesResult,
+  type ParsedCustomNode,
   type ProviderRow,
   type ProfileItem,
+  type RuleMatchCandidate,
+  type RuleMatchHit,
+  type RuleMatchInput,
+  type RuleMatchResult,
+  type RuleMatchUncertain,
   type RuleRow,
+  type SaveCustomNodeInput,
+  type SimpleProxyForm,
   type Snapshot,
   type ThemePreference,
+  type TrafficHistoryEntry,
+  type TrafficHistoryView,
+  type TrafficRange,
   type UwpApp,
 } from './types'
 
@@ -57,9 +90,9 @@ const HOSTS = [
 ]
 const PROCESSES = ['chrome', 'Telegram', 'node', 'Code', 'curl', 'Safari', 'Discord']
 
-function nodeNames(): string[] {
+function nodeNames(regions: readonly string[] = REGIONS): string[] {
   const names: string[] = []
-  REGIONS.forEach((region, index) => {
+  regions.forEach((region, index) => {
     const count = index < 3 ? 3 : 2
     for (let i = 1; i <= count; i += 1) names.push(`${region} ${String(i).padStart(2, '0')}`)
   })
@@ -89,6 +122,10 @@ interface DemoOptions {
   hiddenGroups?: readonly string[]
   /** Add a `load-balance` group, which stays automatic (R28). */
   loadBalance?: boolean
+  /** OS language the demo reports: `system` resolves to this locale (R42). */
+  systemLocale?: Locale
+  /** Latin-only demo data (`?demo=latin`) for the English whole-UI check (T8). */
+  latin?: boolean
   /**
    * A fixed set of this many connections, one per demo host in order, that
    * never churn or refill, so close-by-filter can be checked row for row (R30).
@@ -115,6 +152,9 @@ const DEMO_DNS_ANSWERS: Record<string, { type: string; value: string; ttl: numbe
 }
 
 /** Real subscriptions pack region, line, rate and unlocks into one name. */
+/** Airport subscriptions smuggle quota lines in as fake nodes; the heavy demo carries a set (`?demo=big`). */
+export const DEMO_QUOTA_INFO = ['【KLM】Traffic Reset：12 Days Left', '【KLM】Expire Date：2027/05/04', '【KLM】16.47 GB | 500 GB']
+
 export const DEMO_LONG_NAMES = [
   '🇭🇰 香港 HKT 家宽 01 丨 0.8x 倍率 丨 解锁 Netflix / Disney+ / ChatGPT 丨 IPLC 专线',
   '🇺🇸 美国 洛杉矶 CN2 GIA 高速 02 [x1.5] Hysteria2 原生 IP 落地',
@@ -128,6 +168,74 @@ const DEMO_GROUP_ICONS: Record<string, string> = {
   流媒体: 'https://icons.example.com/media.png',
   OpenAI: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
   国内网站: 'https://unreachable.invalid/cn.png',
+}
+
+/** Latin-only demo data for `?demo=latin` (T8): names, regions and group labels. */
+const LATIN_EXACT: Record<string, string> = {
+  设置: 'Settings',
+  系统界面: 'System UI',
+  微信: 'WeChat',
+  支付宝: 'Alipay',
+  哔哩哔哩: 'Bilibili',
+  招商银行: 'China Merchants Bank',
+  星河云: 'Galaxy Cloud',
+  备用机场: 'Backup Provider',
+  新配置: 'New Profile',
+  'Google Play 服务': 'Google Play Services',
+  本地配置: 'Local Profile',
+  远程配置: 'Remote Profile',
+  自建节点: 'Self-hosted',
+  纯自建节点: 'Custom Nodes Only',
+  自建落地: 'Custom Landing',
+  测试订阅: 'Test Subscription',
+}
+const LATIN_PARTS: Record<string, string> = {
+  节点选择: 'Node Select',
+  自动选择: 'Auto Select',
+  故障转移: 'Fallback',
+  负载均衡: 'Load Balance',
+  流媒体: 'Streaming',
+  国内网站: 'China Sites',
+  漏网之鱼: 'Final',
+  策略组: 'Policy Group',
+  香港: 'Hong Kong',
+  日本: 'Japan',
+  新加坡: 'Singapore',
+  美国: 'US',
+  台湾: 'Taiwan',
+  韩国: 'South Korea',
+  德国: 'Germany',
+  英国: 'UK',
+}
+
+function latinText(value: string): string {
+  if (LATIN_EXACT[value]) return LATIN_EXACT[value]
+  let out = value
+  for (const [zh, en] of Object.entries(LATIN_PARTS)) out = out.split(zh).join(en)
+  return out
+}
+
+/** Rewrite every string in a demo result so the Latin demo contains no Chinese names. */
+function latinize<T>(value: T): T {
+  if (typeof value === 'string') return latinText(value) as T
+  if (Array.isArray(value)) return value.map((item) => latinize(item)) as T
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = latinize(item)
+    return out as T
+  }
+  return value
+}
+
+/** Turn a name the UI received from the Latin demo back into the internal Chinese one. */
+function delatinName(value: string): string {
+  const exact = Object.entries(LATIN_EXACT).find(([, en]) => en === value)
+  if (exact) return exact[0]
+  for (const [zh, en] of Object.entries(LATIN_PARTS)) {
+    if (value === en) return zh
+    if (value.startsWith(`${en} `)) return zh + value.slice(en.length)
+  }
+  return value
 }
 
 export function createDemoBackend(options: DemoOptions = {}): Backend {
@@ -161,7 +269,12 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       exempted: false,
     },
   ]
-  const baseNames = options.longNames ? [...DEMO_LONG_NAMES, ...nodeNames()] : nodeNames()
+  const latinRegions = REGIONS.map((region) => LATIN_PARTS[region]!)
+  const baseNames = options.latin
+    ? nodeNames(latinRegions)
+    : options.longNames
+      ? [...DEMO_LONG_NAMES, ...nodeNames()]
+      : nodeNames()
   const names = options.big
     ? [...baseNames, ...Array.from({ length: 48 }, (_, index) => `【KLM】Hong Kong ${String(index + 1).padStart(2, '0')}`)]
     : baseNames
@@ -173,7 +286,15 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   state.platform = options.platform ?? 'desktop'
   state.mode = 'rule'
   let theme: ThemePreference = 'system'
+  let palette: PalettePreference = 'teal'
   let entry = 'home'
+  let language: LanguagePreference = 'system'
+  /** WebDAV account, the last connection test and the backups in the cloud (R38). */
+  let webdav = { url: '', username: '', password: '' }
+  let webdavVerified = false
+  let remoteBackups: { name: string; device: string; modified: string | null; size: number | null; text: string }[] = []
+  /** Pretend the OS reports this language; tests pin the default to Chinese. */
+  const systemLocale: Locale = options.systemLocale ?? 'zh-CN'
   let kernel: KernelStatus = { channel: 'stable', failure: null, ready: true, version: 'v1.19.17' }
   let app: AppInfo = {
     version: '0.2.0',
@@ -182,7 +303,30 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     autostart: options.platform === 'android' ? null : false,
     close_to_tray: true,
     silent_start: false,
+    release_ui_on_close: false,
+    auto_exit_ip: false,
+    traffic_history: false,
     data_dir: null,
+  }
+  /** Desktop global shortcuts (R39): nothing is bound until the user records one. */
+  const hotkeys = new Map<HotkeyAction, string>()
+  const HOTKEY_LABELS: Record<HotkeyAction, string> = {
+    connect: '连接 / 断开',
+    proxy: '系统代理',
+    tun: 'TUN 模式',
+    'mode-rule': '规则',
+    'mode-global': '全局',
+    'mode-direct': '直连',
+    window: '显示 / 隐藏主窗口',
+  }
+  function hotkeySettings(): HotkeySettings {
+    const available = options.platform !== 'android'
+    return {
+      available,
+      reason: available ? null : '此系统不支持全局快捷键',
+      platform: app.platform,
+      bindings: [...hotkeys].map(([action, combo]) => ({ action, combo, active: available, error: null })),
+    }
   }
   const delays = new Map<string, number | null>()
   const selections = new Map<string, string>([['节点选择', '香港 01']])
@@ -203,9 +347,21 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   let nextId = 1
   const listeners = new Set<(snapshot: Snapshot) => void>()
   const contents = new Map<string, string>()
+  /**
+   * Traffic history (R43) in the demo: the same date × profile × group × node
+   * buckets as Rust, fed from the simulated connections on every poll while the
+   * switch is on. Off until the user turns it on.
+   */
+  let trafficRecording = false
+  // Set when recording is switched on or the view is cleared: the next poll only
+  // adopts the open connections so bytes from before add nothing.
+  let trafficSeed = false
+  const trafficDays = new Map<string, Map<string, TrafficHistoryEntry>>()
+  const trafficBaselines = new Map<string, { upload: number; download: number }>()
+  const DIRECT_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
 
   const groupsDef = (): { name: string; type: string; proxies: string[] }[] => [
-    { name: '节点选择', type: 'select', proxies: ['自动选择', '故障转移', ...names, 'DIRECT'] },
+    { name: '节点选择', type: 'select', proxies: ['自动选择', '故障转移', ...(options.big ? DEMO_QUOTA_INFO : []), ...names, 'DIRECT'] },
     { name: '自动选择', type: 'url-test', proxies: names },
     { name: '故障转移', type: 'fallback', proxies: names.slice(0, 6) },
     { name: '流媒体', type: 'select', proxies: ['节点选择', ...names.filter((n) => !n.startsWith('德国'))] },
@@ -468,19 +624,165 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
 
   function log(level: LogLine['level'], message: string) {
-    state.logs.push({ level, message, time_ms: Date.now() })
+    state.logs.push({ level, message, time_ms: Date.now(), hint: null, hint_kind: null })
     if (state.logs.length > 1000) state.logs.splice(0, state.logs.length - 1000)
+  }
+
+  function enabledCustomNodes(): CustomNode[] {
+    return state.custom_nodes.nodes.filter((item) => item.enabled)
+  }
+
+  function maybeAutoActivateCustomProfile() {
+    if (state.profiles.length === 0 && !state.active_id && enabledCustomNodes().length > 0) {
+      state.active_id = CUSTOM_PROFILE_ID
+    }
+  }
+
+  function resolveCustomDialer(node: CustomNode, primaryGroup: string | null): string | null {
+    const dialer = node.dialer
+    if (dialer.kind === 'direct') return null
+    if (dialer.kind === 'profile_group') return dialer.group || primaryGroup || null
+    if (dialer.kind === 'fixed_proxy') return dialer.name || null
+    if (dialer.kind === 'custom_node') {
+      return state.custom_nodes.nodes.find((item) => item.id === dialer.id && item.enabled)?.name ?? null
+    }
+    return null
+  }
+
+  function computeCustomNodeWarnings(): CustomNodeWarning[] {
+    const warnings: CustomNodeWarning[] = []
+    const enabled = enabledCustomNodes()
+    const standalone = state.active_id === CUSTOM_PROFILE_ID
+    if (standalone) {
+      if (state.custom_nodes.nodes.length > 0 && enabled.length === 0) {
+        warnings.push({
+          code: 'empty_custom_profile',
+          node_id: null,
+          rule_id: null,
+          message: '当前处于纯自建模式，但没有启用的自建节点',
+        })
+      }
+    } else if (!state.custom_nodes.overlay_enabled || enabled.length === 0) {
+      return warnings
+    }
+
+    const baseDefs = standalone ? [] : groupsDef()
+    const availableTargets = new Set<string>([
+      ...baseDefs.map((group) => group.name),
+      ...(standalone ? [] : names),
+    ])
+    for (const node of enabled) {
+      const dialer = node.dialer
+      if (dialer.kind === 'custom_node') {
+        const target = state.custom_nodes.nodes.find((item) => item.id === dialer.id)
+        if (!target || !target.enabled) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指向的前置自建节点不可用`,
+          })
+        }
+      } else if (dialer.kind === 'fixed_proxy') {
+        if (standalone || !availableTargets.has(dialer.name)) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指定的前置代理「${dialer.name}」不存在`,
+          })
+        }
+      } else if (dialer.kind === 'profile_group') {
+        if (standalone) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」设置了通过订阅代理组中转，但当前为纯自建模式`,
+          })
+        } else if (dialer.group && !availableTargets.has(dialer.group)) {
+          warnings.push({
+            code: 'missing_dialer',
+            node_id: node.id,
+            rule_id: null,
+            message: `节点「${node.name}」指定的订阅代理组「${dialer.group}」不存在`,
+          })
+        }
+      }
+    }
+    if (state.custom_nodes.rules_enabled) {
+      for (const rule of state.custom_nodes.rules) {
+        if (!rule.enabled) continue
+        if (rule.target.kind === 'custom_node') {
+          const targetId = rule.target.id
+          const target = state.custom_nodes.nodes.find((item) => item.id === targetId)
+          if (!target || !target.enabled) {
+            warnings.push({
+              code: 'missing_rule_target',
+              node_id: targetId,
+              rule_id: rule.id,
+              message: '部分落地分流规则指向的自建节点已停用或删除',
+            })
+          }
+        }
+      }
+    }
+    return warnings
+  }
+
+  function catalogGroupsDef(): { name: string; type: string; proxies: string[] }[] {
+    if (state.active_id === CUSTOM_PROFILE_ID) {
+      const enabled = enabledCustomNodes()
+      const customNames = enabled.map((item) => item.name)
+      const standaloneBase = [
+        { name: '节点选择', type: 'select', proxies: ['自动选择', ...customNames, 'DIRECT'] },
+        { name: '自动选择', type: 'url-test', proxies: [...customNames] },
+      ]
+      if (state.mode !== 'global') return standaloneBase
+      return [
+        { name: 'GLOBAL', type: 'select', proxies: ['节点选择', '自动选择', ...customNames, 'DIRECT', 'REJECT'] },
+        ...standaloneBase,
+      ]
+    }
+    const base = groupsDef().map((group) => ({ ...group, proxies: [...group.proxies] }))
+    const enabled = state.custom_nodes.overlay_enabled ? enabledCustomNodes() : []
+    if (enabled.length > 0) {
+      const customNames = enabled.map((item) => item.name)
+      const primary = base.find((group) => group.type === 'select')
+      if (primary && !primary.proxies.includes(LANDING_GROUP_NAME)) {
+        primary.proxies.unshift(LANDING_GROUP_NAME)
+      }
+      if (!base.some((group) => group.name === LANDING_GROUP_NAME)) {
+        base.push({ name: LANDING_GROUP_NAME, type: 'select', proxies: customNames })
+      }
+    }
+    if (state.mode !== 'global' || base.some((group) => group.name === 'GLOBAL')) return base
+    const proxies = [
+      ...base.map((group) => group.name),
+      ...names.filter((name) => !base.some((group) => group.name === name)),
+      ...enabled.map((item) => item.name),
+      'DIRECT',
+      'REJECT',
+    ]
+    return [{ name: 'GLOBAL', type: 'select', proxies }, ...base]
   }
 
   function catalog(): NodeGroup[] {
     if (!state.active_id) return []
-    return groupsDef().map((group) => {
+    const defs = catalogGroupsDef()
+    const customByName = new Map(enabledCustomNodes().map((item) => [item.name, item]))
+    const primaryGroup =
+      state.active_id === CUSTOM_PROFILE_ID
+        ? null
+        : defs.find((group) => group.type === 'select' && group.name !== LANDING_GROUP_NAME && group.name !== 'GLOBAL')
+            ?.name ?? null
+    return defs.map((group) => {
       const manual = group.type === 'select'
       const canPin = pinnable(group.type)
       const pinned = canPin ? fixed.get(group.name) ?? null : null
       const now = manual
-        ? selections.get(group.name) ?? group.proxies[0]
-        : autoNow.get(group.name) ?? pinned ?? (state.kernel_running ? group.proxies[0] : '')
+        ? selections.get(group.name) ?? group.proxies[0] ?? ''
+        : autoNow.get(group.name) ?? pinned ?? (state.kernel_running ? group.proxies[0] ?? '' : '')
       return {
         name: group.name,
         kind: manual ? 'manual' : 'auto',
@@ -493,6 +795,20 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         hidden: hiddenGroups.has(group.name),
         nodes: group.proxies.map((name) => {
           const delay = delays.get(name)
+          const custom = customByName.get(name)
+          if (custom) {
+            const dialerProxy = resolveCustomDialer(custom, primaryGroup)
+            const baseTags = DEMO_TAGS[custom.protocol] ?? []
+            return {
+              name,
+              delay_ms: delay ?? null,
+              failed: delay === null,
+              selected: name === now,
+              node_type: custom.protocol,
+              tags: dialerProxy ? [...baseTags, '链式'] : baseTags,
+              ...(dialerProxy ? { dialer_proxy: dialerProxy } : {}),
+            }
+          }
           const baseTags = DEMO_TAGS[types.get(name) ?? ''] ?? []
           const isChained = name === DEMO_LONG_NAMES[2]
           return {
@@ -500,8 +816,11 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
             delay_ms: delay ?? null,
             failed: delay === null,
             selected: name === now,
-            node_type: types.get(name) ?? groupsDef().find((g) => g.name === name)?.type ?? (name === 'DIRECT' ? 'direct' : ''),
-            tags: isChained ? [...baseTags, '链式'] : baseTags,
+            node_type:
+              types.get(name) ??
+              defs.find((g) => g.name === name)?.type ??
+              (name === 'DIRECT' ? 'direct' : name === 'REJECT' ? 'reject' : ''),
+            tags: isChained ? [...baseTags, 'chained'] : baseTags,
             ...(isChained ? { dialer_proxy: '香港 01' } : {}),
           }
         }),
@@ -546,6 +865,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       state.download_total = null
       connections = []
       stableSeeded = false
+      trafficBaselines.clear()
       return
     }
     const wave = Math.sin(Date.now() / 4000)
@@ -584,6 +904,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   function snapshot(): Snapshot {
     state.connected = state.kernel_running && (state.system_proxy || state.tun || state.vpn)
     tick()
+    recordTrafficHistory()
     state.profiles.forEach((profile) => (profile.current = profile.id === state.active_id))
     const failure = Boolean(options.connectionsFailure) && state.connected
     state.connections = failure ? [] : [...connections]
@@ -609,7 +930,112 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       sniff_quic_ports: ['443'],
     }
     state.mixed_port = state.settings.mixed_port ?? (state.active_id ? 7890 : null)
-    return structuredClone(state)
+    state.custom_profile_active = state.active_id === CUSTOM_PROFILE_ID
+    state.custom_nodes_warnings = computeCustomNodeWarnings()
+    state.landing_presets = defaultLandingPresets()
+    const result = structuredClone(state)
+    return options.latin ? latinize(result) : result
+  }
+
+  /** Fold one simulated sample into today's buckets, with the same deltas as Rust. */
+  function recordTrafficHistory() {
+    if (!trafficRecording || !state.connected) return
+    // The first poll after the switch went on only adopts the open connections,
+    // so bytes from before recording (or from while it was off) add nothing.
+    const seeding = trafficSeed
+    trafficSeed = false
+    const profile = state.profiles.find((item) => item.id === state.active_id)?.name ?? ''
+    const date = localDateKey()
+    const seen = new Set<string>()
+    for (const row of connections) {
+      const node = (row.chains[0] ?? '').trim()
+      const group = (row.chains[row.chains.length - 1] ?? '').trim()
+      if (!node && !group) continue
+      seen.add(row.id)
+      const last = seeding ? undefined : trafficBaselines.get(row.id)
+      trafficBaselines.set(row.id, { upload: row.upload, download: row.download })
+      if (seeding) continue
+      let upload = 0
+      let download = 0
+      if (!last) {
+        // A connection opened after the switch counts from its own zero.
+        upload = row.upload
+        download = row.download
+      } else {
+        upload = Math.max(0, row.upload - last.upload)
+        download = Math.max(0, row.download - last.download)
+      }
+      if (!upload && !download) continue
+      const direct = DIRECT_POLICIES.has(node.toUpperCase()) || DIRECT_POLICIES.has(group.toUpperCase())
+      const rowGroup = direct ? '' : group || node
+      const rowNode = direct ? '' : node
+      const key = `${profile}\u001f${rowGroup}\u001f${rowNode}\u001f${direct ? 1 : 0}`
+      let day = trafficDays.get(date)
+      if (!day) {
+        day = new Map()
+        trafficDays.set(date, day)
+      }
+      const entry = day.get(key) ?? {
+        date,
+        profile,
+        group: rowGroup,
+        node: rowNode,
+        direct,
+        upload: 0,
+        download: 0,
+      }
+      entry.upload += upload
+      entry.download += download
+      day.set(key, entry)
+    }
+    for (const id of [...trafficBaselines.keys()]) {
+      if (!seen.has(id)) trafficBaselines.delete(id)
+    }
+  }
+
+  const TRAFFIC_RETENTION_DAYS = 90
+
+  function trafficBounds(range: TrafficRange, from?: string | null, to?: string | null) {
+    const today = localDateKey()
+    const oldest = shiftDateKey(today, -(TRAFFIC_RETENTION_DAYS - 1))
+    const isDate = (value: string | null | undefined): value is string =>
+      Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value))
+    const clamp = (value: string) => (value < oldest ? oldest : value > today ? today : value)
+    if (range === '7d') return { today, from: shiftDateKey(today, -6), to: today }
+    if (range === '30d') return { today, from: shiftDateKey(today, -29), to: today }
+    if (range === 'custom') {
+      let start = isDate(from) ? clamp(from) : today
+      let end = isDate(to) ? clamp(to) : today
+      if (start > end) [start, end] = [end, start]
+      return { today, from: start, to: end }
+    }
+    return { today, from: today, to: today }
+  }
+
+  function trafficHistoryView(
+    range: TrafficRange,
+    from?: string | null,
+    to?: string | null,
+  ): TrafficHistoryView {
+    const bounds = trafficBounds(range, from, to)
+    const entries: TrafficHistoryEntry[] = []
+    for (const [date, day] of trafficDays) {
+      if (date < bounds.from || date > bounds.to) continue
+      for (const entry of day.values()) entries.push({ ...entry })
+    }
+    entries.sort(
+      (left, right) =>
+        right.date.localeCompare(left.date) ||
+        right.upload + right.download - (left.upload + left.download),
+    )
+    return {
+      enabled: trafficRecording,
+      retention_days: TRAFFIC_RETENTION_DAYS,
+      today: bounds.today,
+      from: bounds.from,
+      to: bounds.to,
+      entries,
+    }
   }
 
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -621,9 +1047,167 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   }
   const profile = (id: string) => state.profiles.find((item) => item.id === id)
 
+  // ── 备份与恢复 (R38): the same versioned shape and refusal reasons as Rust ──
+  const UNKNOWN_BACKUP = '无法识别这个备份文件，请选择 Billow 导出的备份文件'
+  const DAMAGED_BACKUP = '备份文件已损坏，无法恢复'
+
+  function backupText(): string {
+    return JSON.stringify(
+      {
+        format: 'billow-backup',
+        version: 1,
+        app_version: app.version,
+        platform: state.platform,
+        device: 'demo',
+        created_ms: Date.now(),
+        profiles: {
+          next_id: state.profiles.length + 1,
+          active_id: state.active_id,
+          profiles: state.profiles.map((item) => ({
+            id: item.id,
+            name: item.name,
+            kind: item.kind,
+            source: item.source,
+            user_agent: item.user_agent,
+            content: '',
+            override_text: item.override_text,
+            applied_override: '',
+            selected: Object.fromEntries(selections),
+            fixed: Object.fromEntries(fixed),
+            interval_hours: item.interval_hours,
+            age_key: '',
+            updated_ms: item.updated_ms,
+          })),
+          settings: state.settings,
+          tun_wanted: state.tun_wanted,
+          excluded_packages: state.excluded,
+          included_packages: state.included,
+          app_mode: state.app_mode,
+          chosen_mode: state.mode,
+          custom_nodes: state.custom_nodes,
+        },
+        shell: {
+          theme,
+          palette,
+          close_to_tray: app.close_to_tray,
+          silent_start: app.silent_start,
+          language,
+        },
+      },
+      null,
+      2,
+    )
+  }
+
+  function newerVersion(candidate: string, current: string): boolean {
+    const parse = (raw: string) =>
+      raw.trim().replace(/^v/, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0)
+    const left = parse(candidate)
+    const right = parse(current)
+    for (let index = 0; index < 3; index += 1) {
+      const a = left[index] ?? 0
+      const b = right[index] ?? 0
+      if (a !== b) return a > b
+    }
+    return false
+  }
+
+  function readBackup(text: string) {
+    let raw: unknown
+    try {
+      raw = JSON.parse(text)
+    } catch {
+      throw new Error(UNKNOWN_BACKUP)
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(UNKNOWN_BACKUP)
+    const file = raw as Record<string, unknown>
+    if (file.format !== 'billow-backup') throw new Error(UNKNOWN_BACKUP)
+    const version = typeof file.version === 'number' ? file.version : 0
+    const versionText = typeof file.app_version === 'string' ? file.app_version : String(version)
+    if (version > 1 || newerVersion(versionText, app.version)) {
+      throw new Error(`备份来自更新的版本（${versionText}），请先更新 Billow`)
+    }
+    const part = file.profiles
+    if (!part || typeof part !== 'object' || Array.isArray(part)) throw new Error(DAMAGED_BACKUP)
+    const profiles = part as Record<string, unknown>
+    if (!Array.isArray(profiles.profiles) || !profiles.settings || typeof profiles.settings !== 'object') {
+      throw new Error(DAMAGED_BACKUP)
+    }
+    const shell = file.shell && typeof file.shell === 'object' ? (file.shell as Record<string, unknown>) : {}
+    return { profiles, shell }
+  }
+
+  function applyBackup(profiles: Record<string, unknown>, shell: Record<string, unknown>) {
+    const list = (profiles.profiles as unknown[]).map((raw, index): ProfileItem => {
+      const entry = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      return {
+        id: typeof entry.id === 'string' && entry.id ? entry.id : `p${index + 1}`,
+        name: typeof entry.name === 'string' && entry.name ? entry.name : '配置',
+        kind: entry.kind === 'subscription' ? 'subscription' : 'local',
+        source: typeof entry.source === 'string' ? entry.source : '',
+        user_agent: typeof entry.user_agent === 'string' ? entry.user_agent : '',
+        current: false,
+        failure: null,
+        override_text: typeof entry.override_text === 'string' ? entry.override_text : '',
+        override_error: null,
+        used: null,
+        total: null,
+        expire: null,
+        last_success_ms: null,
+        interval_hours: typeof entry.interval_hours === 'number' ? entry.interval_hours : 0,
+        updated_ms: typeof entry.updated_ms === 'number' ? entry.updated_ms : null,
+        proxy_count: 0,
+        age_recipients: [],
+      }
+    })
+    const active = typeof profiles.active_id === 'string' ? profiles.active_id : null
+    state.profiles = list
+    state.custom_nodes = profiles.custom_nodes
+      ? normalizeCustomNodesState(profiles.custom_nodes)
+      : emptyCustomNodesState()
+    state.active_id =
+      active === CUSTOM_PROFILE_ID && state.custom_nodes.nodes.some((node) => node.enabled)
+        ? CUSTOM_PROFILE_ID
+        : list.some((item) => item.id === active)
+          ? active
+          : null
+    state.settings = { ...emptyKernelSettings(), ...(profiles.settings as KernelSettings) }
+    state.tun_wanted = Boolean(profiles.tun_wanted)
+    state.excluded = Array.isArray(profiles.excluded_packages)
+      ? profiles.excluded_packages.filter((item): item is string => typeof item === 'string')
+      : []
+    state.included = Array.isArray(profiles.included_packages)
+      ? profiles.included_packages.filter((item): item is string => typeof item === 'string')
+      : []
+    state.app_mode = profiles.app_mode === 'include' ? 'include' : 'exclude'
+    const mode = profiles.chosen_mode
+    if (mode === 'rule' || mode === 'global' || mode === 'direct') state.mode = mode
+    // App settings travel too; platform-only ones (WebDAV credentials, window
+    // size, the current page) are not in the file at all.
+    if (shell.theme === 'light' || shell.theme === 'dark' || shell.theme === 'system') theme = shell.theme
+    if (shell.palette !== undefined) palette = normalizePalette(shell.palette)
+    if (shell.language === 'en' || shell.language === 'zh-CN') language = shell.language
+    if (typeof shell.close_to_tray === 'boolean' || typeof shell.silent_start === 'boolean') {
+      app = {
+        ...app,
+        close_to_tray: typeof shell.close_to_tray === 'boolean' ? shell.close_to_tray : app.close_to_tray,
+        silent_start: typeof shell.silent_start === 'boolean' ? shell.silent_start : app.silent_start,
+      }
+    }
+  }
+
+  function backupStamp(): string {
+    return new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+  }
+
   function startKernel(): boolean {
     if (!state.active_id) {
       state.failure = '没有可用配置'
+      log('error', state.failure)
+      return false
+    }
+    if (state.active_id === CUSTOM_PROFILE_ID && enabledCustomNodes().length === 0) {
+      state.failure = '还没有启用的自建节点，请先导入或启用至少一个节点'
       log('error', state.failure)
       return false
     }
@@ -634,9 +1218,14 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     state.engine_version = state.engine === 'rust' ? '0.1.0' : kernel.version
     state.engine_identity = state.engine === 'rust' ? `instance=demo-rust pid=1 version=0.1.0 listen=127.0.0.1:${state.mixed_port ?? 7890}` : null
     startedAt = Date.now()
-    autoNow.set('自动选择', names[1])
-    autoNow.set('故障转移', names[0])
-    if (options.loadBalance) autoNow.set('负载均衡', names[0])
+    if (state.active_id === CUSTOM_PROFILE_ID) {
+      const firstCustom = enabledCustomNodes()[0]?.name ?? ''
+      autoNow.set('自动选择', firstCustom)
+    } else {
+      autoNow.set('自动选择', names[1])
+      autoNow.set('故障转移', names[0])
+      if (options.loadBalance) autoNow.set('负载均衡', names[0])
+    }
     fixed.forEach((node, group) => autoNow.set(group, node))
     const label = state.engine === 'rust' ? 'Rust' : `Mihomo ${kernel.version}`
     log('info', `${label} started, mixed proxy listening at 127.0.0.1:${state.mixed_port ?? 7890}`)
@@ -692,10 +1281,17 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
   return {
     live: false,
     async shell() {
-      return { theme, last_entry: entry }
+      return { theme, palette, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setTheme(next) {
       theme = next
+    },
+    async setPalette(next) {
+      palette = normalizePalette(next)
+    },
+    async setLanguage(next) {
+      language = next
+      return { theme, palette, last_entry: entry, language, locale: resolveLanguage(language, systemLocale) }
     },
     async setEntry(next) {
       entry = next
@@ -707,9 +1303,71 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       app = { ...app, autostart: enabled }
       return app
     },
-    async setAppBehavior(closeToTray, silentStart) {
-      app = { ...app, close_to_tray: closeToTray, silent_start: silentStart }
+    async setAppBehavior(closeToTray, silentStart, releaseUiOnClose) {
+      app = {
+        ...app,
+        close_to_tray: closeToTray,
+        silent_start: silentStart,
+        release_ui_on_close: releaseUiOnClose,
+      }
       return app
+    },
+    /** Pretends the lookup went through the mixed port and ip.sb (R40). */
+    async exitIp() {
+      if (!state.connected) throw new Error(translate(locale.value, 'exitIp.offline'))
+      await wait(320)
+      const node = catalog().find((group) => group.name === '节点选择')?.now ?? ''
+      const region = node.split(' ')[0] ?? ''
+      const result: ExitIpInfo = {
+        ip: '203.0.113.42',
+        region: latinText(region || '香港'),
+        isp: 'AS15169 Google LLC',
+        service: 'ip.sb',
+        time_ms: Date.now(),
+      }
+      return result
+    },
+    async setExitIpAuto(enabled) {
+      app = { ...app, auto_exit_ip: enabled }
+      return app
+    },
+    async trafficHistory(range, from, to) {
+      const view = trafficHistoryView(range, from, to)
+      return options.latin ? latinize(view) : view
+    },
+    async setTrafficRecording(enabled) {
+      if (trafficRecording !== enabled) {
+        trafficRecording = enabled
+        trafficBaselines.clear()
+        // Enabling adopts the open counters on the next poll, so pre-enable
+        // traffic is not added and re-enabling never re-counts recorded bytes.
+        trafficSeed = enabled
+      }
+      app = { ...app, traffic_history: enabled }
+      return app
+    },
+    async clearTrafficHistory() {
+      trafficDays.clear()
+      trafficBaselines.clear()
+      // A running poll would otherwise count every open connection's totals
+      // again; the next poll only seeds the id table.
+      trafficSeed = trafficRecording
+    },
+    async hotkeySettings() {
+      return hotkeySettings()
+    },
+    async setHotkey(action, combo) {
+      if (!hotkeySettings().available) throw new Error('此系统不支持全局快捷键')
+      if (!combo) {
+        hotkeys.delete(action)
+        return hotkeySettings()
+      }
+      const clash = [...hotkeys].find(([other, bound]) => other !== action && bound === combo)
+      if (clash) {
+        throw new Error(`组合键 ${combo} 已绑定给「${HOTKEY_LABELS[clash[0]]}」`)
+      }
+      hotkeys.set(action, combo)
+      return hotkeySettings()
     },
     async kernel() {
       return kernel
@@ -1002,12 +1660,37 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done()
     },
     async effectiveConfig() {
+      if (state.active_id === CUSTOM_PROFILE_ID) {
+        const enabled = enabledCustomNodes()
+        if (enabled.length === 0) throw new Error('还没有启用的自建节点，请先导入或启用至少一个节点')
+        const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
+        const proxies = enabled
+          .map((node) => {
+            const dialer = resolveCustomDialer(node, null)
+            const body = node.raw_yaml
+              .trim()
+              .split('\n')
+              .map((line, idx) => (idx === 0 ? `  - ${line.replace(/^\s*-\s*/, '')}` : `    ${line.trim()}`))
+              .join('\n')
+            return dialer ? `${body}\n    dialer-proxy: ${dialer}` : body
+          })
+          .join('\n')
+        const namesList = enabled.map((node) => `      - ${node.name}`).join('\n')
+        const landingLines = buildDemoLandingRulesYaml(state.custom_nodes)
+        const text = `${head}proxies:\n${proxies}\nproxy-groups:\n  - name: 节点选择\n    type: select\n    proxies:\n      - 自动选择\n${namesList}\n      - DIRECT\n  - name: 自动选择\n    type: url-test\n    proxies:\n${namesList}\nrules:\n  - GEOIP,private,DIRECT,no-resolve\n${landingLines}  - GEOSITE,cn,DIRECT\n  - GEOIP,cn,DIRECT,no-resolve\n  - MATCH,节点选择\n`
+        return options.latin ? latinText(text) : text
+      }
       const active = state.active_id ? profile(state.active_id) : null
       if (!active) throw new Error('还没有启用配置')
       const override = active.override_text.trim()
       const base = contents.get(active.id) ?? ''
       const head = `mixed-port: ${state.mixed_port ?? 7890}\nmode: ${state.mode ?? 'rule'}\nexternal-controller: 127.0.0.1:9090\n`
-      return `${head}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+      const overlayNote =
+        state.custom_nodes.overlay_enabled && enabledCustomNodes().length > 0
+          ? `# ── 自建节点叠加 (${enabledCustomNodes().length}) ──\n`
+          : ''
+      const text = `${head}${overlayNote}${override ? `# ── 覆写 ──\n${override}\n` : ''}${base.replace(/^(mixed-port|mode):.*\n/gm, '')}`
+      return options.latin ? latinText(text) : text
     },
     async configOverview(): Promise<ConfigOverview> {
       await wait(120)
@@ -1051,6 +1734,163 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         item.override_error = /^\s*-/.test(text) ? '覆写无法应用' : null
       }
       return done()
+    },
+
+    async previewCustomNodesImport(raw) {
+      const existing = state.custom_nodes.nodes.map((node) => node.name)
+      return parseCustomNodesInput(raw, existing)
+    },
+    async importCustomNodes(raw, dialer) {
+      const existing = state.custom_nodes.nodes.map((node) => node.name)
+      const preview = parseCustomNodesInput(raw, existing)
+      if (preview.parsed.length === 0) {
+        throw new Error(preview.errors[0]?.reason ?? '没有识别到可导入的节点')
+      }
+      const targetDialer: DialerTarget = dialer ?? { kind: 'direct' }
+      const imported: CustomNode[] = []
+      const nextNodes = [...state.custom_nodes.nodes]
+      let nextId = state.custom_nodes.next_node_id
+      for (const item of preview.parsed) {
+        const node: CustomNode = {
+          id: `cn${nextId}`,
+          name: item.name,
+          enabled: true,
+          note: item.note,
+          protocol: item.protocol,
+          raw_yaml: item.raw_yaml,
+          dialer: structuredClone(targetDialer),
+        }
+        nextId += 1
+        imported.push(node)
+        nextNodes.push(node)
+      }
+      validateCustomDialerCycles(nextNodes)
+      state.custom_nodes.next_node_id = nextId
+      state.custom_nodes.nodes = nextNodes
+      maybeAutoActivateCustomProfile()
+      const snap = await done(60)
+      return {
+        snapshot: snap,
+        imported: structuredClone(imported),
+        errors: preview.errors,
+      }
+    },
+    async saveCustomNode(input: SaveCustomNodeInput) {
+      const editingId = input.id?.trim() || null
+      const nameOverride = input.name?.trim() || null
+      let parsed: ParsedCustomNode
+      if (input.simple) {
+        const form: SimpleProxyForm = {
+          ...input.simple,
+          name: input.simple.name.trim() || nameOverride || '',
+        }
+        parsed = buildSimpleProxyYaml(form)
+      } else if (typeof input.raw_yaml === 'string') {
+        parsed = validateRawNodeYaml(input.raw_yaml, nameOverride ?? undefined)
+      } else if (editingId) {
+        const existing = state.custom_nodes.nodes.find((node) => node.id === editingId)
+        if (!existing) throw new Error('找不到对应的自建节点')
+        parsed = validateRawNodeYaml(existing.raw_yaml, nameOverride ?? undefined)
+      } else {
+        throw new Error('请提供节点配置或表单信息')
+      }
+      const duplicate = state.custom_nodes.nodes.some(
+        (node) => node.name === parsed.name && node.id !== editingId,
+      )
+      if (duplicate) throw new Error(`已存在同名自建节点：${parsed.name}`)
+
+      const nextNodes = structuredClone(state.custom_nodes.nodes)
+      let nextId = state.custom_nodes.next_node_id
+      const enabled = input.enabled !== false
+      const note = (input.note ?? '').trim()
+      const dialer: DialerTarget = input.dialer ? structuredClone(input.dialer) : { kind: 'direct' }
+
+      if (editingId) {
+        const target = nextNodes.find((node) => node.id === editingId)
+        if (!target) throw new Error('找不到对应的自建节点')
+        target.name = parsed.name
+        target.enabled = enabled
+        target.note = note
+        target.protocol = parsed.protocol
+        target.raw_yaml = parsed.raw_yaml
+        target.dialer = dialer
+      } else {
+        nextNodes.push({
+          id: `cn${nextId}`,
+          name: parsed.name,
+          enabled,
+          note,
+          protocol: parsed.protocol,
+          raw_yaml: parsed.raw_yaml,
+          dialer,
+        })
+        nextId += 1
+      }
+      validateCustomDialerCycles(nextNodes)
+      state.custom_nodes.next_node_id = nextId
+      state.custom_nodes.nodes = nextNodes
+      maybeAutoActivateCustomProfile()
+      return done(60)
+    },
+    async deleteCustomNode(id) {
+      const cleanId = id.trim()
+      const idx = state.custom_nodes.nodes.findIndex((node) => node.id === cleanId)
+      if (idx < 0) throw new Error('找不到对应的自建节点')
+      state.custom_nodes.nodes.splice(idx, 1)
+      if (state.active_id === CUSTOM_PROFILE_ID && state.custom_nodes.nodes.length === 0) {
+        state.active_id = null
+      }
+      return done(60)
+    },
+    async setCustomNodeEnabled(id, enabled) {
+      const cleanId = id.trim()
+      const node = state.custom_nodes.nodes.find((item) => item.id === cleanId)
+      if (!node) throw new Error('找不到对应的自建节点')
+      node.enabled = enabled
+      if (enabled) maybeAutoActivateCustomProfile()
+      return done(60)
+    },
+    async setCustomNodesOverlay(enabled) {
+      state.custom_nodes.overlay_enabled = enabled
+      return done(60)
+    },
+    async saveLandingRules(rulesEnabled, rulesInput) {
+      const normalized: LandingRule[] = []
+      let nextRuleId = state.custom_nodes.next_rule_id
+      for (const item of rulesInput) {
+        if (item.rule.kind === 'preset') {
+          const presetId = item.rule.id
+          if (!DEFAULT_LANDING_PRESETS.some((preset) => preset.id === presetId)) {
+            throw new Error(`不支持的预设规则：${presetId}`)
+          }
+          normalized.push({
+            id: item.id?.trim() || `lr${nextRuleId++}`,
+            enabled: item.enabled !== false,
+            rule: { kind: 'preset', id: presetId },
+            target: structuredClone(item.target),
+          })
+        } else {
+          const cleanPattern = validateLandingDomain(item.rule.pattern)
+          normalized.push({
+            id: item.id?.trim() || `lr${nextRuleId++}`,
+            enabled: item.enabled !== false,
+            rule: { kind: 'domain', pattern: cleanPattern },
+            target: structuredClone(item.target),
+          })
+        }
+      }
+      state.custom_nodes.next_rule_id = nextRuleId
+      state.custom_nodes.rules_enabled = rulesEnabled
+      state.custom_nodes.rules = normalized
+      return done(60)
+    },
+    async useCustomProfile() {
+      if (enabledCustomNodes().length === 0) {
+        throw new Error('还没有启用的自建节点，请先导入或启用至少一个节点')
+      }
+      if (state.active_id !== CUSTOM_PROFILE_ID) disabledRules.clear()
+      state.active_id = CUSTOM_PROFILE_ID
+      return done(60)
     },
 
     async connect() {
@@ -1112,6 +1952,10 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
 
     async selectNode(group, node) {
+      if (options.latin) {
+        group = delatinName(group)
+        node = delatinName(node)
+      }
       const def = groupsDef().find((item) => item.name === group)
       if (def && def.type !== 'select') {
         if (!pinnable(def.type)) state.nodes_error = '不能改选'
@@ -1136,6 +1980,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(60)
     },
     async unfixGroup(group) {
+      if (options.latin) group = delatinName(group)
       const def = groupsDef().find((item) => item.name === group)
       if (!def || !pinnable(def.type)) state.nodes_error = '不能改选'
       else if (!state.kernel_running) state.nodes_error = '内核没有运行'
@@ -1150,7 +1995,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(60)
     },
     async testGroup(group) {
-      const def = groupsDef().find((item) => item.name === group)
+      if (options.latin) group = delatinName(group)
+      const def = catalogGroupsDef().find((item) => item.name === group)
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else {
         state.nodes_error = null
@@ -1168,6 +2014,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       return done(0)
     },
     async testNode(node) {
+      if (options.latin) node = delatinName(node)
       if (!state.kernel_running) state.nodes_error = '内核没有运行'
       else await probe([node])
       return done(0)
@@ -1211,7 +2058,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async rules() {
       await wait(200)
-      return rulesSnapshot()
+      const result = rulesSnapshot()
+      return options.latin ? latinize(result) : result
     },
     async setRuleDisabled(key, disabled) {
       await wait(120)
@@ -1219,15 +2067,24 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
       if (!ruleKeyList.includes(key)) throw new Error('没有这条规则')
       if (disabled) disabledRules.add(key)
       else disabledRules.delete(key)
-      return rulesSnapshot()
+      const result = rulesSnapshot()
+      return options.latin ? latinize(result) : result
+    },
+    async matchRule(input) {
+      await wait(80)
+      if (!state.kernel_running) throw new Error('内核没有运行')
+      const result = evaluateDemoRuleMatch(rules, disabledRules, providerRows, input)
+      return options.latin ? latinize(result) : result
     },
     async providers() {
       await wait(200)
       if (!state.kernel_running) return { providers: [], error: '内核没有运行' }
-      return { providers: providerRows.map((row) => ({ ...row })), error: null }
+      const result = { providers: providerRows.map((row) => ({ ...row })), error: null }
+      return options.latin ? latinize(result) : result
     },
     async providerAction(kind, name, action) {
       await wait(900)
+      if (options.latin) name = delatinName(name)
       const row = providerRows.find((item) => item.kind === kind && item.name === name)
       if (row && action === 'update') row.updated_at = new Date().toISOString()
       log('info', `${action === 'update' ? '更新' : '健康检查'} ${name} 完成`)
@@ -1275,6 +2132,7 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async providerDetail(kind, name, query) {
       await wait(200)
+      if (options.latin) name = delatinName(name)
       const row = providerRows.find((item) => item.kind === kind && item.name === name)
       if (!row) throw new Error('没有这个资源')
       if (kind === 'proxy') {
@@ -1285,7 +2143,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
           delay_ms: state.kernel_running && index % 7 !== 3 ? 60 + index * 23 : null,
           alive: state.kernel_running ? index % 7 !== 3 : null,
         }))
-        return { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+        const result = { kind, name, proxies, rules: [], total: proxies.length, notice: null, source: null }
+        return options.latin ? latinize(result) : result
       }
       // Mirrors the backend: MRS decodes to domains, previews stop at 5000 rows, a query searches all.
       const all = row.vehicle === 'Inline'
@@ -1300,7 +2159,8 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
         : needle ? `匹配 ${matched.length} 条，只列出前 ${limit} 条`
         : `共 ${matched.length} 条，只列出前 ${limit} 条；搜索会查找全部规则`
       const source = row.vehicle === 'Inline' ? 'inline' : row.format === 'MrsRule' ? 'https://example.com/cn.mrs' : 'https://example.com/telegram.yaml'
-      return { kind, name, proxies: [], rules: matched.slice(0, limit), total: matched.length, notice, source }
+      const result = { kind, name, proxies: [], rules: matched.slice(0, limit), total: matched.length, notice, source }
+      return options.latin ? latinize(result) : result
     },
     async geoFiles() {
       return [
@@ -1344,6 +2204,73 @@ export function createDemoBackend(options: DemoOptions = {}): Backend {
     },
     async clearNotice() {
       state.notice = null
+      return done(0)
+    },
+    async exportBackup() {
+      await wait(120)
+      const directory =
+        state.platform === 'android'
+          ? '/storage/emulated/0/Android/data/app.billow/files/Documents'
+          : 'C:\\Users\\demo\\Downloads'
+      return `${directory}/billow-backup-${backupStamp()}.json`
+    },
+    async restoreBackup(text) {
+      await wait(150)
+      const { profiles, shell } = readBackup(text)
+      applyBackup(profiles, shell)
+      log('info', `已从备份恢复 ${state.profiles.length} 份配置`)
+      return done(0)
+    },
+    async webdavSettings() {
+      return { ...webdav, available: webdavVerified }
+    },
+    async setWebdav(url, username, password) {
+      const changed = webdav.url !== url || webdav.username !== username || webdav.password !== password
+      webdav = { url, username, password }
+      // Saving the same account again keeps a successful test; a change drops it.
+      if (changed) webdavVerified = false
+      return { ...webdav, available: webdavVerified }
+    },
+    async testWebdav() {
+      await wait(150)
+      if (!webdav.url.trim()) return { available: false, error: '请填写 WebDAV 服务器地址' }
+      if (!/^https?:\/\//i.test(webdav.url.trim())) {
+        return { available: false, error: 'WebDAV 地址需要以 http:// 或 https:// 开头' }
+      }
+      if (webdav.password === 'bad') {
+        webdavVerified = false
+        return { available: false, error: 'WebDAV 认证失败（401）' }
+      }
+      webdavVerified = true
+      return { available: true, error: null }
+    },
+    async uploadBackup() {
+      if (!webdavVerified) throw new Error('请先测试连接，WebDAV 还不可用')
+      await wait(200)
+      const text = backupText()
+      const name = `billow-backup-demo-${backupStamp()}.json`
+      remoteBackups = [
+        { name, device: 'demo', modified: new Date().toUTCString(), size: text.length, text },
+        ...remoteBackups,
+      ]
+      return name
+    },
+    async listRemoteBackups() {
+      await wait(120)
+      return remoteBackups.map((item) => ({
+        name: item.name,
+        device: item.device,
+        modified: item.modified,
+        size: item.size,
+      }))
+    },
+    async restoreRemoteBackup(name) {
+      await wait(150)
+      const item = remoteBackups.find((entry) => entry.name === name)
+      if (!item) throw new Error('云端没有这份备份，请刷新列表')
+      const { profiles, shell } = readBackup(item.text)
+      applyBackup(profiles, shell)
+      log('info', `已从云端备份恢复 ${state.profiles.length} 份配置`)
       return done(0)
     },
     async saveSettings(settings) {
@@ -1399,4 +2326,951 @@ function demoSettingsError(s: KernelSettings, mixed: number): string | null {
     taken.push([label, port])
   }
   return null
+}
+
+function yamlScalar(value: string): string {
+  if (/^[A-Za-z0-9._-]+$/.test(value)) return value
+  return JSON.stringify(value)
+}
+
+function decodeBase64Utf8(raw: string): string | null {
+  const compact = raw.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  if (!compact || compact.length % 4 === 1) return null
+  const padded = compact + '='.repeat((4 - (compact.length % 4)) % 4)
+  if (!/^[A-Za-z0-9+/=]+$/.test(padded)) return null
+  try {
+    const binary = atob(padded)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  } catch {
+    return null
+  }
+}
+
+function dedupeCustomName(baseName: string, used: Set<string>): string {
+  const clean = baseName.trim() || '未命名节点'
+  if (!used.has(clean)) {
+    used.add(clean)
+    return clean
+  }
+  let suffix = 2
+  while (used.has(`${clean} (${suffix})`)) suffix += 1
+  const next = `${clean} (${suffix})`
+  used.add(next)
+  return next
+}
+
+function parseSimpleYamlMap(raw: string): Record<string, string> | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const out: Record<string, string> = {}
+  const lines = trimmed.split(/\r?\n/)
+  let matched = 0
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const cleaned = line.replace(/^-\s+/, '')
+    const colon = cleaned.indexOf(':')
+    if (colon <= 0) continue
+    const key = cleaned.slice(0, colon).trim()
+    let val = cleaned.slice(colon + 1).trim()
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1)
+    }
+    if (key) {
+      out[key] = val
+      matched += 1
+    }
+  }
+  return matched > 0 ? out : null
+}
+
+function stripDialerFromYaml(raw: string, nameOverride?: string): string {
+  const lines = raw
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+/, '').trim())
+    .filter((line) => line && !/^dialer-proxy\s*:/i.test(line))
+  if (nameOverride) {
+    let replaced = false
+    for (let i = 0; i < lines.length; i += 1) {
+      if (/^name\s*:/i.test(lines[i]!)) {
+        lines[i] = `name: ${yamlScalar(nameOverride)}`
+        replaced = true
+        break
+      }
+    }
+    if (!replaced) lines.unshift(`name: ${yamlScalar(nameOverride)}`)
+  }
+  return lines.join('\n')
+}
+
+function validateRawNodeYaml(rawYaml: string, nameOverride?: string): ParsedCustomNode {
+  const fields = parseSimpleYamlMap(rawYaml)
+  if (!fields) throw new Error('YAML 节点格式不正确，需要包含 name、type、server、port')
+  const name = (nameOverride ?? fields.name ?? '').trim()
+  const protocol = (fields.type ?? '').trim().toLowerCase()
+  const server = (fields.server ?? '').trim()
+  const port = Number.parseInt(fields.port ?? '', 10)
+  if (!name) throw new Error('节点名称不能为空')
+  if (!protocol) throw new Error('节点缺少 type 协议字段')
+  if (!server) throw new Error('节点缺少 server 服务器地址')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('节点端口无效，请填写 1–65535 之间的数字')
+  }
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: stripDialerFromYaml(rawYaml, name),
+    note: '',
+  }
+}
+
+function buildSimpleProxyYaml(form: SimpleProxyForm): ParsedCustomNode {
+  const protocol = form.protocol.trim().toLowerCase()
+  if (protocol !== 'socks5' && protocol !== 'http') {
+    throw new Error('快速表单仅支持 SOCKS5 和 HTTP 协议')
+  }
+  const server = form.server.trim()
+  if (!server) throw new Error('服务器地址不能为空')
+  const port = Number(form.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('端口无效，请填写 1–65535 之间的数字')
+  }
+  const name = form.name.trim() || `${protocol}-${server}:${port}`
+  const lines = [
+    `name: ${yamlScalar(name)}`,
+    `type: ${protocol}`,
+    `server: ${yamlScalar(server)}`,
+    `port: ${port}`,
+  ]
+  if (form.username.trim()) lines.push(`username: ${yamlScalar(form.username.trim())}`)
+  if (form.password) lines.push(`password: ${yamlScalar(form.password)}`)
+  if (form.tls) lines.push('tls: true')
+  if (form.skip_cert_verify) lines.push('skip-cert-verify: true')
+  if (protocol === 'socks5' && form.udp) lines.push('udp: true')
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: lines.join('\n'),
+    note: '',
+  }
+}
+
+function parseSingleUri(rawLine: string): ParsedCustomNode {
+  const line = rawLine.trim()
+  const schemeMatch = line.match(/^([a-zA-Z0-9+.-]+):\/\//)
+  if (!schemeMatch) throw new Error('不是有效的节点链接')
+  const scheme = schemeMatch[1]!.toLowerCase()
+
+  if (scheme === 'vmess') {
+    const payload = decodeBase64Utf8(line.slice('vmess://'.length))
+    if (!payload) throw new Error('VMess 链接 Base64 解码失败')
+    let obj: Record<string, unknown>
+    try {
+      obj = JSON.parse(payload) as Record<string, unknown>
+    } catch {
+      throw new Error('VMess 链接 JSON 格式不正确')
+    }
+    const server = String(obj.add ?? '').trim()
+    const port = Number.parseInt(String(obj.port ?? ''), 10)
+    const uuid = String(obj.id ?? '').trim()
+    if (!server || !Number.isInteger(port) || port < 1 || port > 65535 || !uuid) {
+      throw new Error('VMess 链接缺少服务器、端口或 UUID')
+    }
+    const name = String(obj.ps ?? '').trim() || `vmess-${server}:${port}`
+    const lines = [
+      `name: ${yamlScalar(name)}`,
+      'type: vmess',
+      `server: ${yamlScalar(server)}`,
+      `port: ${port}`,
+      `uuid: ${yamlScalar(uuid)}`,
+      `alterId: ${Number.parseInt(String(obj.aid ?? '0'), 10) || 0}`,
+      'cipher: auto',
+    ]
+    if (String(obj.tls ?? '').toLowerCase() === 'tls') lines.push('tls: true')
+    if (obj.sni) lines.push(`servername: ${yamlScalar(String(obj.sni))}`)
+    return { name, protocol: 'vmess', server, port, raw_yaml: lines.join('\n'), note: '' }
+  }
+
+  if (scheme === 'ss') {
+    const hashIdx = line.indexOf('#')
+    const fragment = hashIdx >= 0 ? decodeURIComponent(line.slice(hashIdx + 1)) : ''
+    let body = (hashIdx >= 0 ? line.slice(5, hashIdx) : line.slice(5)).split('?')[0] ?? ''
+    let method = ''
+    let password = ''
+    let hostPort = ''
+    if (body.includes('@')) {
+      const atIdx = body.lastIndexOf('@')
+      const userInfo = body.slice(0, atIdx)
+      hostPort = body.slice(atIdx + 1)
+      const decoded = userInfo.includes(':') ? userInfo : (decodeBase64Utf8(userInfo) ?? userInfo)
+      const sep = decoded.indexOf(':')
+      if (sep <= 0) throw new Error('Shadowsocks 链接缺少加密方式或密码')
+      method = decoded.slice(0, sep)
+      password = decoded.slice(sep + 1)
+    } else {
+      const decoded = decodeBase64Utf8(body)
+      if (!decoded || !decoded.includes('@')) throw new Error('Shadowsocks 链接解码失败')
+      const atIdx = decoded.lastIndexOf('@')
+      const creds = decoded.slice(0, atIdx)
+      hostPort = decoded.slice(atIdx + 1)
+      const sep = creds.indexOf(':')
+      if (sep <= 0) throw new Error('Shadowsocks 链接缺少加密方式或密码')
+      method = creds.slice(0, sep)
+      password = creds.slice(sep + 1)
+    }
+    const parsedHost = new URL(`http://${hostPort}`)
+    const server = parsedHost.hostname.replace(/^\[|\]$/g, '')
+    const port = Number.parseInt(parsedHost.port, 10)
+    if (!server || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Shadowsocks 链接缺少有效的服务器或端口')
+    }
+    const name = fragment.trim() || `ss-${server}:${port}`
+    const lines = [
+      `name: ${yamlScalar(name)}`,
+      'type: ss',
+      `server: ${yamlScalar(server)}`,
+      `port: ${port}`,
+      `cipher: ${yamlScalar(method)}`,
+      `password: ${yamlScalar(password)}`,
+    ]
+    return { name, protocol: 'ss', server, port, raw_yaml: lines.join('\n'), note: '' }
+  }
+
+  const supported: Record<string, string> = {
+    vless: 'vless',
+    trojan: 'trojan',
+    hysteria2: 'hysteria2',
+    hy2: 'hysteria2',
+    tuic: 'tuic',
+    anytls: 'anytls',
+    socks5: 'socks5',
+    socks: 'socks5',
+    http: 'http',
+    https: 'http',
+  }
+  const protocol = supported[scheme]
+  if (!protocol) throw new Error(`暂不支持 ${scheme}:// 协议`)
+
+  let url: URL
+  try {
+    url = new URL(line.replace(/^[a-zA-Z0-9+.-]+:\/\//, 'http://'))
+  } catch {
+    throw new Error(`${scheme}:// 链接格式不正确`)
+  }
+  const server = url.hostname.replace(/^\[|\]$/g, '')
+  const defaultPort = scheme === 'http' ? 80 : scheme === 'https' ? 443 : 0
+  const port = url.port ? Number.parseInt(url.port, 10) : defaultPort
+  if (!server) throw new Error('链接缺少服务器地址')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('链接缺少有效端口')
+  }
+  const fragment = url.hash ? decodeURIComponent(url.hash.slice(1)).trim() : ''
+  const name = fragment || `${protocol}-${server}:${port}`
+  const user = decodeURIComponent(url.username || '')
+  const pass = decodeURIComponent(url.password || '')
+  const params = url.searchParams
+
+  const lines = [
+    `name: ${yamlScalar(name)}`,
+    `type: ${protocol}`,
+    `server: ${yamlScalar(server)}`,
+    `port: ${port}`,
+  ]
+  if (protocol === 'vless') {
+    if (!user) throw new Error('VLESS 链接缺少 UUID')
+    lines.push(`uuid: ${yamlScalar(user)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`servername: ${yamlScalar(sni)}`)
+    if (params.get('security') === 'tls' || params.get('security') === 'reality') lines.push('tls: true')
+  } else if (protocol === 'trojan' || protocol === 'hysteria2' || protocol === 'anytls') {
+    const secret = user || pass
+    if (!secret) throw new Error(`${protocol} 链接缺少密码`)
+    lines.push(`password: ${yamlScalar(secret)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`sni: ${yamlScalar(sni)}`)
+    if (params.get('insecure') === '1' || params.get('allowInsecure') === '1') {
+      lines.push('skip-cert-verify: true')
+    }
+  } else if (protocol === 'tuic') {
+    if (!user || !pass) throw new Error('TUIC 链接缺少 UUID 或密码')
+    lines.push(`uuid: ${yamlScalar(user)}`)
+    lines.push(`password: ${yamlScalar(pass)}`)
+    const sni = params.get('sni')
+    if (sni) lines.push(`sni: ${yamlScalar(sni)}`)
+  } else if (protocol === 'socks5' || protocol === 'http') {
+    if (user) lines.push(`username: ${yamlScalar(user)}`)
+    if (pass) lines.push(`password: ${yamlScalar(pass)}`)
+    if (scheme === 'https' || params.get('tls') === '1') lines.push('tls: true')
+  }
+
+  return {
+    name,
+    protocol,
+    server,
+    port,
+    raw_yaml: lines.join('\n'),
+    note: '',
+  }
+}
+
+function parseCustomNodesInput(raw: string, existingNames: string[]): ParseNodesResult {
+  const trimmed = raw.trim()
+  if (!trimmed) return { parsed: [], errors: [] }
+  const used = new Set(existingNames)
+  const parsed: ParsedCustomNode[] = []
+  const errors: ParseItemError[] = []
+
+  // Detect YAML snippet (either `proxies:` list or a single YAML mapping)
+  const looksYaml =
+    /(^|\n)\s*proxies\s*:/i.test(trimmed) ||
+    (/(^|\n)\s*-?\s*type\s*:/i.test(trimmed) && /(^|\n)\s*server\s*:/i.test(trimmed))
+  if (looksYaml) {
+    const body = trimmed.replace(/^proxies\s*:\s*\r?\n/i, '')
+    const blocks = body
+      .split(/\r?\n(?=\s*-\s+\w+\s*:)/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+    blocks.forEach((block, index) => {
+      try {
+        const item = validateRawNodeYaml(block)
+        const name = dedupeCustomName(item.name, used)
+        parsed.push({
+          ...item,
+          name,
+          raw_yaml: stripDialerFromYaml(item.raw_yaml, name),
+        })
+      } catch (err) {
+        errors.push({
+          index,
+          source: block.split('\n')[0] ?? block,
+          reason: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+    return { parsed, errors }
+  }
+
+  // Detect Base64-encoded node list
+  let textToParse = trimmed
+  if (!trimmed.includes('://')) {
+    const decoded = decodeBase64Utf8(trimmed)
+    if (decoded && decoded.includes('://')) textToParse = decoded
+  }
+
+  const lines = textToParse
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+
+  lines.forEach((line, index) => {
+    try {
+      const item = parseSingleUri(line)
+      const name = dedupeCustomName(item.name, used)
+      parsed.push({
+        ...item,
+        name,
+        raw_yaml: stripDialerFromYaml(item.raw_yaml, name),
+      })
+    } catch (err) {
+      errors.push({
+        index,
+        source: line.slice(0, 80),
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  })
+  return { parsed, errors }
+}
+
+function validateCustomDialerCycles(nodes: CustomNode[]): void {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const visiting = new Set<string>()
+  const visited = new Set<string>()
+  const stack: string[] = []
+
+  const dfs = (id: string) => {
+    if (visited.has(id)) return
+    const node = byId.get(id)
+    if (!node) return
+    if (visiting.has(id)) {
+      const start = stack.indexOf(id)
+      const cycleIds = [...stack.slice(start), id]
+      const cycleNames = cycleIds.map((cid) => byId.get(cid)?.name ?? cid).join(' → ')
+      throw new Error(`检测到链式代理循环引用：${cycleNames}`)
+    }
+    visiting.add(id)
+    stack.push(id)
+    if (node.dialer.kind === 'custom_node') {
+      if (node.dialer.id === node.id) {
+        throw new Error(`节点「${node.name}」不能将自己设为前置代理`)
+      }
+      if (byId.has(node.dialer.id)) dfs(node.dialer.id)
+    }
+    stack.pop()
+    visiting.delete(id)
+    visited.add(id)
+  }
+
+  for (const node of nodes) dfs(node.id)
+}
+
+function validateLandingDomain(pattern: string): string {
+  let clean = pattern.trim()
+  if (!clean) throw new Error('域名不能为空')
+  const exact = clean.startsWith('=')
+  if (exact) clean = clean.slice(1).trim()
+  clean = clean.replace(/^https?:\/\//i, '').split('/')[0]?.trim() ?? ''
+  if (clean.startsWith('.')) clean = clean.slice(1)
+  if (!clean || /\s/.test(clean) || !isValidDnsName(clean)) {
+    throw new Error(`域名格式不正确：${pattern.trim()}`)
+  }
+  return exact ? `=${clean.toLowerCase()}` : clean.toLowerCase()
+}
+
+function buildDemoLandingRulesYaml(customState: Snapshot['custom_nodes']): string {
+  if (!customState.rules_enabled) return ''
+  const lines: string[] = []
+  for (const item of customState.rules) {
+    if (!item.enabled) continue
+    let target: string | null = LANDING_GROUP_NAME
+    if (item.target.kind === 'custom_node') {
+      const targetId = item.target.id
+      target = customState.nodes.find((n) => n.id === targetId && n.enabled)?.name ?? null
+    }
+    if (!target) continue
+    if (item.rule.kind === 'preset') {
+      const presetId = item.rule.id
+      const preset = DEFAULT_LANDING_PRESETS.find((p) => p.id === presetId)
+      if (!preset) continue
+      for (const domain of preset.domains) lines.push(`  - DOMAIN-SUFFIX,${domain},${target}\n`)
+    } else {
+      const pattern = item.rule.pattern
+      if (pattern.startsWith('=')) {
+        lines.push(`  - DOMAIN,${pattern.slice(1)},${target}\n`)
+      } else {
+        lines.push(`  - DOMAIN-SUFFIX,${pattern},${target}\n`)
+      }
+    }
+  }
+  return lines.join('')
+}
+
+interface ParsedDemoRuleTarget {
+  host: string | null
+  ip: string | null
+  isV6: boolean
+  port: number | null
+  process: string | null
+}
+
+type DemoRuleEval =
+  | { state: 'matched'; subRule: string | null }
+  | { state: 'not_matched' }
+  | { state: 'uncertain'; reason: string; providerName: string | null; needsDns: boolean }
+
+function parseDemoPortStr(text: string): number {
+  const trimmed = text.trim()
+  if (!/^\d{1,5}$/.test(trimmed)) throw new Error('目标端口无效（应为 1-65535）')
+  const port = Number(trimmed)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('目标端口无效（应为 1-65535）')
+  }
+  return port
+}
+
+function parseIpv4Number(ip: string): number | null {
+  const parts = ip.split('.')
+  if (parts.length !== 4) return null
+  let out = 0
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null
+    const octet = Number(part)
+    if (octet < 0 || octet > 255) return null
+    out = (out << 8) | octet
+  }
+  return out >>> 0
+}
+
+function parseIpv6Bytes(raw: string): Uint8Array | null {
+  if (!raw || !raw.includes(':') || !/^[0-9a-f:.]+$/i.test(raw)) return null
+  let text = raw.toLowerCase()
+  const hasDot = text.includes('.')
+  let v4Tail: [number, number] | null = null
+  if (hasDot) {
+    const lastColon = text.lastIndexOf(':')
+    const v4 = parseIpv4Number(text.slice(lastColon + 1))
+    if (v4 === null) return null
+    v4Tail = [(v4 >>> 16) & 0xffff, v4 & 0xffff]
+    text = text.slice(0, lastColon)
+  }
+  const halves = text.split('::')
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(':') : []
+  const right = halves[1] ? halves[1].split(':') : []
+  const words: number[] = []
+  const parsePart = (list: string[]) => {
+    const out: number[] = []
+    for (const part of list) {
+      if (!/^[0-9a-f]{1,4}$/i.test(part)) return null
+      out.push(Number.parseInt(part, 16))
+    }
+    return out
+  }
+  const leftWords = parsePart(left)
+  const rightWords = parsePart(right)
+  if (!leftWords || !rightWords) return null
+  const tailLen = v4Tail ? 2 : 0
+  if (halves.length === 2) {
+    const missing = 8 - (leftWords.length + rightWords.length + tailLen)
+    if (missing < 1) return null
+    words.push(...leftWords, ...Array<number>(missing).fill(0), ...rightWords)
+  } else {
+    if (leftWords.length + tailLen !== 8) return null
+    words.push(...leftWords)
+  }
+  if (v4Tail) words.push(v4Tail[0], v4Tail[1])
+  if (words.length !== 8) return null
+  const bytes = new Uint8Array(16)
+  for (let i = 0; i < 8; i++) {
+    bytes[i * 2] = (words[i]! >>> 8) & 0xff
+    bytes[i * 2 + 1] = words[i]! & 0xff
+  }
+  return bytes
+}
+
+function formatCanonicalIpv6(bytes: Uint8Array): string {
+  const words: string[] = []
+  for (let i = 0; i < 16; i += 2) {
+    words.push(((bytes[i]! << 8) | bytes[i + 1]!).toString(16))
+  }
+  let bestStart = -1
+  let bestLen = 0
+  let curStart = -1
+  let curLen = 0
+  for (let i = 0; i < 8; i++) {
+    if (words[i] === '0') {
+      if (curStart === -1) curStart = i
+      curLen++
+      if (curLen > bestLen) {
+        bestStart = curStart
+        bestLen = curLen
+      }
+    } else {
+      curStart = -1
+      curLen = 0
+    }
+  }
+  if (bestLen >= 2) {
+    const before = words.slice(0, bestStart).join(':')
+    const after = words.slice(bestStart + bestLen).join(':')
+    return `${before}::${after}`
+  }
+  return words.join(':')
+}
+
+function matchIpCidr(ip: string, isV6: boolean, cidr: string): boolean {
+  const [addrRaw, prefixRaw, ...rest] = cidr.trim().split('/')
+  if (!addrRaw || rest.length > 0) return false
+  if (!isV6) {
+    const ipNum = parseIpv4Number(ip)
+    const netNum = parseIpv4Number(addrRaw)
+    if (ipNum === null || netNum === null) return false
+    const prefix = prefixRaw === undefined ? 32 : Number(prefixRaw)
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false
+    if (prefix === 0) return true
+    const mask = prefix === 32 ? 0xffffffff : (~0 << (32 - prefix)) >>> 0
+    return (ipNum & mask) === (netNum & mask)
+  }
+  const ipBytes = parseIpv6Bytes(ip)
+  const netBytes = parseIpv6Bytes(addrRaw)
+  if (!ipBytes || !netBytes) return false
+  const prefix = prefixRaw === undefined ? 128 : Number(prefixRaw)
+  if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return false
+  const fullBytes = Math.floor(prefix / 8)
+  const remBits = prefix % 8
+  for (let i = 0; i < fullBytes; i++) {
+    if (ipBytes[i] !== netBytes[i]) return false
+  }
+  if (remBits > 0) {
+    const mask = (0xff << (8 - remBits)) & 0xff
+    if ((ipBytes[fullBytes]! & mask) !== (netBytes[fullBytes]! & mask)) return false
+  }
+  return true
+}
+
+function validateDemoDomain(raw: string): string | null {
+  const trimmed = raw.trim().replace(/\.+$/, '')
+  if (!trimmed || trimmed.length > 253) return null
+  const lower = trimmed.toLowerCase()
+  const labels = lower.split('.')
+  if (labels.length === 0) return null
+  for (const label of labels) {
+    if (!label || label.length > 63) return null
+    if (label.startsWith('-') || label.endsWith('-')) return null
+    if (!/^[a-z0-9_-]+$/i.test(label)) return null
+  }
+  if (/^\d+$/.test(labels[labels.length - 1]!)) return null
+  return lower
+}
+
+function parseDemoRuleTarget(input: RuleMatchInput): ParsedDemoRuleTarget {
+  if (input.dst_port != null) {
+    if (!Number.isInteger(input.dst_port) || input.dst_port < 1 || input.dst_port > 65535) {
+      throw new Error('目标端口无效（应为 1-65535）')
+    }
+  }
+  const raw = input.target.trim()
+  if (!raw) throw new Error('请输入要测试的域名或 IP')
+  if (/\s/.test(raw)) throw new Error('目标地址格式无效')
+
+  const schemeIdx = raw.indexOf('://')
+  const withoutScheme = schemeIdx >= 0 ? raw.slice(schemeIdx + 3) : raw
+  let authority = withoutScheme.split(/[/?#]/)[0]?.trim() ?? ''
+  const atIdx = authority.lastIndexOf('@')
+  if (atIdx >= 0) authority = authority.slice(atIdx + 1)
+  if (!authority) throw new Error('目标地址格式无效')
+
+  let extractedPort: number | null = null
+  let host: string | null = null
+  let ip: string | null = null
+  let isV6 = false
+
+  if (authority.startsWith('[')) {
+    const close = authority.indexOf(']')
+    if (close < 0) throw new Error('目标地址格式无效')
+    const ipPart = authority.slice(1, close)
+    const after = authority.slice(close + 1)
+    const bytes = parseIpv6Bytes(ipPart)
+    if (!bytes) throw new Error('目标地址格式无效')
+    if (after.startsWith(':')) extractedPort = parseDemoPortStr(after.slice(1))
+    else if (after) throw new Error('目标地址格式无效')
+    ip = formatCanonicalIpv6(bytes)
+    isV6 = true
+  } else {
+    const v6Bytes = parseIpv6Bytes(authority)
+    if (v6Bytes) {
+      ip = formatCanonicalIpv6(v6Bytes)
+      isV6 = true
+    } else {
+      const colons = authority.split(':').length - 1
+      if (colons > 1) throw new Error('目标地址格式无效')
+      let hostPart = authority
+      if (colons === 1) {
+        const idx = authority.indexOf(':')
+        hostPart = authority.slice(0, idx)
+        extractedPort = parseDemoPortStr(authority.slice(idx + 1))
+      }
+      const v4 = parseIpv4Number(hostPart)
+      if (v4 !== null) {
+        ip = `${(v4 >>> 24) & 255}.${(v4 >>> 16) & 255}.${(v4 >>> 8) & 255}.${v4 & 255}`
+      } else {
+        const domain = validateDemoDomain(hostPart)
+        if (!domain) throw new Error('目标地址格式无效')
+        host = domain
+      }
+    }
+  }
+
+  return {
+    host,
+    ip,
+    isV6,
+    port: input.dst_port ?? extractedPort,
+    process: input.process?.trim() || null,
+  }
+}
+
+function matchDemoPortExpr(port: number, expr: string): boolean {
+  for (const rawPart of expr.split('/')) {
+    const part = rawPart.trim()
+    if (!part) continue
+    const dash = part.indexOf('-')
+    if (dash > 0) {
+      const start = Number(part.slice(0, dash).trim())
+      const end = Number(part.slice(dash + 1).trim())
+      if (Number.isInteger(start) && Number.isInteger(end) && port >= start && port <= end) return true
+    } else if (Number(part) === port) {
+      return true
+    }
+  }
+  return false
+}
+
+function matchDemoDomainWildcard(host: string, pattern: string): boolean {
+  const pat = pattern.trim().replace(/\.+$/, '').toLowerCase()
+  if (!pat || !host) return false
+  if (pat.startsWith('+.')) {
+    const suffix = pat.slice(2)
+    return host === suffix || host.endsWith(`.${suffix}`)
+  }
+  if (pat.startsWith('.')) {
+    return host.endsWith(pat)
+  }
+  const escaped = pat
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '[^.]+')
+  return new RegExp(`^${escaped}$`, 'i').test(host)
+}
+
+function demoProcessBasename(value: string): string {
+  const normalized = value.replace(/\\/g, '/')
+  const idx = normalized.lastIndexOf('/')
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized
+}
+
+function evaluateDemoExplicitRule(
+  kind: string,
+  payload: string,
+  target: ParsedDemoRuleTarget,
+  modifiers: { noResolve?: boolean; src?: boolean } = {},
+): DemoRuleEval {
+  const norm = kind.replace(/[^a-z0-9]/gi, '').toLowerCase()
+  const trimmed = payload.trim()
+  switch (norm) {
+    case 'match':
+    case 'final':
+      return { state: 'matched', subRule: null }
+    case 'domain':
+      return target.host && target.host === trimmed.replace(/\.+$/, '').toLowerCase()
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainsuffix': {
+      if (!target.host) return { state: 'not_matched' }
+      const suffix = trimmed.replace(/^\.+/, '').replace(/\.+$/, '').toLowerCase()
+      return suffix && (target.host === suffix || target.host.endsWith(`.${suffix}`))
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    }
+    case 'domainkeyword':
+      return target.host && trimmed && target.host.includes(trimmed.toLowerCase())
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainwildcard':
+      return target.host && matchDemoDomainWildcard(target.host, trimmed)
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'domainregex':
+      if (!target.host) return { state: 'not_matched' }
+      try {
+        return new RegExp(trimmed, 'i').test(target.host)
+          ? { state: 'matched', subRule: null }
+          : { state: 'not_matched' }
+      } catch {
+        return { state: 'not_matched' }
+      }
+    case 'ipcidr':
+    case 'ipcidr6':
+      if (modifiers.src) {
+        return { state: 'uncertain', reason: '源地址 IP 规则需结合实际来源 IP 判断', providerName: null, needsDns: false }
+      }
+      if (target.ip) {
+        return matchIpCidr(target.ip, target.isV6, trimmed)
+          ? { state: 'matched', subRule: null }
+          : { state: 'not_matched' }
+      }
+      if (modifiers.noResolve) return { state: 'not_matched' }
+      return {
+        state: 'uncertain',
+        reason: 'IP-CIDR 规则未设置 no-resolve，域名需先解析 DNS 才能判定',
+        providerName: null,
+        needsDns: true,
+      }
+    case 'dstport':
+      if (target.port == null) {
+        return { state: 'uncertain', reason: '未提供目标端口，无法排除前置端口规则', providerName: null, needsDns: false }
+      }
+      return matchDemoPortExpr(target.port, trimmed) ? { state: 'matched', subRule: null } : { state: 'not_matched' }
+    case 'processname':
+      if (!target.process) {
+        return { state: 'uncertain', reason: '未提供进程信息，无法排除前置进程规则', providerName: null, needsDns: false }
+      }
+      return demoProcessBasename(target.process).toLowerCase() === trimmed.toLowerCase() ||
+        target.process.toLowerCase() === trimmed.toLowerCase()
+        ? { state: 'matched', subRule: null }
+        : { state: 'not_matched' }
+    case 'processpath': {
+      if (!target.process) {
+        return { state: 'uncertain', reason: '未提供进程信息，无法排除前置进程规则', providerName: null, needsDns: false }
+      }
+      const normInput = target.process.replace(/\\/g, '/')
+      const normRule = trimmed.replace(/\\/g, '/')
+      if (normInput.toLowerCase() === normRule.toLowerCase()) return { state: 'matched', subRule: null }
+      if (!normInput.includes('/') && demoProcessBasename(normRule).toLowerCase() === normInput.toLowerCase()) {
+        return { state: 'uncertain', reason: '仅提供了进程名，无法完全验证进程路径规则', providerName: null, needsDns: false }
+      }
+      return { state: 'not_matched' }
+    }
+    case 'geosite':
+      if (!target.host) return { state: 'not_matched' }
+      return { state: 'uncertain', reason: `GEOSITE,${trimmed} 需内核查询 GeoSite 数据库判定`, providerName: null, needsDns: false }
+    case 'geoip':
+      if (modifiers.src) {
+        return { state: 'uncertain', reason: '源地址 GEOIP 规则需结合实际来源 IP 判断', providerName: null, needsDns: false }
+      }
+      if (target.ip) {
+        return { state: 'uncertain', reason: `GEOIP,${trimmed} 需内核查询 GeoIP 数据库判定`, providerName: null, needsDns: false }
+      }
+      if (modifiers.noResolve) return { state: 'not_matched' }
+      return {
+        state: 'uncertain',
+        reason: `GEOIP,${trimmed} 未设置 no-resolve，域名需先解析 DNS 并查询 GeoIP 数据库`,
+        providerName: null,
+        needsDns: true,
+      }
+    default:
+      return { state: 'uncertain', reason: `规则 ${kind} 依赖运行时连接上下文，无法静态排除`, providerName: null, needsDns: false }
+  }
+}
+
+function evaluateDemoRuleProvider(
+  name: string,
+  providerRows: ProviderRow[],
+  target: ParsedDemoRuleTarget,
+): DemoRuleEval {
+  const provider = providerRows.find((item) => item.kind === 'rule' && item.name === name)
+  if (!provider) {
+    return {
+      state: 'uncertain',
+      reason: `当前配置里没有找到规则集 ${name} 的定义`,
+      providerName: name,
+      needsDns: false,
+    }
+  }
+  const behavior = provider.behavior.toLowerCase()
+  if (provider.vehicle === 'Inline' || name === 'private') {
+    const inlineRules = [
+      'DOMAIN-SUFFIX,local',
+      'DOMAIN-SUFFIX,lan',
+      'IP-CIDR,10.0.0.0/8',
+      'IP-CIDR,172.16.0.0/12',
+      'IP-CIDR,192.168.0.0/16',
+      'IP-CIDR,127.0.0.0/8',
+    ]
+    let uncertain: DemoRuleEval | null = null
+    for (const line of inlineRules) {
+      const [subKind, subPayload] = line.split(',')
+      if (!subKind || !subPayload) continue
+      const res = evaluateDemoExplicitRule(subKind, subPayload, target)
+      if (res.state === 'matched') return { state: 'matched', subRule: line }
+      if (res.state === 'uncertain' && !uncertain) {
+        uncertain = { ...res, providerName: name }
+      }
+    }
+    return uncertain ?? { state: 'not_matched' }
+  }
+  if (behavior === 'domain' && provider.format === 'MrsRule') {
+    if (!target.host) return { state: 'not_matched' }
+    const match = /^(?:.+\.)?site(\d{6})\.cn$/i.exec(target.host)
+    if (match) {
+      const idx = Number(match[1])
+      if (Number.isInteger(idx) && idx >= 0 && idx < provider.count) {
+        const subRule = `${idx % 3 ? '+.' : ''}site${match[1]}.cn`
+        if (idx % 3 !== 0 || target.host === `site${match[1]}.cn`) {
+          return { state: 'matched', subRule }
+        }
+      }
+    }
+    return { state: 'not_matched' }
+  }
+  if (behavior === 'ipcidr') {
+    if (!target.ip) {
+      return {
+        state: 'uncertain',
+        reason: `规则集 ${name} 为 IP 规则集且未设置 no-resolve，域名需先解析 DNS 才能判定`,
+        providerName: name,
+        needsDns: true,
+      }
+    }
+    for (let i = 0; i < provider.count; i++) {
+      const cidr = `91.108.${4 + i}.0/22`
+      if (matchIpCidr(target.ip, target.isV6, cidr)) {
+        return { state: 'matched', subRule: cidr }
+      }
+    }
+    return { state: 'not_matched' }
+  }
+  return {
+    state: 'uncertain',
+    reason: `规则集 ${name} 尚未下载或无法读取本地缓存，请先在外部资源页更新`,
+    providerName: name,
+    needsDns: false,
+  }
+}
+
+function evaluateDemoRuleMatch(
+  rows: RuleRow[],
+  disabledRules: Set<string>,
+  providerRows: ProviderRow[],
+  input: RuleMatchInput,
+): RuleMatchResult {
+  const target = parseDemoRuleTarget(input)
+  let matched: RuleMatchHit | null = null
+  const skipped_disabled: RuleMatchCandidate[] = []
+  const preceding_uncertain: RuleMatchUncertain[] = []
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex]!
+    const disabled = row.key !== null && disabledRules.has(row.key)
+    const normKind = row.kind.replace(/[^a-z0-9]/gi, '').toLowerCase()
+    const evalResult =
+      normKind === 'ruleset'
+        ? evaluateDemoRuleProvider(row.payload, providerRows, target)
+        : evaluateDemoExplicitRule(row.kind, row.payload, target)
+
+    if (disabled) {
+      if (evalResult.state === 'matched') {
+        skipped_disabled.push({
+          row_index: rowIndex,
+          rule_key: row.key,
+          kind: row.kind,
+          payload: row.payload,
+          proxy: row.proxy,
+          sub_rule: evalResult.subRule,
+        })
+      }
+      continue
+    }
+
+    if (evalResult.state === 'matched') {
+      matched = {
+        row_index: rowIndex,
+        rule_key: row.key,
+        kind: row.kind,
+        payload: row.payload,
+        proxy: row.proxy,
+        sub_rule: evalResult.subRule,
+      }
+      break
+    }
+
+    if (evalResult.state === 'uncertain') {
+      preceding_uncertain.push({
+        row_index: rowIndex,
+        rule_key: row.key,
+        kind: row.kind,
+        payload: row.payload,
+        proxy: row.proxy,
+        reason: evalResult.reason,
+        provider_name: evalResult.providerName,
+        needs_dns: evalResult.needsDns,
+      })
+    }
+  }
+
+  return {
+    normalized_host: target.host,
+    normalized_ip: target.ip,
+    effective_port: target.port,
+    effective_process: target.process,
+    matched,
+    skipped_disabled,
+    preceding_uncertain,
+  }
 }

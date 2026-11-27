@@ -1,9 +1,13 @@
 Model: gpt-image-2.6
 
 Use case: logo-brand
-Asset type: finished mobile launcher icon for Billow, a network client.
-Primary request: a single elegant white ocean swell symbol, a smooth rounded crest curling inward around one open navy teardrop of negative space. A compact sculptural silhouette with a short tapering tail and a small soft cyan accent on its lower edge. One unified recognizable mark, not parallel stripes.
-Style: premium minimal flat icon, beautifully balanced curves, precise clean edges, readable at 32 pixels. Subtle blue tonal depth only in the background, no material texture.
-Composition: square 1024x1024. Deep midnight-blue background #102c52 reaches all four edges. The whole white wave symbol fits within the central 54 percent of the canvas, generous clear navy space surrounding it on every side. The operating system will crop the square into a rounded square or circle; do NOT draw a rounded square or circular container into the image.
-Constraints: no text, no letters, no watermark, no border, no drop shadows, no ocean scenery, no multiple horizontal ribbons, no stripes that run off the edges, no shield, no lock, no globe, no shiny 3D bevel, no busy detail.
-Output: exactly one finished square icon, no layout or mockup.
+Asset type: master artwork for the app icon of "Billow", a calm, fast network proxy client. The artwork is cut out and recoloured afterwards, so it must be a clean two-colour silhouette.
+Primary request: one original, elegant ocean-swell mark: a single smooth, full-bodied crest that rises from a short tapering tail at the lower right, sweeps up and curls inward over itself, leaving one rounded open curl of negative space inside. A thin crescent sliver of the second colour runs along the lower inner edge of the crest, like light catching the underside of the wave. It reads as one unified, sculptural shape, not stripes or multiple waves.
+Proportion: compact and nearly square; the mark's overall width and height are about equal (never wider than 1.2 times its height). The tail is short; no long flat baseline or horizon line.
+Scene/backdrop: a perfectly flat pure white background (#FFFFFF) that reaches all four edges; no texture, no vignette, no frame, no tile, no rounded square, no circle.
+Subject: exactly one centered mark, occupying about 60% of the canvas width, generous white space on every side, nothing touching the edges.
+Style/medium: premium minimal vector logo, flat fills only, crisp clean edges, confident balanced curves, simple enough to stay recognisable at 16 pixels.
+Colour: the wave body in solid near-black (#111111); the crescent sliver in solid vivid blue (#1E6BFF). Only these two flat colours on white. No gradients, no shading, no outlines, no highlights.
+Composition/framing: straight-on, square 1024x1024, one focal element, gentle asymmetry.
+Text (verbatim): none
+Avoid: text, letters, Chinese characters, the letter C or G shape, numbers, watermark, multiple waves, parallel ribbons, water droplets, splash particles, sun, boat, scenery, globe, shield, lock, lightning, arrows, 3D, bevel, glow, drop shadow, gradients, grain, mockups, rounded-square backgrounds, circles, borders.

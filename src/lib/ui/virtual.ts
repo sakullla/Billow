@@ -61,9 +61,9 @@ export function useVirtualList(
   }
 
   /** Re-read the container after mount or when the row set changes size. */
-  function measure(el: HTMLElement | null) {
+  function measure(el: HTMLElement | null, contentTop = 0) {
     if (!el) return
-    scrollTop.value = el.scrollTop
+    scrollTop.value = Math.max(0, el.scrollTop - contentTop)
     measured.value = el.clientHeight
   }
 

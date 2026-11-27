@@ -318,7 +318,7 @@ describe('Daily UI/UX workflows (R1–R5)', () => {
       const saveSpy = vi.spyOn(backend, 'saveSettings')
 
       await openPage(wrapper, 'settings')
-      await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+      await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
       await flushPromises()
 
       // First save 7890 explicitly as the saved port override.
@@ -349,7 +349,7 @@ describe('Daily UI/UX workflows (R1–R5)', () => {
 
       await openPage(wrapper, 'home')
       await openPage(wrapper, 'settings')
-      await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+      await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
       await flushPromises()
       expect((portInput().element as HTMLInputElement).value).toBe('7891')
 
@@ -683,7 +683,7 @@ describe('Daily UI/UX workflows (R1–R5)', () => {
 
       // 2. Settings port error keeps focus on the port input.
       await openPage(wrapper, 'settings')
-      await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+      await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
       await flushPromises()
       const portInput = wrapper.find('[data-testid="mixed-port-input"]')
       ;(portInput.element as HTMLElement).focus()

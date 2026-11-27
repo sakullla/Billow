@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
@@ -44,30 +46,88 @@ afterEach(() => {
 })
 
 describe('phone layout', () => {
-  it('keeps the whole general settings page in grouped list rows', async () => {
+  it('keeps list ends reachable above the dock and inside the picker sheet (R8)', () => {
+    // Layout is absent in happy-dom, so guard the rules that create the clearance.
+    const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(css.length, 'raw stylesheet').toBeGreaterThan(1000)
+    const rule = (selector: string) => {
+      const at = css.lastIndexOf(`${selector} {`)
+      expect(at, selector).toBeGreaterThan(-1)
+      return css.slice(at, css.indexOf('}', at))
+    }
+    expect(rule('.compact .page')).toMatch(/padding-bottom:\s*calc\(var\(--tabbar-h\) \+ var\(--safe-bottom\)/)
+    // The picker list scrolls with the sheet body, never in a nested box that could clip its last row.
+    expect(rule('.node-picker-list')).not.toMatch(/max-height|overflow/)
+    expect(css).not.toMatch(/\.compact \.node-picker-list\s*\{[^}]*max-height/)
+  })
+
+  it('keeps a quiet, tappable latency slot on untested proxy rows', async () => {
+    const { wrapper, backend } = await mountPhone({ platform: 'android' })
+    await connect(wrapper)
+    const testNode = vi.spyOn(backend, 'testNode')
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+    const slot = wrapper.find('[data-group-card="节点选择"] [data-node="日本 02"] .delay')
+    expect(slot.classes()).toContain('untested')
+    // The zap glyph is kept for desktop hover; phones hide it and draw a dash in its place.
+    expect(slot.find('.delay-zap').exists()).toBe(true)
+    expect(slot.text()).toBe('')
+    await slot.trigger('click')
+    await settle(50)
+    expect(testNode).toHaveBeenCalledWith('日本 02')
+  })
+
+  it('lets Android users switch to Rust in the kernel settings pane', async () => {
+    const { wrapper, backend } = await mountPhone({ platform: 'android' })
+    const setEngine = vi.spyOn(backend, 'setEngine')
+    const store = storeOf(wrapper)
+    store.go('settings')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="open-kernel"]').trigger('click')
+    const rust = wrapper.get('[data-testid="engine-card"] [data-value="rust"]')
+    await rust.trigger('click')
+    await settle(500)
+
+    expect(setEngine).toHaveBeenCalledWith('rust')
+    expect(rust.attributes('aria-checked')).toBe('true')
+  })
+
+  it('lists categories with their state, and keeps each category in grouped list rows', async () => {
     const { wrapper, backend } = await mountPhone()
     storeOf(wrapper).go('settings')
     await flushPromises()
 
-    const behavior = wrapper.find('[data-testid="node-switch-settings"]')
-    expect(behavior.classes()).toContain('settings-list')
-    // The subscription User-Agent folds into the same list as a row with its current value.
-    const fold = behavior.find('[data-testid="subscription-settings"]')
-    expect(fold.element.tagName).toBe('DETAILS')
-    expect(fold.find('summary .nav-row-value').text()).toBe('默认')
+    // The root is a grouped list of categories; each says what is on without opening it.
+    expect(wrapper.find('[data-testid="open-network"] .srow-value').text()).toBe(':7890')
+    expect(wrapper.find('[data-testid="open-dns"] .srow-value').text()).toBe('跟随配置')
+    expect(wrapper.findAll('.page.settings > section.card')).toHaveLength(0)
+
+    await wrapper.find('[data-testid="open-behavior"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.settings-subhead h1').text()).toBe('代理与测速')
+    // The subscription User-Agent is a row in the same grouped list, marked once customised.
+    const row = wrapper.find('[data-testid="subscription-settings"]')
+    expect(row.classes()).toContain('srow')
+    expect(row.find('.srow-badge').exists()).toBe(false)
 
     const save = vi.spyOn(backend, 'saveSettings')
-    const input = fold.find('[data-testid="global-subscription-user-agent"]')
+    const input = row.find('[data-testid="global-subscription-user-agent"]')
+    await input.trigger('focus')
     await input.setValue('phone-client/1')
     await input.trigger('blur')
     await settle(300)
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ subscription_user_agent: 'phone-client/1' }))
-    expect(fold.find('summary .nav-row-value').text()).toBe('已自定义')
+    expect(wrapper.find('[data-testid="subscription-settings"] .srow-badge').text()).toBe('已自定义')
 
-    // Update status sits in the about group as a row; the version is not repeated in a separate card.
+    // Update status sits in the about page as a row under the version hero.
+    await wrapper.find('[data-testid="settings-back"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="open-backup"]').trigger('click')
+    await flushPromises()
     const about = wrapper.find('[data-testid="settings-about"]')
-    expect(about.find('[data-testid="app-update"]').classes()).toContain('update-row')
-    expect(wrapper.findAll('.page.settings > section.card:not(.settings-list):not(.tool-grid)')).toHaveLength(0)
+    expect(about.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="app-update"]').classes()).toContain('update-row')
   })
 
   it('folds rarer log actions into one menu so the header stays on one row', async () => {
@@ -135,5 +195,141 @@ describe('phone layout', () => {
     expect(checkSpy).toHaveBeenCalledWith(false)
     expect(wrapper.find('[data-testid="kernel-update-subtitle"]').text()).toContain('最新版本')
     expect(wrapper.find('.toasts').text()).toContain('最新版本')
+  })
+
+  it('keeps the compact proxies top bar uncluttered and reveals quick filters and group jump inside options', async () => {
+    const { wrapper } = await mountPhone()
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+
+    // Default compact proxies view stays a single row: no mode bar, filter chips, or group jump strip.
+    expect(wrapper.find('[data-testid="proxies-mobile-mode"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(true)
+
+    // Selecting a filter and folding options back keeps a removable active pill in the single-row bar.
+    await wrapper.find('[data-testid="quick-filter-tag:udp"]').trigger('click')
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+    const activePill = wrapper.find('[data-testid="active-quick-filter-pill"]')
+    expect(activePill.exists()).toBe(true)
+    await activePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="active-quick-filter-pill"]').exists()).toBe(false)
+  })
+
+  it('keeps compact mobile layout free of floating command-palette search button', async () => {
+    const { wrapper } = await mountPhone()
+    expect(wrapper.find('[data-testid="mobile-open-palette"]').exists()).toBe(false)
+  })
+
+  it('keeps home, proxies, profiles and dock free of distracting status and badge dots', async () => {
+    localStorage.setItem('billow:proxy-sort', JSON.stringify('delay'))
+    localStorage.setItem('billow:proxy-view', JSON.stringify('dense'))
+    const { wrapper } = await mountPhone()
+    void storeOf(wrapper).importCustomNodes('ss://YWVzLTI1Ni1nY206cGFzc0AxLjEuMS4xOjg4ODg=#TestNode')
+    await settle(300)
+    await connect(wrapper)
+
+    // Home & dock: no live dot on tabbar, no hero dot, no collecting dot, directional legend icons instead of dots
+    expect(wrapper.find('.tabbar .tab-live-dot').exists()).toBe(false)
+    expect(wrapper.find('.tabbar .update-dot').exists()).toBe(false)
+    expect(wrapper.find('.hero-dot').exists()).toBe(false)
+    expect(wrapper.find('.chart-collecting-dot').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="chart-legend"] .legend-item .icon')).toHaveLength(2)
+
+    // Proxies: options button never renders a marked corner dot even when sort/view are non-default
+    storeOf(wrapper).go('proxies')
+    await settle(100)
+    const optionsBtn = wrapper.find('[data-testid="toggle-options"]')
+    expect(optionsBtn.exists()).toBe(true)
+    expect(optionsBtn.classes()).not.toContain('marked')
+
+    // Profiles: custom nodes tab and active profile badge render without status dots
+    storeOf(wrapper).go('profiles')
+    await settle(100)
+    expect(wrapper.find('.profiles-tab-dot').exists()).toBe(false)
+    expect(wrapper.find('.profile-live-dot').exists()).toBe(false)
+    expect(wrapper.find('.profile-active-tag').text()).toBe('使用中')
+  })
+
+  it('keeps mobile proxy toolbar single-row after speed test, labels fastest action without duplicate zap icon, and guards touch/dock CSS', async () => {
+    const stylesCss = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const redesignCss = readFileSync(resolve(process.cwd(), 'src/styles/redesign.css'), 'utf8')
+
+    // Touch devices must not keep sticky hover box on .group-toggle
+    expect(stylesCss).toMatch(/@media\s*\(hover:\s*hover\)\s*\{\s*\.group-toggle:hover/)
+    // Mobile fastest pill shows text ("最快") and hides the duplicate zap icon next to group-test
+    expect(redesignCss).toMatch(/\.compact\s+\.group-fastest\s+\.icon\s*\{\s*display:\s*none;/)
+    expect(redesignCss).toMatch(/\.compact\s+\.group-fastest\s+\.group-fastest-label\s*\{\s*display:\s*inline;/)
+    // Group title line never wraps into uneven 3-line cards, and dock bottom scrim blocks text bleed
+    expect(redesignCss).toMatch(/\.group-name\s*\{\s*flex-wrap:\s*nowrap;/)
+    expect(redesignCss).toMatch(/\.shell\.compact::after\s*\{/)
+    // Mobile group-now strips leading airport 【PREFIX】 tags so server names stay readable
+    expect(stylesCss).toMatch(/\.compact\s+\.group-now\s+\.chain-exit-prefix\s*\{\s*display:\s*none;/)
+    // Mobile shell & main container clamp horizontal width so wide filter/group strips never scroll the whole page sideways
+    expect(stylesCss).toMatch(/\.shell\.compact\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+    expect(stylesCss).toMatch(/\.main\s*\{[^}]*overflow-x:\s*hidden;/)
+    expect(stylesCss).toMatch(/\.main\s*\{[^}]*min-width:\s*0;/)
+
+    const proxiesVue = readFileSync(resolve(process.cwd(), 'src/views/ProxiesView.vue'), 'utf8')
+    expect(proxiesVue).toMatch(/\.proxy-filter-drawer\s*\{[^}]*min-width:\s*0;/)
+    expect(proxiesVue).toMatch(/\.proxy-filter-drawer\s*\{[^}]*max-width:\s*100%;/)
+    expect(proxiesVue).toMatch(/\.proxy-quick-filters\s*\{[^}]*flex:\s*1\s+1\s+0;/)
+    expect(proxiesVue).toMatch(/\.proxy-group-nav-row\s+\.group-pills\s*\{[^}]*flex:\s*1\s+1\s+0;/)
+
+    const { wrapper } = await mountPhone()
+    await connect(wrapper)
+    const store = storeOf(wrapper)
+    store.go('proxies')
+    await settle(100)
+
+    // Simulate tested nodes including a failed real node and a failed subscription info pseudo-node
+    const manualGroup = store.snapshot.value.node_catalog.find((g) => g.name === '节点选择')!
+    const realServer = manualGroup.nodes.find((n) => n.name === '香港 02')!
+    store.testResults.value = {
+      ...store.testResults.value,
+      [realServer.name]: { delay: null, failed: true },
+      '香港 01': { delay: 120, failed: false },
+      '新加坡 01': { delay: 45, failed: false },
+      '【KLM】 Traffic Reset: 10 Days Left': { delay: null, failed: true },
+    }
+    await flushPromises()
+
+    // Inactive hide-failed chip stays inside the collapsed drawer instead of squeezing the mobile search bar
+    expect(wrapper.find('[data-testid="hide-failed-nodes"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="active-hide-failed-pill"]').exists()).toBe(false)
+
+    // Fastest button on mobile carries readable text ("最快")
+    const fastestBtn = wrapper.find('[data-testid="pick-fastest-节点选择"]')
+    expect(fastestBtn.exists()).toBe(true)
+    expect(fastestBtn.text()).toBe('最快')
+
+    // Mobile health counter omits verbose "可用 " prefix ("2/3") and excludes non-group/info entries
+    const health = wrapper.find('[data-group-card="节点选择"] .group-health')
+    expect(health.exists()).toBe(true)
+    expect(health.text()).not.toContain('可用')
+
+    // Opening options reveals hide-failed chip; toggling it on and closing options shows removable active pill
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+    const hideChip = wrapper.find('[data-testid="hide-failed-nodes"]')
+    expect(hideChip.exists()).toBe(true)
+    await hideChip.trigger('click')
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
+
+    const activeHidePill = wrapper.find('[data-testid="active-hide-failed-pill"]')
+    expect(activeHidePill.exists()).toBe(true)
+    await activeHidePill.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="active-hide-failed-pill"]').exists()).toBe(false)
   })
 })

@@ -1,6 +1,36 @@
+import { locale, tr, type Locale } from './i18n'
 import type { ConnectionRow, NodeGroup, NodeItem } from './types'
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+const intlLocale = { en: 'en-US', 'zh-CN': 'zh-CN' } as const
+const numbers: Record<Locale, Intl.NumberFormat[]> = { en: [], 'zh-CN': [] }
+const collators: Partial<Record<Locale, Intl.Collator>> = {}
+const dates: Partial<Record<Locale, Intl.DateTimeFormat>> = {}
+
+/** Numbers follow the selected language (R42): grouping and decimal separators. */
+export function formatNumber(value: number, digits = 0): string {
+  const current = locale.value
+  const cache = numbers[current]
+  if (cache[digits]) return cache[digits].format(value)
+  const formatter = new Intl.NumberFormat(intlLocale[current], {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  // Byte and rate displays use only these precisions. Other callers can still
+  // request any precision Intl supports without growing the shared cache.
+  if (Number.isInteger(digits) && digits >= 0 && digits <= 2) cache[digits] = formatter
+  return formatter.format(value)
+}
+
+/** Collation follows the selected language (R42): names sort as the reader expects. */
+export function compareText(a: string, b: string): number {
+  const current = locale.value
+  const collator = collators[current] ??= new Intl.Collator(intlLocale[current], {
+    numeric: true,
+    sensitivity: 'base',
+  })
+  return collator.compare(a, b)
+}
 
 /** 1536 → "1.5 KB". Whole bytes stay integers; larger units keep up to one or two decimals. */
 export function formatBytes(value: number | null | undefined): string {
@@ -11,9 +41,9 @@ export function formatBytes(value: number | null | undefined): string {
     size /= 1024
     unit += 1
   }
-  if (unit === 0) return `${Math.round(size)} B`
+  if (unit === 0) return `${formatNumber(Math.round(size))} B`
   const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2
-  return `${size.toFixed(digits)} ${UNITS[unit]}`
+  return `${formatNumber(size, digits)} ${UNITS[unit]}`
 }
 
 export function formatSpeed(value: number | null | undefined): string {
@@ -42,8 +72,14 @@ export function formatSpeedCompact(value: number | null | undefined): string {
 export function formatDate(seconds: number): string {
   const date = new Date(seconds * 1000)
   if (Number.isNaN(date.getTime())) return '—'
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+  // Both languages use an unambiguous numeric date, but in their own order (R42).
+  const current = locale.value
+  const formatter = dates[current] ??= new Intl.DateTimeFormat(intlLocale[current], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  return formatter.format(date)
 }
 
 export function formatClock(ms: number): string {
@@ -55,15 +91,15 @@ export function formatClock(ms: number): string {
 
 /** "刚刚", "5 分钟前", "3 小时前", "2 天前", or a date for older times. */
 export function formatRelative(ms: number | null | undefined, now = Date.now()): string {
-  if (!ms) return '从未'
+  if (!ms) return tr('从未')
   const diff = Math.max(0, now - ms)
   const minute = 60_000
   const hour = 60 * minute
   const day = 24 * hour
-  if (diff < minute) return '刚刚'
-  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`
-  if (diff < day) return `${Math.floor(diff / hour)} 小时前`
-  if (diff < 30 * day) return `${Math.floor(diff / day)} 天前`
+  if (diff < minute) return tr('刚刚')
+  if (diff < hour) return tr('{0} 分钟前', { 0: Math.floor(diff / minute) })
+  if (diff < day) return tr('{0} 小时前', { 0: Math.floor(diff / hour) })
+  if (diff < 30 * day) return tr('{0} 天前', { 0: Math.floor(diff / day) })
   return formatDate(Math.floor(ms / 1000))
 }
 
@@ -76,12 +112,12 @@ export function formatDuration(fromIso: string, now = Date.now()): string {
   const start = Date.parse(fromIso)
   if (Number.isNaN(start)) return ''
   const seconds = Math.max(0, Math.floor((now - start) / 1000))
-  if (seconds < 60) return `${seconds} 秒`
+  if (seconds < 60) return tr('{0} 秒', { 0: seconds })
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分`
+  if (minutes < 60) return tr('{0} 分', { 0: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 时 ${minutes % 60} 分`
-  return `${Math.floor(hours / 24)} 天`
+  if (hours < 24) return tr('{0} 时 {1} 分', { 0: hours, 1: minutes % 60 })
+  return tr('{0} 天', { 0: Math.floor(hours / 24) })
 }
 
 export type DelayTone = 'good' | 'fair' | 'poor' | 'fail' | 'none'
@@ -95,7 +131,7 @@ export function delayTone(delay: number | null, failed: boolean): DelayTone {
 }
 
 export function delayText(delay: number | null, failed: boolean): string {
-  if (failed) return '超时'
+  if (failed) return tr('超时')
   if (delay == null) return ''
   return `${delay} ms`
 }
@@ -119,23 +155,23 @@ const PROTOCOL_LABELS: Record<string, string> = {
   anytls: 'AnyTLS',
   ssh: 'SSH',
   mieru: 'Mieru',
-  direct: '直连',
-  reject: '拒绝',
-  select: '手选',
-  selector: '手选',
-  'url-test': '自动',
-  urltest: '自动',
-  fallback: '故障转移',
-  'load-balance': '负载均衡',
-  loadbalance: '负载均衡',
-  smart: '智能',
-  relay: '链式',
+  direct: tr('直连'),
+  reject: tr('拒绝'),
+  select: tr('手选'),
+  selector: tr('手选'),
+  'url-test': tr('自动'),
+  urltest: tr('自动'),
+  fallback: tr('故障转移'),
+  'load-balance': tr('负载均衡'),
+  loadbalance: tr('负载均衡'),
+  smart: tr('智能'),
+  relay: tr('链式'),
 }
 
 export function protocolLabel(type: string): string {
   const key = type.trim().toLowerCase()
   if (!key) return ''
-  return PROTOCOL_LABELS[key] ?? type
+  return tr(PROTOCOL_LABELS[key] ?? type)
 }
 
 export interface GroupStrategy {
@@ -149,10 +185,10 @@ export interface GroupStrategy {
 }
 
 const STRATEGIES: Record<string, GroupStrategy> = {
-  'url-test': { label: '自动', icon: 'url-test', hint: '内核定期测速，自动使用延迟最低的节点。', ordered: false },
-  fallback: { label: '故障转移', icon: 'fallback', hint: '按顺序使用第一个可用的节点；前面的节点恢复后自动切回。', ordered: true },
-  'load-balance': { label: '负载均衡', icon: 'load-balance', hint: '把连接分摊到多个节点，不固定使用某一个。', ordered: false },
-  smart: { label: '智能', icon: 'sparkles', hint: '根据历史连接质量为不同站点自动挑选节点。', ordered: false },
+  'url-test': { label: tr('自动'), icon: 'url-test', hint: tr('内核定期测速，自动使用延迟最低的节点。'), ordered: false },
+  fallback: { label: tr('故障转移'), icon: 'fallback', hint: tr('按顺序使用第一个可用的节点；前面的节点恢复后自动切回。'), ordered: true },
+  'load-balance': { label: tr('负载均衡'), icon: 'load-balance', hint: tr('把连接分摊到多个节点，不固定使用某一个。'), ordered: false },
+  smart: { label: tr('智能'), icon: 'sparkles', hint: tr('根据历史连接质量为不同站点自动挑选节点。'), ordered: false },
 }
 const STRATEGY_ALIASES: Record<string, string> = { urltest: 'url-test', loadbalance: 'load-balance' }
 
@@ -169,7 +205,8 @@ export function canPickNode(group: { kind: string; pinnable?: boolean }): boolea
 /** How an automatic group chooses its node; null for hand-picked groups. */
 export function groupStrategy(type: string): GroupStrategy | null {
   const key = type.trim().toLowerCase()
-  return STRATEGIES[STRATEGY_ALIASES[key] ?? key] ?? null
+  const strategy = STRATEGIES[STRATEGY_ALIASES[key] ?? key]
+  return strategy ? { ...strategy, label: tr(strategy.label), hint: tr(strategy.hint) } : null
 }
 
 /**
@@ -234,7 +271,7 @@ export function effectiveGroupDelay(
 ): { delay: number | null; failed: boolean; target: string } {
   const chain = resolveChain(group.name, catalog)
   const target = chain[chain.length - 1] || group.now
-  if (!target || ['direct', 'reject', 'reject-drop'].includes(target.toLowerCase())) {
+  if (!target || ['direct', 'reject', 'reject-drop'].includes(target.toLowerCase()) || isInfoNode(target)) {
     return { delay: null, failed: false, target: '' }
   }
   const live = liveResults[target]
@@ -342,23 +379,23 @@ export function connectionRules(row: ConnectionRow, policy: string): GeneratedRu
   if (domain) {
     const root = registrableDomain(domain)
     if (root && domain.includes('.')) {
-      push('domain-suffix', root === domain ? '域名后缀' : '根域名后缀', `DOMAIN-SUFFIX,${root},${target}`)
+      push('domain-suffix', root === domain ? tr('域名后缀') : tr('根域名后缀'), `DOMAIN-SUFFIX,${root},${target}`)
     }
     if (domain !== root || !domain.includes('.')) {
-      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+      push('domain', tr('精确域名'), `DOMAIN,${domain},${target}`)
     } else {
-      push('domain', '精确域名', `DOMAIN,${domain},${target}`)
+      push('domain', tr('精确域名'), `DOMAIN,${domain},${target}`)
     }
   }
   const ipInfo = extractEndpointIp(row.destination) ?? extractEndpointIp(row.host)
   if (ipInfo && !isFakeIp(ipInfo.ip)) {
     const kind = ipInfo.v6 ? 'IP-CIDR6' : 'IP-CIDR'
     const mask = ipInfo.v6 ? '128' : '32'
-    push('ip-cidr', '目标 IP', `${kind},${ipInfo.ip}/${mask},${target},no-resolve`)
+    push('ip-cidr', tr('目标 IP'), `${kind},${ipInfo.ip}/${mask},${target},no-resolve`)
   }
   const proc = processBasename(row.process)
   if (proc) {
-    push('process', '进程名', `PROCESS-NAME,${proc},${target}`)
+    push('process', tr('进程名'), `PROCESS-NAME,${proc},${target}`)
   }
   return out
 }
@@ -378,9 +415,108 @@ export function isInfoNode(name: string): boolean {
   return INFO_NODE_PATTERNS.some((pattern) => pattern.test(name))
 }
 
+export interface SubscriptionInfo {
+  usage: { used: string; total: string; percent: number; source: string } | null
+  remaining: { value: string; source: string } | null
+  expire: { value: string; source: string } | null
+  resetDays: { value: number; source: string } | null
+  others: string[]
+}
+
+/** A size such as `16.47 GB`, `1,024 MB` or `4 GiB`. */
+const SIZE = String.raw`((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*([KMGTP]i?B|B)`
+const UNIT_POWER: Record<string, number> = { B: 0, K: 1, M: 2, G: 3, T: 4, P: 5 }
+
+function bytesOf(amount: string, unit: string): number {
+  return Number(amount.replace(/,/g, '')) * 1024 ** (UNIT_POWER[unit[0]!.toUpperCase()] ?? 0)
+}
+
+function sizeText(amount: string, unit: string): string {
+  return `${amount} ${unit.toUpperCase().replace('IB', 'iB')}`
+}
+
+function percentOf(used: { amount: string; unit: string }, total: { amount: string; unit: string }): number {
+  const totalBytes = bytesOf(total.amount, total.unit)
+  return totalBytes > 0 ? Math.min(100, Math.max(0, (bytesOf(used.amount, used.unit) / totalBytes) * 100)) : 0
+}
+
+const COLON = String.raw`\s*[:：]\s*`
+const USAGE_PAIR = new RegExp(String.raw`^${SIZE}\s*[|/]\s*${SIZE}$`, 'i')
+const REMAINING = new RegExp(String.raw`^(?:剩余流量|remaining\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const USED = new RegExp(String.raw`^(?:已用流量|used\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const TOTAL = new RegExp(String.raw`^(?:总流量|total\s*(?:traffic|data))${COLON}${SIZE}$`, 'i')
+const EXPIRE = new RegExp(String.raw`^(?:expire\s*(?:date|time|at|on)?|expiry(?:\s*date)?|套餐到期|到期时间|过期时间|到期日期|到期)${COLON}(\d[\d\-/.: ]*\d)$`, 'i')
+/** Only an explicit countdown counts; "每月 15 日重置" names a day of the month, not days left. */
+const RESET_COUNTDOWNS = [
+  new RegExp(String.raw`^traffic\s*reset${COLON}(\d+)\s*days?\s*left$`, 'i'),
+  /^resets?\s*in\s*(\d+)\s*days?$/i,
+  new RegExp(String.raw`^(?:距离)?(?:下次)?(?:流量)?重置(?:剩余|还剩|还有)(?:${COLON})?(\d+)\s*天$`),
+]
+
+/**
+ * Subscription "info nodes" (quota, expiry, reset countdown) parsed into the pieces the
+ * proxy page shows as a usage bar and small labels. Each line must match one whole known
+ * shape; anything else (or a repeat of a field already read) stays verbatim in `others`.
+ */
+export function parseSubscriptionInfo(texts: readonly string[]): SubscriptionInfo {
+  const info: SubscriptionInfo = { usage: null, remaining: null, expire: null, resetDays: null, others: [] }
+  let used: { amount: string; unit: string; source: string } | null = null
+  let total: { amount: string; unit: string; source: string } | null = null
+  for (const raw of texts) {
+    const text = raw.trim()
+    let match: RegExpExecArray | null
+    if (!info.usage && (match = USAGE_PAIR.exec(text))) {
+      const [, ua, uu, ta, tu] = match
+      info.usage = {
+        used: sizeText(ua!, uu!),
+        total: sizeText(ta!, tu!),
+        percent: percentOf({ amount: ua!, unit: uu! }, { amount: ta!, unit: tu! }),
+        source: raw,
+      }
+      continue
+    }
+    if (!info.resetDays) {
+      const reset = RESET_COUNTDOWNS.map((pattern) => pattern.exec(text)).find(Boolean)
+      if (reset) {
+        info.resetDays = { value: Number(reset[1]), source: raw }
+        continue
+      }
+    }
+    if (!info.expire && (match = EXPIRE.exec(text))) {
+      info.expire = { value: match[1]!.trim(), source: raw }
+      continue
+    }
+    if (!info.remaining && (match = REMAINING.exec(text))) {
+      info.remaining = { value: sizeText(match[1]!, match[2]!), source: raw }
+      continue
+    }
+    if (!used && (match = USED.exec(text))) {
+      used = { amount: match[1]!, unit: match[2]!, source: raw }
+      continue
+    }
+    if (!total && (match = TOTAL.exec(text))) {
+      total = { amount: match[1]!, unit: match[2]!, source: raw }
+      continue
+    }
+    info.others.push(raw)
+  }
+  if (!info.usage && used && total) {
+    info.usage = {
+      used: sizeText(used.amount, used.unit),
+      total: sizeText(total.amount, total.unit),
+      percent: percentOf(used, total),
+      source: `${used.source} · ${total.source}`,
+    }
+  } else {
+    if (used) info.others.push(used.source)
+    if (total) info.others.push(total.source)
+  }
+  return info
+}
+
 /** Group type label shared by the home cards and the proxy page (R1). */
 export function groupTypeLabel(group: { group_type: string; kind: string }): string {
-  return protocolLabel(group.group_type) || (group.kind === 'manual' ? '手选' : '自动')
+  return protocolLabel(group.group_type) || (group.kind === 'manual' ? tr('手选') : tr('自动'))
 }
 
 /**

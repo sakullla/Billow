@@ -1,6 +1,8 @@
 {
   "default": "icon-desktop.png",
-  "android_fg": "icon.png",
-  "bg_color": "#0b284f",
+  "bg_color": "#6b66ea",
+  "android_bg": "icon-android-bg.png",
+  "android_fg": "icon-android-fg.png",
+  "android_monochrome": "icon-android-mono.png",
   "android_fg_scale": 100
 }

@@ -1,0 +1,941 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Billow Design System 4.0 — "Deep Teal / 碧潮"
+   Loaded after styles.css and settings.css. Establishes Billow's signature
+   oceanic teal + mineral slate identity across light/dark themes, shell,
+   hero cockpit, controls, proxy groups, tables, settings, and mobile dock.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ───────────── 1. Tokens: light ("Mineral Paper & Calm Teal") ───────────── */
+:root {
+  --bg: #f4f6f7;
+  --bg-glow: none;
+  --chrome: #eaeeef;
+  --surface: #fcfdfd;
+  --surface-2: #f7f9f9;
+  --sunken: #eceff0;
+  --hover: rgba(24, 29, 31, 0.045);
+  --border: rgba(24, 29, 31, 0.08);
+  --border-input: rgba(24, 29, 31, 0.14);
+  --border-strong: #7a868a;
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  --toggle-off: #cbd3d5;
+
+  --text: #181d1f;
+  --text-2: #465054;
+  --text-3: #6e787c;
+
+  /* Signature Brand Accent: Calm Mineral Teal */
+  --accent: #1f7a73;
+  --accent-hover: #196660;
+  --accent-ink: #196660;
+  --accent-soft: rgba(31, 122, 115, 0.10);
+  --accent-ring: color-mix(in srgb, var(--accent) 52%, transparent);
+  --on-accent: #ffffff;
+  --primary-fill: linear-gradient(180deg, #25877f 0%, #1f7a73 100%);
+  --primary-shadow: 0 1px 2px rgba(14, 29, 32, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+
+  /* Brand Logo Tile (Wave Mark) */
+  --brand-tile: linear-gradient(145deg, #2c9188 0%, #1f7a73 54%, #175c56 100%);
+  --brand-tile-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 1px 2px rgba(14, 29, 32, 0.09), 0 4px 10px -4px rgba(31, 122, 115, 0.24);
+
+  /* Distinct Semantic States (Desaturated for prolonged comfort) */
+  --good: #1f7d47;
+  --good-soft: rgba(31, 125, 71, 0.10);
+  --good-ink: #1a683b;
+  --fair: #c47a20;
+  --fair-soft: rgba(196, 122, 32, 0.12);
+  --fair-ink: #9e5f14;
+  --poor: #c93b3b;
+  --poor-soft: rgba(201, 59, 59, 0.10);
+  --poor-ink: #ab2e2e;
+
+  /* Telemetry Data Colors */
+  --data-down: #2378a6;
+  --data-up: #5d63b8;
+
+  --radius-xs: 6px;
+  --radius-control: 11px;
+  --radius-card: 18px;
+  --radius-panel: 22px;
+  --radius-sheet: 26px;
+  --radius-dock: 28px;
+
+  --page-pad: 28px;
+  --page-pad-x: 32px;
+  --card-pad: 20px;
+  --row-gap: 16px;
+
+  --text-xl: 26px;
+  --text-2xl: 30px;
+
+  --sidebar: 232px;
+
+  --hero-wash: radial-gradient(120% 100% at 0% 0%, rgba(31, 122, 115, 0.055), rgba(35, 120, 166, 0.02) 52%, transparent 82%);
+  --hero-stage-off: radial-gradient(110% 95% at 86% 0%, rgba(31, 122, 115, 0.07), transparent 62%);
+  --hero-stage-on: radial-gradient(120% 100% at 82% 0%, rgba(31, 122, 115, 0.09), rgba(35, 120, 166, 0.03) 56%, transparent 100%);
+  --hero-stage-bare: radial-gradient(120% 100% at 82% 0%, rgba(196, 122, 32, 0.09), transparent 62%);
+  --orb-fill-off: linear-gradient(155deg, #278a82 0%, #196660 100%);
+  --orb-shadow-off: 0 8px 20px rgba(31, 122, 115, 0.20), 0 0 0 5px rgba(31, 122, 115, 0.07);
+  --flow-gradient: linear-gradient(90deg, #1f7a73, #2378a6);
+
+  --shadow-sm: 0 1px 2px rgba(14, 29, 32, 0.04), 0 4px 12px -6px rgba(14, 29, 32, 0.06);
+  --shadow-md: 0 10px 26px -8px rgba(14, 29, 32, 0.11), 0 2px 6px -2px rgba(14, 29, 32, 0.045);
+  --shadow-lg: 0 24px 56px -14px rgba(14, 29, 32, 0.22), 0 4px 14px -4px rgba(14, 29, 32, 0.07);
+
+  --latency-good-bg: rgba(31, 125, 71, 0.10);
+  --latency-fair-bg: rgba(196, 122, 32, 0.12);
+  --latency-poor-bg: rgba(201, 59, 59, 0.10);
+}
+
+/* ───────────── 1b. Tokens: dark ("Calm Neutral Charcoal & Mineral Teal") ───────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #151819;
+    --bg-glow: none;
+    --chrome: #101314;
+    --surface: #1c2022;
+    --surface-2: #23282b;
+    --sunken: #121516;
+    --hover: rgba(227, 231, 232, 0.055);
+    --border: rgba(227, 231, 232, 0.08);
+    --border-input: rgba(227, 231, 232, 0.14);
+    --border-strong: #626c70;
+    --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    --toggle-off: #333a3d;
+
+    --text: #e3e7e8;
+    --text-2: #a7b0b3;
+    --text-3: #788286;
+
+    --accent: #4fb3a9;
+    --accent-hover: #64bfb6;
+    --accent-ink: #72c7be;
+    --accent-soft: rgba(79, 179, 169, 0.13);
+    --accent-ring: color-mix(in srgb, var(--accent) 52%, transparent);
+    --on-accent: #0c2220;
+    --primary-fill: linear-gradient(180deg, #5abbb1 0%, #4fb3a9 100%);
+    --primary-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+
+    --brand-tile: linear-gradient(145deg, #4fb3a9 0%, #2a877e 54%, #1b615b 100%);
+    --brand-tile-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+
+    --good: #3ba56b;
+    --good-soft: rgba(59, 165, 107, 0.13);
+    --good-ink: #6bc492;
+    --fair: #d4943a;
+    --fair-soft: rgba(212, 148, 58, 0.13);
+    --fair-ink: #e0ae63;
+    --poor: #d45d5d;
+    --poor-soft: rgba(212, 93, 93, 0.13);
+    --poor-ink: #e38282;
+
+    --data-down: #5caad1;
+    --data-up: #8c93d6;
+
+    --segment-active-bg: #272d30;
+
+    --hero-wash: radial-gradient(120% 100% at 0% 0%, rgba(79, 179, 169, 0.075), rgba(92, 170, 209, 0.025) 52%, transparent 82%);
+    --hero-stage-off: radial-gradient(120% 100% at 86% -10%, rgba(79, 179, 169, 0.09), transparent 62%);
+    --hero-stage-on: radial-gradient(120% 100% at 82% -10%, rgba(79, 179, 169, 0.11), rgba(92, 170, 209, 0.035) 58%, transparent 100%);
+    --hero-stage-bare: radial-gradient(120% 100% at 82% -10%, rgba(212, 148, 58, 0.11), transparent 62%);
+    --orb-fill-off: linear-gradient(155deg, #5dbfb5 0%, #3d9e94 100%);
+    --orb-shadow-off: 0 8px 22px rgba(0, 0, 0, 0.34), 0 0 0 5px rgba(79, 179, 169, 0.09);
+    --flow-gradient: linear-gradient(90deg, #4fb3a9, #5caad1);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.26), 0 4px 12px -6px rgba(0, 0, 0, 0.36);
+    --shadow-md: 0 12px 30px -8px rgba(0, 0, 0, 0.48);
+    --shadow-lg: 0 26px 64px -12px rgba(0, 0, 0, 0.62);
+
+    --latency-good-bg: rgba(59, 165, 107, 0.13);
+    --latency-fair-bg: rgba(212, 148, 58, 0.13);
+    --latency-poor-bg: rgba(212, 93, 93, 0.13);
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #151819;
+  --bg-glow: none;
+  --chrome: #101314;
+  --surface: #1c2022;
+  --surface-2: #23282b;
+  --sunken: #121516;
+  --hover: rgba(227, 231, 232, 0.055);
+  --border: rgba(227, 231, 232, 0.08);
+  --border-input: rgba(227, 231, 232, 0.14);
+  --border-strong: #626c70;
+  --card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --toggle-off: #333a3d;
+
+  --text: #e3e7e8;
+  --text-2: #a7b0b3;
+  --text-3: #788286;
+
+  --accent: #4fb3a9;
+  --accent-hover: #64bfb6;
+  --accent-ink: #72c7be;
+  --accent-soft: rgba(79, 179, 169, 0.13);
+  --accent-ring: color-mix(in srgb, var(--accent) 52%, transparent);
+  --on-accent: #0c2220;
+  --primary-fill: linear-gradient(180deg, #5abbb1 0%, #4fb3a9 100%);
+  --primary-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+
+  --brand-tile: linear-gradient(145deg, #4fb3a9 0%, #2a877e 54%, #1b615b 100%);
+  --brand-tile-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+
+  --good: #3ba56b;
+  --good-soft: rgba(59, 165, 107, 0.13);
+  --good-ink: #6bc492;
+  --fair: #d4943a;
+  --fair-soft: rgba(212, 148, 58, 0.13);
+  --fair-ink: #e0ae63;
+  --poor: #d45d5d;
+  --poor-soft: rgba(212, 93, 93, 0.13);
+  --poor-ink: #e38282;
+
+  --data-down: #5caad1;
+  --data-up: #8c93d6;
+
+  --segment-active-bg: #272d30;
+
+  --hero-wash: radial-gradient(120% 100% at 0% 0%, rgba(79, 179, 169, 0.075), rgba(92, 170, 209, 0.025) 52%, transparent 82%);
+  --hero-stage-off: radial-gradient(120% 100% at 86% -10%, rgba(79, 179, 169, 0.09), transparent 62%);
+  --hero-stage-on: radial-gradient(120% 100% at 82% -10%, rgba(79, 179, 169, 0.11), rgba(92, 170, 209, 0.035) 58%, transparent 100%);
+  --hero-stage-bare: radial-gradient(120% 100% at 82% -10%, rgba(212, 148, 58, 0.11), transparent 62%);
+  --orb-fill-off: linear-gradient(155deg, #5dbfb5 0%, #3d9e94 100%);
+  --orb-shadow-off: 0 8px 22px rgba(0, 0, 0, 0.34), 0 0 0 5px rgba(79, 179, 169, 0.09);
+  --flow-gradient: linear-gradient(90deg, #4fb3a9, #5caad1);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.26), 0 4px 12px -6px rgba(0, 0, 0, 0.36);
+  --shadow-md: 0 12px 30px -8px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 26px 64px -12px rgba(0, 0, 0, 0.62);
+
+  --latency-good-bg: rgba(59, 165, 107, 0.13);
+  --latency-fair-bg: rgba(212, 148, 58, 0.13);
+  --latency-poor-bg: rgba(212, 93, 93, 0.13);
+}
+
+/* ───────────── 2. Base ───────────── */
+body {
+  font-feature-settings: 'cv11', 'ss01', 'tnum' 0;
+  -webkit-font-smoothing: antialiased;
+}
+::selection {
+  background: var(--accent-soft);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-3) 26%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-3) 50%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ───────────── 3. Desktop shell & sidebar ───────────── */
+:root .shell:not(.compact) .main {
+  border-radius: var(--radius-panel);
+  background-color: var(--bg);
+  background-image: var(--bg-glow);
+  background-repeat: no-repeat;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 46px -24px rgba(15, 34, 38, 0.24), inset 0 0 0 1px var(--border);
+}
+.sidebar {
+  padding: 16px 14px 14px;
+  gap: 6px;
+}
+.sidebar-drag {
+  height: 28px;
+  margin: -16px -14px 0;
+}
+.sidebar.collapsed .sidebar-drag {
+  margin: -14px -10px 0;
+}
+.brand {
+  padding: 4px 4px 10px 4px;
+}
+.brand-name {
+  font-size: 18px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+}
+.side-search {
+  height: 36px;
+  border-radius: 11px;
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 6px;
+}
+.side-search:hover {
+  border-color: var(--border-input);
+}
+.nav {
+  gap: 14px;
+}
+.nav-group {
+  gap: 2px;
+}
+.nav-group-label {
+  padding: 0 12px;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  opacity: 0.78;
+}
+.nav-item {
+  position: relative;
+  height: 38px;
+  gap: 11px;
+  padding: 0 12px;
+  border-radius: 11px;
+  font-size: var(--text-base);
+  font-weight: 540;
+  color: var(--text-2);
+}
+.nav-item .icon {
+  color: var(--text-3);
+  transition: color var(--dur-fast) var(--ease);
+}
+.nav-item:hover .icon {
+  color: var(--text-2);
+}
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 660;
+  box-shadow: none;
+}
+.nav-item.active .icon {
+  color: var(--accent);
+  stroke-width: 2.1;
+}
+.sidebar:not(.collapsed) .nav-item.active::before {
+  content: none;
+}
+.sidebar.collapsed .nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+}
+.nav-count {
+  background: var(--sunken);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.nav-item.active .nav-count {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Status capsule */
+.side-status {
+  padding: 11px 11px 11px 13px;
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.side-status.on {
+  background-image: linear-gradient(140deg, var(--accent-soft), transparent 72%);
+}
+.side-status-body.clickable {
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.side-status-body.clickable:hover .side-status-head {
+  color: var(--accent-ink);
+}
+.side-status-head {
+  font-size: var(--text-md);
+  font-weight: 680;
+  transition: color var(--dur-fast) var(--ease);
+}
+.side-power {
+  width: 36px;
+  height: 36px;
+}
+.side-status.on .side-power {
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.28);
+}
+
+/* ───────────── 4. Page frame, cards, controls ───────────── */
+.page-head h1 {
+  font-size: var(--text-xl);
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+}
+.page-head h1 + p,
+.page-head > div > p {
+  margin-top: 4px;
+  font-size: var(--text-md);
+}
+.card {
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-sm), var(--card-highlight);
+}
+.card-head h2 {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.btn {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: var(--radius-control);
+  font-weight: 620;
+}
+.btn.sm {
+  height: 34px;
+  padding: 0 13px;
+}
+.btn.primary {
+  background: var(--primary-fill);
+  border-color: transparent;
+  color: var(--on-accent);
+  box-shadow: var(--primary-shadow);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--primary-fill);
+  color: var(--on-accent);
+  filter: brightness(1.04);
+  border-color: transparent;
+  box-shadow: var(--primary-shadow);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--hover);
+}
+.icon-btn {
+  border-radius: 10px;
+}
+
+.search {
+  height: 40px;
+  border-radius: 13px;
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.search:hover {
+  border-color: var(--border-input);
+}
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.segmented {
+  padding: 3px;
+  border-radius: 13px;
+  background: var(--sunken);
+  border-color: var(--border);
+}
+.segment {
+  height: 32px;
+  border-radius: 10px;
+  font-weight: 560;
+}
+.segmented.sm .segment {
+  height: 30px;
+  padding: 0 12px;
+}
+.segment.active {
+  background: var(--segment-active-bg);
+  border-color: var(--segment-active-border);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(15, 34, 38, 0.09), 0 3px 8px -3px rgba(15, 34, 38, 0.14);
+  font-weight: 680;
+}
+
+.tag {
+  border-radius: 7px;
+}
+.chip-btn,
+.hide-failed-chip {
+  border-radius: var(--radius-pill);
+}
+
+/* ───────────── 5. Overlays ───────────── */
+.overlay {
+  background: rgba(7, 15, 18, 0.5);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+.modal {
+  border-radius: var(--radius-sheet);
+}
+.modal-head h2 {
+  font-size: 18px;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+}
+.modal-foot {
+  border-top-color: var(--border);
+}
+.palette {
+  border-radius: var(--radius-sheet);
+}
+.toast {
+  border-radius: 15px;
+  box-shadow: var(--shadow-md);
+}
+
+/* ───────────── 6. Home Cockpit & Controls ───────────── */
+.connect-control:not(.on) {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.takeover-tile.active .row-icon,
+.setting-row.master-row.active .row-icon {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+}
+.home-group-delay.good,
+.node-picker .delay.good { background: var(--latency-good-bg); }
+.home-group-delay.fair,
+.node-picker .delay.fair { background: var(--latency-fair-bg); }
+.home-group-delay.poor,
+.home-group-delay.fail,
+.node-picker .delay.poor,
+.node-picker .delay.fail { background: var(--latency-poor-bg); }
+
+.quick-import {
+  border-radius: 13px;
+  border-color: var(--border);
+}
+.quick-import:hover {
+  border-color: var(--border-input);
+}
+.quick-import:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ───────────── 7. Proxies ───────────── */
+.proxies-toolbar {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(1.1) blur(16px);
+  -webkit-backdrop-filter: saturate(1.1) blur(16px);
+}
+.group-pill {
+  border-radius: var(--radius-pill);
+}
+.group-pill.open {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-ink);
+}
+
+.page.proxies .group {
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-sm);
+  overflow: clip;
+}
+.page.proxies .group.open {
+  box-shadow: var(--shadow-sm);
+}
+.shell:not(.compact) .page.proxies .group.open .group-head {
+  border-bottom: 1px solid var(--border);
+}
+.shell:not(.compact) .page.proxies .group.open .nodes {
+  border-top: 0;
+}
+.group-head {
+  padding: 8px 10px 8px 8px;
+  gap: 6px;
+}
+.group-toggle {
+  min-height: 52px;
+  border-radius: 13px;
+}
+.group-head-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+/* The name shrinks (with an ellipsis) only once it is alone on its line, so the count stays beside it. */
+.group-name strong {
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.group-name {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.group-health {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.group-count {
+  background: var(--sunken);
+}
+.group-now {
+  margin-top: 3px;
+}
+.group-now .chain-exit {
+  color: var(--text-2);
+  font-weight: 560;
+}
+.group-now .chain-exit-prefix {
+  color: var(--text-3);
+  font-weight: 450;
+  opacity: 0.78;
+  margin-right: 2px;
+}
+.group-fastest {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.group-fastest .icon {
+  display: none;
+}
+.group-fastest:hover:not(:disabled) {
+  background: var(--good-soft);
+  border-color: color-mix(in srgb, var(--good) 28%, transparent);
+  color: var(--good-ink);
+}
+.group-test {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+}
+.group-chevron {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--text-3);
+  cursor: pointer;
+  flex: none;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+@media (hover: hover) {
+  .group-chevron:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+}
+
+.page.proxies .nodes {
+  background: color-mix(in srgb, var(--sunken) 42%, var(--surface));
+}
+.shell:not(.compact) .page.proxies .nodes:not(.list) {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 9px;
+  padding: 14px;
+}
+.page.proxies .node {
+  padding: 10px 10px 10px 13px;
+  border-radius: 12px;
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: 0 1px 1px rgba(15, 34, 38, 0.025);
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.page.proxies .node.failed-node:not(.selected) .node-name {
+  color: var(--text-3);
+}
+.page.proxies .node:hover:not(.selected):not(.locked) {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border-input));
+  box-shadow: var(--shadow-sm);
+}
+.page.proxies .node.selected {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  box-shadow: none;
+}
+.page.proxies .node-name {
+  font-size: 13.5px;
+  font-weight: 580;
+}
+.page.proxies .node.selected .node-name {
+  font-weight: 680;
+}
+
+/* Latency as a tinted pill, so a column of results can be scanned by colour. */
+.page.proxies .node .delay {
+  min-width: 52px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  background: var(--sunken);
+}
+.page.proxies .node .delay.good { background: var(--latency-good-bg); }
+.page.proxies .node .delay.fair { background: var(--latency-fair-bg); }
+.page.proxies .node .delay.poor,
+.page.proxies .node .delay.fail { background: var(--latency-poor-bg); }
+.page.proxies .node .delay.untested {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+  background: transparent;
+}
+.page.proxies .node button.delay:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+/* List view (desktop): rows with a hairline between them instead of boxed cards. */
+.shell:not(.compact) .page.proxies .nodes.list {
+  gap: 0;
+  padding: 6px;
+}
+.shell:not(.compact) .page.proxies .nodes.list .node {
+  border-radius: 11px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.shell:not(.compact) .page.proxies .nodes.list .node:hover:not(.selected):not(.locked) {
+  background: var(--hover);
+  border-color: transparent;
+  box-shadow: none;
+}
+.shell:not(.compact) .page.proxies .nodes.list .node.selected {
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: none;
+}
+/* List rows mark the choice like the Home picker: tint plus accent name, no check (R1, R2). */
+.shell:not(.compact) .page.proxies .nodes.list .node.selected .node-check {
+  display: none;
+}
+.shell:not(.compact) .page.proxies .nodes.list .node.selected .node-name {
+  color: var(--accent-ink);
+}
+
+/* ───────────── 8. Connections table ───────────── */
+.table-card,
+.conn-table {
+  border-radius: var(--radius-card);
+}
+.table th {
+  padding: 12px 12px;
+  background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));
+  font-size: 11.5px;
+  font-weight: 620;
+  letter-spacing: 0.01em;
+}
+.table td {
+  padding: 10px 12px;
+}
+.table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 5.5%, transparent);
+}
+
+/* ───────────── 9. Node picker ───────────── */
+.node-picker-summary {
+  border-radius: 15px;
+  background: var(--surface-2);
+}
+.node-picker-item,
+.node-picker-row {
+  border-radius: 12px;
+}
+
+/* ───────────── 10. Mobile ───────────── */
+.compact {
+  --page-pad: 14px;
+  --page-pad-x: 16px;
+  --row-gap: 14px;
+}
+.compact .page-head h1 {
+  font-size: 28px;
+  font-weight: 790;
+  letter-spacing: -0.04em;
+}
+.compact .card {
+  border-radius: var(--radius-card);
+}
+
+/* Dock: opaque enough that scrolled content never reads through the labels, with a bottom scrim so nothing peeks below the floating bar. */
+.shell.compact::after {
+  content: '';
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--tabbar-h) + var(--safe-bottom) + 28px);
+  z-index: 29;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--bg) 88%, transparent) 44%,
+    var(--bg) 72%
+  );
+}
+html[data-keyboard] .shell.compact::after {
+  display: none;
+}
+.compact .page {
+  padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 52px);
+}
+.compact .tabbar {
+  left: calc(14px + var(--safe-left));
+  right: calc(14px + var(--safe-right));
+  bottom: calc(12px + var(--safe-bottom));
+  padding: 6px;
+  border-radius: var(--radius-dock);
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  backdrop-filter: saturate(1.2) blur(24px);
+  -webkit-backdrop-filter: saturate(1.2) blur(24px);
+  border-color: var(--border);
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.36), 0 2px 6px rgba(0, 0, 0, 0.10), var(--card-highlight);
+}
+.compact .tab {
+  min-height: 50px;
+  border-radius: 22px;
+  gap: 2px;
+}
+.compact .tab.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+
+/* Group header on phones: compact labeled 最快 pill (never a duplicate ⚡ icon), tight spacing for readable server names. */
+.compact .group-head {
+  padding: 6px 8px 6px 6px;
+  gap: 4px;
+}
+.compact .group-toggle {
+  gap: 9px;
+  padding: 5px 6px;
+}
+.compact .group-head-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.compact .group-name {
+  gap: 6px;
+}
+.compact .group-name strong {
+  font-size: 14.5px;
+}
+.compact .group-fastest {
+  width: auto;
+  height: 28px;
+  padding: 0 9px;
+  justify-content: center;
+  font-size: 11.5px;
+  font-weight: 640;
+}
+.compact .group-fastest .icon {
+  display: none;
+}
+.compact .group-fastest .group-fastest-label {
+  display: inline;
+}
+.compact .group-test {
+  width: 34px;
+  height: 34px;
+}
+.compact .group.open .group-head {
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.compact .nodes:not(.dense) .node.selected {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.compact .nodes:not(.dense) .delay:not(.untested) {
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+}
+.compact .nodes:not(.dense) .delay.good { background: var(--latency-good-bg); }
+.compact .nodes:not(.dense) .delay.fair { background: var(--latency-fair-bg); }
+.compact .nodes:not(.dense) .delay.poor,
+.compact .nodes:not(.dense) .delay.fail { background: var(--latency-poor-bg); }
+
+/* ───────────── 11. Focus Consistency & Reduced Motion ───────────── */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.nav-item:focus-visible,
+.side-search:focus-visible,
+.side-power:focus-visible,
+.segment:focus-visible,
+.chip-btn:focus-visible,
+.hide-failed-chip:focus-visible,
+.group-pill:focus-visible,
+.group-fastest:focus-visible,
+.group-test:focus-visible,
+.node-picker-item:focus-visible,
+.connect-control:focus-visible,
+.compact .tab:focus-visible,
+.tag-btn:focus-visible,
+.rule-proxy-badge:focus-visible,
+.rule-matcher-toggle:focus-visible,
+.rule-open-provider:focus-visible,
+.rule-row-more:focus-visible,
+.conn-quick-chip:focus-visible,
+.conn-card-menu:focus-visible,
+.log-level:focus-visible,
+.log-more-btn:focus-visible,
+.detail-copy-btn:focus-visible,
+.provider-fold:focus-visible {
+  outline: 1.5px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.group-toggle:focus-visible,
+.provider-open:focus-visible {
+  outline: 1.5px solid var(--accent-ring);
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .main > .page {
+    animation: page-in var(--dur-slow) var(--ease);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main > .page,
+  .rule-row.highlighted {
+    animation: none;
+  }
+  .nav-item .icon,
+  .page.proxies .node,
+  .log-copy,
+  .log-more-btn,
+  .detail-copy-btn,
+  .rule-open-provider {
+    transition: none;
+  }
+}

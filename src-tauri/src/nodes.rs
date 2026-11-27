@@ -2,9 +2,13 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, Read};
 use std::time::Duration;
 
+/// Machine tag for a `dialer-proxy` hop. The UI translates it; config values stay English-free (T8).
+const CHAINED_TAG: &str = "chained";
+
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+pub const GLOBAL_GROUP: &str = "GLOBAL";
 pub const NEED_PROFILE: &str = "需要先添加或更新配置";
 pub const NO_NODES: &str = "还没有可显示的节点。";
 pub const NO_MATCH: &str = "没有匹配的节点";
@@ -126,7 +130,7 @@ fn add_proxy_metadata(catalog: &mut RuntimeCatalog, name: &str, item: &Controlle
         (item.tfo, "TFO"), (item.mptcp, "MPTCP")].into_iter()
         .filter(|(on, _)| *on == Some(true)).map(|(_, tag)| tag.to_string()).collect();
     if let Some(dialer) = item.dialer_proxy.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-        tags.push("链式".to_string());
+        tags.push(CHAINED_TAG.to_string());
         catalog.dialers.insert(name.to_string(), dialer.to_string());
     }
     if !tags.is_empty() { catalog.tags.insert(name.to_string(), tags); }
@@ -162,6 +166,68 @@ pub fn runtime_catalog(value: &serde_json::Value) -> Result<RuntimeCatalog, Stri
 
 pub fn resolved_groups(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
     merge_runtime_groups(parse_proxy_groups(value), runtime)
+}
+
+pub fn synthesize_global_group(value: &Value, groups: &[ParsedGroup]) -> Option<ParsedGroup> {
+    if groups.iter().any(|group| group.name == GLOBAL_GROUP) {
+        return None;
+    }
+    let mut proxies = Vec::new();
+    for group in groups {
+        if !proxies.iter().any(|item| item == &group.name) {
+            proxies.push(group.name.clone());
+        }
+    }
+    for name in proxy_names(value) {
+        if !proxies.iter().any(|item| item == &name) {
+            proxies.push(name);
+        }
+    }
+    if proxies.is_empty() {
+        return None;
+    }
+    for builtin in ["DIRECT", "REJECT"] {
+        if !proxies.iter().any(|item| item == builtin) {
+            proxies.push(builtin.to_string());
+        }
+    }
+    Some(ParsedGroup {
+        name: GLOBAL_GROUP.to_string(),
+        manual: true,
+        proxies,
+        group_type: "select".to_string(),
+        icon: None,
+        pinnable: false,
+        hidden: false,
+    })
+}
+
+pub fn global_group(value: &Value, groups: &[ParsedGroup], runtime: &RuntimeCatalog) -> Option<ParsedGroup> {
+    if groups.iter().any(|group| group.name == GLOBAL_GROUP) {
+        return None;
+    }
+    if let Some(members) = runtime.members.get(GLOBAL_GROUP) {
+        if !members.is_empty() {
+            return Some(ParsedGroup {
+                name: GLOBAL_GROUP.to_string(),
+                manual: true,
+                proxies: members.clone(),
+                group_type: "select".to_string(),
+                icon: None,
+                pinnable: false,
+                hidden: false,
+            });
+        }
+    }
+    synthesize_global_group(value, groups)
+}
+
+pub fn resolved_groups_with_global(value: &Value, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
+    let mut groups = resolved_groups(value, runtime);
+    if let Some(global) = global_group(value, &groups, runtime) {
+        groups.insert(0, global);
+    }
+    groups
 }
 
 pub fn merge_runtime_groups(mut groups: Vec<ParsedGroup>, runtime: &RuntimeCatalog) -> Vec<ParsedGroup> {
@@ -315,7 +381,7 @@ pub fn proxy_tags(item: &Value) -> Vec<String> {
         tags.push("MPTCP".to_string());
     }
     if mapping_get(item, "dialer-proxy").and_then(Value::as_str).is_some_and(|value| !value.is_empty()) {
-        tags.push("链式".to_string());
+        tags.push(CHAINED_TAG.to_string());
     }
     tags
 }
@@ -528,17 +594,20 @@ pub fn controller_from_yaml(yaml: &str) -> Option<ControllerEndpoint> {
     })
 }
 
+const MODE_FAILED: &str = "模式没有切换";
+const MODE_READ_TIMEOUT: Duration = Duration::from_millis(5000);
+
 pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), String> {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
-        return Err("模式没有切换".to_string());
+        return Err(MODE_FAILED.to_string());
     }
     let mode = match mode {
         "rule" | "global" | "direct" => mode,
-        _ => return Err("模式没有切换".to_string()),
+        _ => return Err(MODE_FAILED.to_string()),
     };
     let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
     let body = format!("{{\"mode\":\"{mode}\"}}");
-    let agent = agent(Duration::from_millis(800));
+    let agent = agent(MODE_READ_TIMEOUT);
     let request = agent
         .patch(&url)
         .set("Content-Type", "application/json")
@@ -550,7 +619,25 @@ pub fn patch_mode(endpoint: &ControllerEndpoint, mode: &str) -> Result<(), Strin
     };
     match request.send_string(&body) {
         Ok(_) => Ok(()),
-        Err(_) => Err("模式没有切换".to_string()),
+        Err(ureq::Error::Status(code, response)) => {
+            let reason = with_reason(MODE_FAILED, response);
+            if reason == MODE_FAILED {
+                Err(format!("{MODE_FAILED}（HTTP {code}）"))
+            } else {
+                Err(reason)
+            }
+        }
+        Err(ureq::Error::Transport(error)) => {
+            let detail = error
+                .message()
+                .map(str::trim)
+                .filter(|msg| !msg.is_empty())
+                .map(|msg| msg.chars().take(160).collect::<String>());
+            match detail {
+                Some(detail) => Err(format!("{MODE_FAILED}：{detail}")),
+                None => Err(format!("{MODE_FAILED}：{:?}", error.kind())),
+            }
+        }
     }
 }
 
@@ -643,14 +730,17 @@ pub fn put_config(endpoint: &ControllerEndpoint, config_yaml: &str) -> Result<()
 }
 
 /// Best-effort request for the running kernel to close its TUN adapter and routes
-/// cleanly before the process is stopped.
+/// cleanly before the process is stopped. Waits briefly for `tun.enable: false`
+/// to take effect so Wintun ring buffers finish detaching before `TerminateProcess`.
 pub fn patch_tun_disable(endpoint: &ControllerEndpoint) {
     if !loopback(&endpoint.host) || endpoint.port == 0 {
         return;
     }
     let url = format!("http://{}:{}/configs", endpoint.host, endpoint.port);
     let body = r#"{"tun":{"enable":false}}"#;
-    let agent = agent(Duration::from_millis(500));
+    // Closing Wintun NDIS + restoring Windows routes/DNS under shutdown I/O load
+    // commonly takes 400–1200 ms; 500 ms could time out mid-WintunCloseAdapter.
+    let agent = agent(Duration::from_millis(1500));
     let request = agent
         .patch(&url)
         .set("Content-Type", "application/json")
@@ -660,7 +750,16 @@ pub fn patch_tun_disable(endpoint: &ControllerEndpoint) {
     } else {
         request.set("Authorization", &format!("Bearer {}", endpoint.secret))
     };
-    let _ = request.send_string(body);
+    if request.send_string(body).is_ok() {
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        while std::time::Instant::now() < deadline {
+            if listeners_ready(endpoint, None, false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
 }
 
 pub fn fetch_delays(
@@ -1424,7 +1523,7 @@ proxy-groups:
         assert_eq!(infos["a"].tags, ["UDP", "Reality", "gRPC", "Vision"]);
         assert_eq!(infos["b"].tags, ["UDP"]);
         assert_eq!(infos["c"].tags, ["UDP", "WS", "Mux", "TFO", "MPTCP"]);
-        assert_eq!(infos["d"].tags, ["TLS", "链式"]);
+        assert_eq!(infos["d"].tags, ["TLS", CHAINED_TAG]);
         assert_eq!(infos["e"].tags.is_empty(), true);
         assert_eq!(infos["G"].kind, "select");
         assert!(infos["G"].tags.is_empty());
@@ -1444,5 +1543,89 @@ proxy-groups:
         let seen = handle.join().unwrap();
         assert!(seen[0].contains("PUT /configs?force=true HTTP/1.1"));
         assert!(seen[0].contains("mixed-port: 7890"));
+    }
+
+    #[test]
+    fn patch_mode_sends_json_and_surfaces_controller_error_reason() {
+        let (port, handle) = serve(vec![
+            http_response("204 No Content", ""),
+            http_response("400 Bad Request", r#"{"message":"invalid mode"}"#),
+            http_response("500 Internal Server Error", ""),
+        ]);
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: CONTROLLER_SECRET.to_string(),
+        };
+        patch_mode(&endpoint, "global").unwrap();
+        let err_json = patch_mode(&endpoint, "direct").unwrap_err();
+        assert_eq!(err_json, "模式没有切换：invalid mode");
+        let err_status = patch_mode(&endpoint, "rule").unwrap_err();
+        assert_eq!(err_status, "模式没有切换（HTTP 500）");
+        let seen = handle.join().unwrap();
+        assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
+        assert!(seen[0].contains(r#"{"mode":"global"}"#));
+    }
+
+    #[test]
+    fn patch_tun_disable_polls_until_controller_reports_tun_disabled() {
+        let (port, handle) = serve(vec![
+            http_response("204 No Content", ""),
+            http_response("200 OK", r#"{"tun":{"enable":true}}"#),
+            http_response("200 OK", r#"{"tun":{"enable":false}}"#),
+        ]);
+        let endpoint = ControllerEndpoint {
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: CONTROLLER_SECRET.to_string(),
+        };
+        patch_tun_disable(&endpoint);
+        let seen = handle.join().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[0].starts_with("PATCH /configs HTTP/1.1"));
+        assert!(seen[0].contains(r#"{"tun":{"enable":false}}"#));
+        assert!(seen[1].starts_with("GET /configs HTTP/1.1"));
+        assert!(seen[2].starts_with("GET /configs HTTP/1.1"));
+    }
+
+    #[test]
+    fn global_group_synthesizes_offline_and_uses_runtime_members() {
+        let yaml = r#"
+proxies:
+  - { name: HK, type: ss, server: 1.1.1.1, port: 443 }
+  - { name: JP, type: ss, server: 1.1.1.2, port: 443 }
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HK, JP]
+"#;
+        let doc: Value = serde_yaml::from_str(yaml).unwrap();
+        let offline = resolved_groups_with_global(&doc, &RuntimeCatalog::default());
+        assert_eq!(offline[0].name, GLOBAL_GROUP);
+        assert!(offline[0].manual);
+        assert_eq!(offline[0].proxies, vec!["Proxy", "HK", "JP", "DIRECT", "REJECT"]);
+
+        let runtime = runtime_catalog(&serde_json::json!({
+            "proxies": {
+                "GLOBAL": { "type": "Selector", "all": ["DIRECT", "Proxy", "HK", "JP"], "now": "DIRECT" },
+                "Proxy": { "type": "Selector", "all": ["HK", "JP"], "now": "HK" }
+            }
+        }))
+        .unwrap();
+        let online = resolved_groups_with_global(&doc, &runtime);
+        assert_eq!(online[0].name, GLOBAL_GROUP);
+        assert_eq!(online[0].proxies, vec!["DIRECT", "Proxy", "HK", "JP"]);
+
+        let explicit_yaml = r#"
+proxies:
+  - { name: HK, type: ss, server: 1.1.1.1, port: 443 }
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [HK, DIRECT]
+"#;
+        let explicit_doc: Value = serde_yaml::from_str(explicit_yaml).unwrap();
+        let explicit = resolved_groups_with_global(&explicit_doc, &RuntimeCatalog::default());
+        assert_eq!(explicit.iter().filter(|group| group.name == GLOBAL_GROUP).count(), 1);
     }
 }

@@ -1,45 +1,56 @@
 package app.billow.client
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.os.Build
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
-import java.io.FileDescriptor
+import android.os.PowerManager
+import android.os.SystemClock
 
 /**
  * System VpnService. Rust calls prepare, then start with an app filter: either
  * the packages that bypass the VPN, or (allowlist) the only packages that use it.
- * This class only opens the TUN and returns the fd.
+ * This class opens the TUN, tracks underlying physical networks and Doze exits
+ * so the tunnel survives network roaming and idle sleep, and renders the
+ * foreground notification from Rust state (R41).
  */
 class BillowVpnService : VpnService() {
     private var tunnel: ParcelFileDescriptor? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var networkCallback: DefaultNetworkCallback? = null
+    private var idleReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
-        val manager = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) {
-            manager.createNotificationChannel(NotificationChannel("vpn", "VPN 连接", NotificationManager.IMPORTANCE_LOW))
+        // The background toggle and the revoke path need this instance to update
+        // the notification the moment Rust publishes (R41).
+        // publish() is static and synchronized; a newer state must render after startForeground.
+        synchronized(BillowStatus::class.java) {
+            val current = BillowStatus.current(this)
+            val starting = if (current.state == BillowStatus.DISCONNECTED) {
+                current.copy(state = BillowStatus.CONNECTING)
+            } else current
+            startForeground(BillowStatus.VPN_NOTIFICATION, notification(starting))
+            BillowStatus.service = this
         }
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val notification = (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, "vpn") else Notification.Builder(this))
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentTitle("Billow VPN")
-            .setContentText("代理连接运行中")
-            .setContentIntent(open)
-            .setOngoing(true)
-            .build()
-        startForeground(1, notification)
     }
 
     override fun onDestroy() {
-        releaseTunnel()
+        closeTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
+        if (BillowStatus.service === this) BillowStatus.service = null
         super.onDestroy()
     }
 
@@ -57,20 +68,58 @@ class BillowVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        // A revoke invalidates the fd before stopSelf()/onDestroy() runs. Release
-        // it now so the Rust kernel's inherited copy and the host's launch
-        // argument cannot outlive the system grant.
-        releaseTunnel()
+        // The permission is gone: Rust disconnects, so the app, the tile, the
+        // widget and the notification all leave 已连接 together (R41).
+        closeTunnel()
         BillowVpnBridge.reportConsent(false)
+        BillowVpnBridge.reportRevoked()
         stopSelf()
     }
 
-    private fun releaseTunnel() {
-        tunnel?.close()
+    /** Re-render the foreground notification after Rust published a new status. */
+    fun render(status: BillowStatus.Status) {
+        // 未连接 means this service is being torn down; the notification goes with it.
+        if (status.state == BillowStatus.DISCONNECTED) return
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(BillowStatus.VPN_NOTIFICATION, notification(status))
+    }
+
+    private fun notification(status: BillowStatus.Status): Notification {
+        val view = BillowStatus.localized(this, status)
+        BillowStatus.ensureChannel(
+            this,
+            BillowStatus.VPN_CHANNEL,
+            view.getString(R.string.notify_channel_vpn),
+            NotificationManager.IMPORTANCE_LOW,
+        )
+        val text = when (status.state) {
+            BillowStatus.CONNECTED -> if (status.profile.isEmpty()) {
+                view.getString(R.string.notify_connected)
+            } else {
+                view.getString(R.string.notify_connected_profile, status.profile)
+            }
+            BillowStatus.CONNECTING -> view.getString(R.string.state_connecting)
+            else -> view.getString(R.string.state_disconnected)
+        }
+        return BillowStatus.builder(this, BillowStatus.VPN_CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_billow)
+            .setContentTitle(view.getString(R.string.notify_title))
+            .setContentText(text)
+            .setContentIntent(BillowStatus.openApp(this, 0))
+            .setOngoing(true)
+            .build()
+    }
+
+    @Synchronized
+    fun closeTunnel() {
+        unregisterNetworkMonitors()
+        val opened = tunnel ?: return
+        opened.close()
         tunnel = null
         BillowVpnBridge.reportFd(-1)
     }
 
+    @Synchronized
     fun establishTun(packages: List<String>, only: Boolean): Int? {
         val builder = Builder()
             .setSession("Billow")
@@ -78,30 +127,149 @@ class BillowVpnService : VpnService() {
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("172.19.0.2")
+        if (Build.VERSION.SDK_INT >= 29) {
+            builder.setMetered(false)
+        }
         // The core shares our UID; its upstream sockets must not re-enter its own VPN.
         if (!only) builder.addDisallowedApplication(packageName)
         // Allowed and disallowed lists cannot be mixed on one Builder.
+        var hasAllowedApp = false
         for (packageName in packages.filter { it != this.packageName }) {
             try {
-                if (only) builder.addAllowedApplication(packageName)
-                else builder.addDisallowedApplication(packageName)
+                if (only) {
+                    builder.addAllowedApplication(packageName)
+                    hasAllowedApp = true
+                } else builder.addDisallowedApplication(packageName)
             } catch (_: android.content.pm.PackageManager.NameNotFoundException) {
                 // Rust still owns the list when a package is not installed (yet).
             }
         }
+        // An empty Builder allowlist would tunnel every UID, including the core.
+        if (only && !hasAllowedApp) return null
         val opened = builder.establish() ?: return null
-        // Clear FD_CLOEXEC: the native kernel runs as a child process and
-        // inherits this fd. The Rust host passes the number as `--tun-fd`;
-        // Android never writes tun.file-descriptor into the YAML.
-        android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, 0)
+        android.system.Os.fcntlInt(opened.fileDescriptor, android.system.OsConstants.F_SETFD, android.system.OsConstants.FD_CLOEXEC)
         tunnel?.close()
         tunnel = opened
+        registerNetworkMonitors()
         return opened.fd
+    }
+
+    private fun registerNetworkMonitors() {
+        unregisterNetworkMonitors()
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        // Our UID bypasses the tunnel, so our default network carries the upstream sockets.
+        // Seed before registration to distinguish an offline start from the initial replay.
+        try {
+            val callback = DefaultNetworkCallback(cm.activeNetwork?.networkHandle)
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (_: RuntimeException) {
+            // Keep the tunnel usable if the system refuses the callback.
+        }
+
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm != null) {
+            BillowVpnBridge.reportScreenInteractive(pm.isInteractive)
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_ON -> BillowVpnBridge.reportScreenInteractive(true)
+                    Intent.ACTION_SCREEN_OFF -> BillowVpnBridge.reportScreenInteractive(false)
+                    PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
+                        if (Build.VERSION.SDK_INT < 23) return
+                        val power = context.getSystemService(PowerManager::class.java) ?: return
+                        if (!power.isDeviceIdleMode) {
+                            BillowVpnBridge.checkHealthOnResume()
+                        }
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            if (Build.VERSION.SDK_INT >= 23) {
+                addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(receiver, filter)
+            }
+            idleReceiver = receiver
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun unregisterNetworkMonitors() {
+        val callback = networkCallback
+        networkCallback = null
+        if (callback != null) {
+            mainHandler.removeCallbacks(callback)
+            try {
+                getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
+            } catch (_: Throwable) {
+            }
+        }
+        val receiver = idleReceiver
+        idleReceiver = null
+        if (receiver != null) {
+            try {
+                unregisterReceiver(receiver)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private inner class DefaultNetworkCallback(initialNetwork: Long?) :
+        ConnectivityManager.NetworkCallback(), Runnable {
+        private val changes = UpstreamChanges(initialNetwork)
+
+        override fun onAvailable(network: Network) = update { available(network.networkHandle) }
+
+        override fun onLost(network: Network) = update { lost(network.networkHandle) }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = update {
+            validationChanged(
+                network.networkHandle,
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                SystemClock.elapsedRealtime(),
+            )
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = update {
+            linkChanged(
+                network.networkHandle,
+                linkProperties.linkAddresses.map { it.toString() }.toSet(),
+                linkProperties.dnsServers.mapNotNull { it.hostAddress },
+            )
+        }
+
+        private fun update(event: UpstreamChanges.() -> Boolean) {
+            synchronized(this@BillowVpnService) {
+                if (networkCallback !== this || !changes.event()) return
+                mainHandler.removeCallbacks(this)
+                if (changes.pending != null) mainHandler.postDelayed(this, NETWORK_CHANGE_DEBOUNCE_MS)
+            }
+        }
+
+        override fun run() {
+            synchronized(this@BillowVpnService) {
+                if (networkCallback !== this) return
+                val change = changes.takePending() ?: return
+                BillowVpnBridge.reportNetworkChanged(change == UpstreamChange.ROUTE)
+            }
+        }
     }
 
     companion object {
         const val EXTRA_EXCLUDED = "excluded_packages"
         const val EXTRA_ONLY = "only_listed_packages"
+        private const val NETWORK_CHANGE_DEBOUNCE_MS = 1200L
     }
 }
 
@@ -129,6 +297,26 @@ class BillowVpnBridge {
             return false
         }
 
+        /**
+         * Whether the system already trusts Billow to start a VPN. `VpnService.prepare`
+         * answers without showing the dialog, so a tile tap can tell whether it may
+         * connect on its own (R41).
+         */
+        @JvmStatic
+        fun hasConsent(context: Context): Boolean = VpnService.prepare(context) == null
+
+        /**
+         * One tap on the tile or the widget switch, answered by Rust (R41):
+         * 0 = handled, 1 = the app has to show a page, 2 = the runtime is not
+         * loaded yet (a tap can start the process before Tauri is up).
+         */
+        @JvmStatic
+        fun tap(inApp: Boolean): Int = try {
+            nativeTap(if (inApp) 1 else 0)
+        } catch (_: Throwable) {
+            2
+        }
+
         @JvmStatic
         fun onActivityResult(resultCode: Int) {
             reportConsent(resultCode == Activity.RESULT_OK)
@@ -144,6 +332,8 @@ class BillowVpnBridge {
 
         @JvmStatic
         fun stop(context: Context) {
+            // Android keeps an established VPN bound after stopService until its fd closes.
+            BillowStatus.service?.closeTunnel()
             context.stopService(Intent(context, BillowVpnService::class.java))
         }
 
@@ -157,10 +347,58 @@ class BillowVpnBridge {
             nativeTunFd(fd)
         }
 
+        /** `onRevoke` reached Rust: disconnect and republish every surface (R41). */
+        @JvmStatic
+        fun reportRevoked() {
+            nativeRevoked()
+        }
+
+        /** A route change invalidates upstream sockets. A DNS-only change preserves them. */
+        @JvmStatic
+        fun reportNetworkChanged(routeChanged: Boolean) {
+            try {
+                nativeNetworkChanged(if (routeChanged) 1 else 0)
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** App returned to foreground: verify kernel liveness so UI never shows a stale connected state. */
+        @JvmStatic
+        fun checkHealthOnResume() {
+            try {
+                nativeResumeCheck()
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** Screen on/off hint so background polling backs off aggressively while screen is off. */
+        @JvmStatic
+        fun reportScreenInteractive(interactive: Boolean) {
+            try {
+                nativeScreenInteractive(if (interactive) 1 else 0)
+            } catch (_: Throwable) {
+            }
+        }
+
         @JvmStatic
         private external fun nativeConsent(granted: Int)
 
         @JvmStatic
         private external fun nativeTunFd(fd: Int)
+
+        @JvmStatic
+        private external fun nativeTap(inApp: Int): Int
+
+        @JvmStatic
+        private external fun nativeRevoked()
+
+        @JvmStatic
+        private external fun nativeNetworkChanged(routeChanged: Int)
+
+        @JvmStatic
+        private external fun nativeResumeCheck()
+
+        @JvmStatic
+        private external fun nativeScreenInteractive(interactive: Int)
     }
 }

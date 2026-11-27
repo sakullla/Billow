@@ -2,32 +2,61 @@ import { computed, inject, reactive, ref, shallowRef, watch, type InjectionKey }
 import type { Backend, NodeTestEvent } from './backend'
 import { createAppUpdater, nativeUpdateDriver } from './appUpdate'
 import { hostOf } from './format'
+import { applyLocale, normalizeLanguage, normalizeLocale, t, tr } from './i18n'
 import { runPool } from './pool'
 import {
   emptySnapshot,
+  normalizePalette,
+  PALETTES,
   type AppInfo,
   type ClosedConnectionRow,
   type ConnectionRow,
+  type CustomNodesImportResult,
+  type DialerTarget,
   type DnsQueryType,
   type EnginesState,
   type IosEngineState,
   type IosVpnStatus,
+  type ExitIpInfo,
   type KernelChannel,
   type KernelEngine,
   type KernelSettings,
   type KernelStatus,
+  type LandingRule,
   type Mode,
   type NodeGroup,
+  type PalettePreference,
+  type RuleMatchInput,
+  type RuleMatchResult,
+  type SaveCustomNodeInput,
   type Snapshot,
   type ThemePreference,
+  type LanguagePreference,
   type AppMode,
+  type TrafficHistoryView,
+  type TrafficRange,
 } from './types'
 
 export type PageId = 'home' | 'proxies' | 'profiles' | 'connections' | 'rules' | 'resources' | 'logs' | 'settings' | 'apps'
-export type SettingsTab = 'general' | 'proxy' | 'kernel' | 'tun' | 'dns'
+/**
+ * Settings categories. `home` is the phone's category list; desktop shows the
+ * general page for it, so it is always a valid landing tab.
+ */
+export type SettingsTab =
+  | 'home'
+  | 'general'
+  | 'proxy'
+  | 'tun'
+  | 'network'
+  | 'behavior'
+  | 'dns'
+  | 'kernel'
+  | 'backup'
+  | 'about'
 export type ConfigViewTab = 'overview' | 'yaml'
 
 const CONFIG_TAB_KEY = 'billow.configTab'
+const CUSTOM_NODES_ENABLED_KEY = 'billow.customNodesEnabled'
 export function readConfigTab(): ConfigViewTab {
   try {
     return localStorage.getItem(CONFIG_TAB_KEY) === 'yaml' ? 'yaml' : 'overview'
@@ -42,21 +71,35 @@ export function rememberConfigTab(tab: ConfigViewTab) {
     /* storage unavailable */
   }
 }
+export function readCustomNodesEnabled(): boolean {
+  try {
+    return localStorage.getItem(CUSTOM_NODES_ENABLED_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
+export function rememberCustomNodesEnabled(enabled: boolean) {
+  try {
+    localStorage.setItem(CUSTOM_NODES_ENABLED_KEY, enabled ? 'true' : 'false')
+  } catch {
+    /* storage unavailable */
+  }
+}
 /** Desktop sidebar grouping; settings is pinned below both groups (R25). */
 export type PageGroup = 'core' | 'tools' | null
 
 export const PAGES: { id: PageId; label: string; icon: string; mobile: boolean; group: PageGroup }[] = [
-  { id: 'home', label: '首页', icon: 'home', mobile: true, group: 'core' },
-  { id: 'proxies', label: '代理', icon: 'globe', mobile: true, group: 'core' },
-  { id: 'profiles', label: '配置', icon: 'layers', mobile: true, group: 'core' },
+  { id: 'home', get label() { return tr('首页') }, icon: 'home', mobile: true, group: 'core' },
+  { id: 'proxies', get label() { return tr('代理') }, icon: 'globe', mobile: true, group: 'core' },
+  { id: 'profiles', get label() { return tr('配置') }, icon: 'layers', mobile: true, group: 'core' },
   // Phones keep four tabs; connections joins the tools reached from Settings.
-  { id: 'connections', label: '连接', icon: 'activity', mobile: false, group: 'core' },
-  { id: 'rules', label: '规则', icon: 'route', mobile: false, group: 'tools' },
-  { id: 'resources', label: '资源', icon: 'database', mobile: false, group: 'tools' },
-  { id: 'logs', label: '日志', icon: 'terminal', mobile: false, group: 'tools' },
-  { id: 'settings', label: '设置', icon: 'settings', mobile: true, group: null },
+  { id: 'connections', get label() { return tr('连接') }, icon: 'activity', mobile: false, group: 'core' },
+  { id: 'rules', get label() { return tr('规则') }, icon: 'route', mobile: false, group: 'tools' },
+  { id: 'resources', get label() { return tr('资源') }, icon: 'database', mobile: false, group: 'tools' },
+  { id: 'logs', get label() { return tr('日志') }, icon: 'terminal', mobile: false, group: 'tools' },
+  { id: 'settings', get label() { return tr('设置') }, icon: 'settings', mobile: true, group: null },
   // Android only, opened from Settings; never in a nav bar.
-  { id: 'apps', label: '应用访问控制', icon: 'apps', mobile: false, group: null },
+  { id: 'apps', get label() { return tr('应用访问控制') }, icon: 'apps', mobile: false, group: null },
 ]
 
 export function resolvePage(value: string | null | undefined): PageId {
@@ -64,10 +107,21 @@ export function resolvePage(value: string | null | undefined): PageId {
   return PAGES.some((page) => page.id === value) ? (value as PageId) : 'home'
 }
 
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
+export interface ToastOptions {
+  action?: ToastAction
+  dedupe?: boolean
+}
+
 export interface Toast {
   id: number
   tone: 'info' | 'success' | 'error'
   text: string
+  action?: ToastAction
 }
 
 /** The home-level action behind the last failure banner, so "重试" repeats it (R24). */
@@ -96,13 +150,20 @@ export interface ProfileRefreshProgress {
   failed: number
 }
 
-/** Saved ConnectionsView state when drilling into a proxy group or rule-set (R4). */
+export type ConnectionRouteFilter = 'all' | 'proxy' | 'direct' | 'reject'
+export type ConnectionProtocolFilter = 'all' | 'tcp' | 'udp'
+
+/** Saved ConnectionsView state when drilling into a proxy group, rule-set or rule matcher (R4, R5). */
 export interface ConnectionReturnState {
   sessionId: number
-  targetPage: 'proxies' | 'resources'
+  targetPage: 'proxies' | 'resources' | 'rules'
   tab: 'active' | 'closed'
   query: string
-  routeFilter: 'all' | 'proxy' | 'direct'
+  routeFilter: ConnectionRouteFilter
+  protocolFilter?: ConnectionProtocolFilter
+  activeOnly?: boolean
+  quickProcess?: string | null
+  quickHost?: string | null
   sortKey: 'time' | 'speed' | 'download' | 'upload' | 'host'
   sortDir: 'asc' | 'desc'
   listScrollTop: number
@@ -118,6 +179,37 @@ export interface ConnectionReturnState {
   rulePolicy: string
 }
 
+/** Saved RulesView state when drilling into a rule-set or proxy group (R5). */
+export interface RuleReturnState {
+  sessionId: number
+  profileId: string | null
+  targetPage: 'resources' | 'proxies'
+  query: string
+  kindFilter: string
+  proxyFilter: string
+  disabledOnly: boolean
+  listScrollTop: number
+  limit: number
+  matcherOpen: boolean
+  matchTarget: string
+  matchPort: string
+  matchProcess: string
+  matchResult: RuleMatchResult | null
+}
+
+/** One-shot cross-page diagnostic handoff payload (R5). */
+export type DiagnosticTarget =
+  | {
+      kind: 'rule-match'
+      target: string
+      dstPort: number | null
+      process: string | null
+    }
+  | {
+      kind: 'connection-search'
+      query: string
+    }
+
 const HISTORY = 60
 const MAX_CLOSED_CONNECTIONS = 200
 
@@ -125,6 +217,17 @@ export function applyTheme(preference: ThemePreference) {
   const root = document.documentElement
   if (preference === 'system') root.removeAttribute('data-theme')
   else root.setAttribute('data-theme', preference)
+}
+
+export function applyPalette(preference: PalettePreference) {
+  const root = document.documentElement
+  const next = normalizePalette(preference)
+  if (next === 'teal') root.removeAttribute('data-palette')
+  else root.setAttribute('data-palette', next)
+}
+
+function reuseEqual<T>(previous: T, incoming: T): T {
+  return previous === incoming || JSON.stringify(previous) === JSON.stringify(incoming) ? previous : incoming
 }
 
 export function createStore(backend: Backend) {
@@ -138,16 +241,43 @@ export function createStore(backend: Backend) {
   const iosStatus = ref<Partial<Record<KernelEngine, IosVpnStatus | null>>>({})
   const app = ref<AppInfo | null>(null)
   const theme = ref<ThemePreference>('system')
+  const palette = ref<PalettePreference>('teal')
+  /** Stored language preference; the dictionary locale comes from the backend (R42). */
+  const language = ref<LanguagePreference>('system')
   const page = ref<PageId>('home')
   const focusGroup = ref<string | null>(null)
   const focusProvider = ref<{ kind: 'proxy' | 'rule'; name: string } | null>(null)
   const connectionReturn = ref<ConnectionReturnState | null>(null)
+  const ruleReturn = ref<RuleReturnState | null>(null)
+  const diagnosticTarget = ref<DiagnosticTarget | null>(null)
   const connectionSessionId = ref(0)
-  const settingsTab = ref<SettingsTab>('general')
+  const settingsTab = ref<SettingsTab>('home')
+  /** A row (`data-setting` id) the settings page should scroll to and highlight once shown. */
+  const settingsFocus = ref<string | null>(null)
   /** Text another page asks the profiles page to append to a profile's 覆写 editor (unsaved). */
   const overrideRequest = ref<{ id: string; append: string } | null>(null)
+  /** Custom node input handed off from the global add-profile dialog to ProfilesView (R4). */
+  const customNodeImportRequest = ref<string | null>(null)
   /** The DNS query dialog, opened from the DNS settings tab or the palette (R31). */
   const dnsQueryOpen = ref(false)
+  /** Exit IP lookup result, stale mark, in-flight flag and last failure (R40). */
+  const exitIp = shallowRef<ExitIpInfo | null>(null)
+  const exitIpStale = ref(false)
+  const exitIpBusy = ref(false)
+  const exitIpError = ref<string | null>(null)
+  /** Traffic stats dialog and its last read (R43). */
+  const trafficStatsOpen = ref(false)
+  const trafficStats = shallowRef<TrafficHistoryView | null>(null)
+  const trafficStatsBusy = ref(false)
+  const trafficStatsError = ref<string | null>(null)
+  /** The range the dialog is showing, so enabling or clearing keeps it. */
+  const trafficStatsRange = ref<{ range: TrafficRange; from: string | null; to: string | null }>({
+    range: 'today',
+    from: null,
+    to: null,
+  })
+  let pendingTrafficStats: typeof trafficStatsRange.value | null = null
+  let trafficStatsLoad: Promise<TrafficHistoryView | undefined> | null = null
   const loaded = ref(false)
   const busy = reactive<Record<string, boolean>>({})
   const toasts = ref<Toast[]>([])
@@ -200,7 +330,20 @@ export function createStore(backend: Backend) {
   const lastRunError = ref<string | null>(null)
 
   const current = computed(() => snapshot.value.profiles.find((item) => item.current) ?? null)
-  const hasProfiles = computed(() => snapshot.value.profiles.length > 0)
+  const hasProfiles = computed(
+    () =>
+      snapshot.value.profiles.length > 0 ||
+      snapshot.value.custom_profile_active ||
+      snapshot.value.custom_nodes.nodes.length > 0,
+  )
+  const customNodes = computed(() => snapshot.value.custom_nodes)
+  const hasCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.length > 0)
+  const enabledCustomNodes = computed(() => snapshot.value.custom_nodes.nodes.filter((item) => item.enabled))
+  const customNodesWarnings = computed(() => snapshot.value.custom_nodes_warnings)
+  const customProfileActive = computed(() => snapshot.value.custom_profile_active)
+  const customNodesFeatureEnabled = ref<boolean>(readCustomNodesEnabled())
+  const customNodesVisible = computed(() => customNodesFeatureEnabled.value || customProfileActive.value)
+  const landingPresets = computed(() => snapshot.value.landing_presets)
   const isAndroid = computed(() => snapshot.value.platform === 'android')
   /** Desktop OS from `AppInfo.platform` (Rust `std::env::consts::OS`); gates Linux / macOS-only options. */
   const isLinux = computed(() => !isAndroid.value && app.value?.platform === 'linux')
@@ -211,6 +354,18 @@ export function createStore(backend: Backend) {
   /** True while 重启内核 runs; the home status reads 重启中 instead of 断开中. */
   const restarting = ref(false)
   const appUpdate = createAppUpdater(nativeUpdateDriver(() => isAndroid.value))
+  /** Automatic exit IP queries, off by default (R40); the home card reads it too. */
+  const autoExitIp = computed(() => app.value?.auto_exit_ip ?? false)
+  /** Which exit the proxy currently uses: profile, outbound mode and node choices (R40). */
+  const exitIpSignature = computed(() => {
+    if (!autoExitIp.value) return ''
+    const groups = snapshot.value.node_catalog
+    if (groups.length === 0) return ''
+    return (
+      `${snapshot.value.active_id ?? ''}|${snapshot.value.mode ?? ''}|` +
+      groups.map((group) => `${group.name}=${group.now}|${group.fixed ?? ''}`).join(';')
+    )
+  })
 
   function dismissToast(id: number) {
     const timer = toastTimers.get(id)
@@ -251,16 +406,44 @@ export function createStore(backend: Backend) {
     scheduleToast(id, meta.remaining)
   }
 
-  function toast(text: string, tone: Toast['tone'] = 'info') {
+  const MAX_TOASTS = 4
+
+  function toast(text: string, tone: Toast['tone'] = 'info', actionOrOptions?: ToastAction | ToastOptions) {
     if (stopped) return
+    const action = actionOrOptions && 'onClick' in actionOrOptions ? actionOrOptions : actionOrOptions?.action
+    const dedupe = actionOrOptions && 'onClick' in actionOrOptions ? true : (actionOrOptions?.dedupe ?? true)
+    // Backend messages arrive in Chinese; the catalog translates a known reason
+    // and leaves unknown text untouched (T8).
+    const shown = tr(text)
+    const duration = tone === 'error' || action ? 5200 : 2800
+    if (dedupe) {
+      const existingIndex = toasts.value.findIndex((item) => item.tone === tone && item.text === shown)
+      if (existingIndex !== -1) {
+        const existing = toasts.value[existingIndex]!
+        const next = toasts.value.slice()
+        next[existingIndex] = { ...existing, action }
+        toasts.value = next
+        const meta = toastMeta.get(existing.id)
+        if (meta && meta.startedAt === 0) {
+          toastMeta.set(existing.id, { remaining: duration, startedAt: 0 })
+        } else {
+          scheduleToast(existing.id, duration)
+        }
+        return
+      }
+    }
     const id = ++toastId
-    for (const item of toasts.value.slice(0, -3)) {
+    const overflow =
+      toasts.value.length >= MAX_TOASTS
+        ? toasts.value.slice(0, toasts.value.length - (MAX_TOASTS - 1))
+        : []
+    for (const item of overflow) {
       clearTimeout(toastTimers.get(item.id))
       toastTimers.delete(item.id)
       toastMeta.delete(item.id)
     }
-    toasts.value = [...toasts.value.slice(-3), { id, tone, text }]
-    scheduleToast(id, tone === 'error' ? 5200 : 2800)
+    toasts.value = [...toasts.value.slice(-(MAX_TOASTS - 1)), { id, tone, text: shown, action }]
+    scheduleToast(id, duration)
   }
 
   function proxyEnvCommand(): { host: string; port: number; command: string } {
@@ -275,7 +458,7 @@ export function createStore(backend: Backend) {
 
   async function copyProxyEnv() {
     const { host, port, command } = proxyEnvCommand()
-    return copyText(command, `已复制终端代理环境变量 (${host}:${port})`)
+    return copyText(command, tr('已复制终端代理环境变量 ({0}:{1})', { 0: host, 1: port }))
   }
 
   /**
@@ -289,7 +472,7 @@ export function createStore(backend: Backend) {
       return true
     } catch (error) {
       console.error(error)
-      toast('无法写入剪贴板', 'error')
+      toast(tr('无法写入剪贴板'), 'error')
       return false
     }
   }
@@ -310,12 +493,141 @@ export function createStore(backend: Backend) {
     if (next.connected) trafficSamples.value = Math.min(HISTORY, trafficSamples.value + 1)
   }
 
-  function apply(next: Snapshot) {
+  /**
+   * Ask the backend for the exit IP through the local mixed port (R40). It must
+   * only run from a click or from the automatic-query watchers below; a
+   * disconnected snapshot or an off switch never sends a request. A failed
+   * lookup keeps the previous result and only reports the reason.
+   */
+  async function queryExitIp(again = false) {
+    // The card is the only manual entry point and it exists only while on (R40).
+    if (stopped || !autoExitIp.value || exitIpBusy.value || !snapshot.value.connected) return undefined
+    const session = generation
+    const signature = exitIpSignature.value
+    exitIpBusy.value = true
+    exitIpError.value = null
+    try {
+      const result = await backend.exitIp()
+      // Turning the option off while the request was in flight hides the card and
+      // drops the answer instead of keeping a result nobody asked for (R40).
+      if (!isCurrent(session) || !autoExitIp.value) return result
+      exitIp.value = result
+      // A switch while the request was in flight already makes this answer old.
+      exitIpStale.value = signature !== exitIpSignature.value
+      return result
+    } catch (error) {
+      if (isCurrent(session) && autoExitIp.value) {
+        exitIpError.value = error instanceof Error ? error.message : String(error)
+      }
+      return undefined
+    } finally {
+      exitIpBusy.value = false
+      // One follow-up at most: a switch that arrived during the request needs a
+      // fresh answer, but a service that keeps changing must not loop.
+      if (!again && isCurrent(session) && autoExitIp.value && snapshot.value.connected && exitIp.value && signature !== exitIpSignature.value) {
+        void queryExitIp(true)
+      }
+    }
+  }
+
+  /** Turn the automatic lookup on or off; stored with the app settings (R40). */
+  async function setAutoExitIp(enabled: boolean) {
+    try {
+      app.value = await backend.setExitIpAuto(enabled)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  /**
+   * Read the aggregated traffic history (R43). A failed read keeps the previous
+   * rows on screen and only reports the reason.
+   */
+  function loadTrafficStats(
+    range: TrafficRange = trafficStatsRange.value.range,
+    from: string | null = trafficStatsRange.value.from,
+    to: string | null = trafficStatsRange.value.to,
+  ) {
+    const request = { range, from, to }
+    trafficStatsRange.value = request
+    pendingTrafficStats = request
+    trafficStatsBusy.value = true
+    trafficStatsError.value = null
+
+    if (trafficStatsLoad) return trafficStatsLoad
+    trafficStatsLoad = readTrafficStats()
+    return trafficStatsLoad
+  }
+
+  async function readTrafficStats() {
+    // Only keep one native read in flight. Range changes replace the queued read.
+    // Yield once so trafficStatsLoad is set even if no request ends up running.
+    await Promise.resolve()
+    let result: TrafficHistoryView | undefined
+    while (pendingTrafficStats) {
+      const request = pendingTrafficStats
+      try {
+        const view = await backend.trafficHistory(request.range, request.from, request.to)
+        if (pendingTrafficStats !== request) continue
+        trafficStats.value = view
+        result = view
+      } catch (error) {
+        if (pendingTrafficStats !== request) continue
+        trafficStatsError.value = error instanceof Error ? error.message : String(error)
+      }
+      pendingTrafficStats = null
+    }
+    trafficStatsLoad = null
+    trafficStatsBusy.value = false
+    return result
+  }
+
+  function releaseTrafficStats() {
+    pendingTrafficStats = null
+    trafficStats.value = null
+    trafficStatsError.value = null
+    trafficStatsBusy.value = false
+  }
+
+  function refreshOpenTrafficStats() {
+    if (!stopped && trafficStatsOpen.value) {
+      return loadTrafficStats()
+    }
+  }
+
+  /** Open the dialog; it reads the rows itself on mount (R43). */
+  function openTrafficStats() {
+    trafficStatsOpen.value = true
+  }
+
+  /** The switch is stored with the other app settings; turning it off keeps rows (R43). */
+  async function setTrafficRecording(enabled: boolean) {
+    try {
+      app.value = await backend.setTrafficRecording(enabled)
+      await refreshOpenTrafficStats()
+      toast(enabled ? t('traffic.recordStarted') : t('traffic.recordStopped'), 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  async function clearTrafficHistory() {
+    try {
+      await backend.clearTrafficHistory()
+      await refreshOpenTrafficStats()
+      toast(t('traffic.cleared'), 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  function shareCatalog(previous: NodeGroup[], incoming: NodeGroup[]) {
     // Polling changes traffic every second, but usually leaves the node catalog intact.
     // Preserve its identity so proxy cards do not sort/render again on every tick.
-    const previous = snapshot.value.node_catalog
+    if (previous === incoming) return previous
     const sameGroup = (a: NodeGroup, b: NodeGroup) =>
-      a.name === b.name && a.kind === b.kind && a.now === b.now && a.sort === b.sort &&
+      a === b || a.name === b.name && a.kind === b.kind && a.now === b.now && a.sort === b.sort &&
+      a.pinnable === b.pinnable && a.fixed === b.fixed && a.hidden === b.hidden &&
       a.group_type === b.group_type && a.icon === b.icon && a.nodes.length === b.nodes.length &&
       a.nodes.every((node, index) => {
         const other = b.nodes[index]!
@@ -324,65 +636,91 @@ export function createStore(backend: Backend) {
           (node.dialer_proxy ?? null) === (other.dialer_proxy ?? null) &&
           node.tags.length === other.tags.length && node.tags.every((tag, i) => tag === other.tags[i])
       })
+    if (incoming.length === previous.length && incoming.every((group, i) => sameGroup(group, previous[i]!))) {
+      return previous
+    }
+    if (!previous.length || !incoming.length) return incoming
     const byName = new Map(previous.map((group) => [group.name, group]))
     let reused = false
-    const catalog = next.node_catalog.map((group) => {
+    const catalog = incoming.map((group) => {
       const old = byName.get(group.name)
-      if (!old || (old !== group && !sameGroup(old, group))) return group
+      if (!old || !sameGroup(old, group)) return group
       reused = true
       return old
     })
-    if (catalog.length === previous.length && catalog.every((group, index) => group === previous[index])) {
-      next = { ...next, node_catalog: previous }
-    } else if (reused) {
-      next = { ...next, node_catalog: catalog }
-    }
+    return reused ? catalog : incoming
+  }
+
+  function apply(incoming: Snapshot) {
+    const next = { ...incoming, node_catalog: shareCatalog(snapshot.value.node_catalog, incoming.node_catalog) }
     const logs = snapshot.value.logs
     if (logs.length === next.logs.length && logs.every((line, index) => {
       const other = next.logs[index]!
-      return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message
+      return line.time_ms === other.time_ms && line.level === other.level && line.message === other.message &&
+        line.hint === other.hint && line.hint_kind === other.hint_kind
     })) {
-      next = { ...next, logs }
+      next.logs = logs
     }
     const installed = snapshot.value.installed
     if (installed.length === next.installed.length && installed.every((app, index) => {
       const other = next.installed[index]!
       return app.package_name === other.package_name && app.name === other.name && app.system === other.system
-    })) next = { ...next, installed }
+    })) next.installed = installed
     for (const key of ['excluded', 'included'] as const) {
       const previous = snapshot.value[key]
       if (previous.length === next[key].length && previous.every((pkg, i) => pkg === next[key][i])) {
-        next = { ...next, [key]: previous }
+        next[key] = previous
       }
     }
     const prevSettings = snapshot.value.settings
     if (prevSettings !== next.settings) {
-      let nextSettings = next.settings
-      if (JSON.stringify(prevSettings.tun) === JSON.stringify(nextSettings.tun)) {
-        nextSettings = { ...nextSettings, tun: prevSettings.tun }
-      }
-      if (JSON.stringify(prevSettings.dns) === JSON.stringify(nextSettings.dns)) {
-        nextSettings = { ...nextSettings, dns: prevSettings.dns }
-      }
-      if (JSON.stringify(prevSettings.system_proxy) === JSON.stringify(nextSettings.system_proxy)) {
-        nextSettings = { ...nextSettings, system_proxy: prevSettings.system_proxy }
-      }
-      if (JSON.stringify(prevSettings.geo_urls) === JSON.stringify(nextSettings.geo_urls)) {
-        nextSettings = { ...nextSettings, geo_urls: prevSettings.geo_urls }
-      }
-      if (JSON.stringify(prevSettings) === JSON.stringify(nextSettings)) {
-        nextSettings = prevSettings
-      }
-      if (nextSettings !== next.settings) {
-        next = { ...next, settings: nextSettings }
+      if (JSON.stringify(prevSettings) === JSON.stringify(next.settings)) {
+        next.settings = prevSettings
+      } else {
+        const settings = next.settings
+        next.settings = {
+          ...settings,
+          tun: reuseEqual(prevSettings.tun, settings.tun),
+          dns: reuseEqual(prevSettings.dns, settings.dns),
+          system_proxy: reuseEqual(prevSettings.system_proxy, settings.system_proxy),
+          geo_urls: reuseEqual(prevSettings.geo_urls, settings.geo_urls),
+        }
       }
     }
-    const prevConfigValues = snapshot.value.config_values
-    if (prevConfigValues !== next.config_values && JSON.stringify(prevConfigValues) === JSON.stringify(next.config_values)) {
-      next = { ...next, config_values: prevConfigValues }
+    next.config_values = reuseEqual(snapshot.value.config_values, next.config_values)
+    const previousProfiles = snapshot.value.profiles
+    if (previousProfiles.length !== next.profiles.length ||
+      previousProfiles.some((profile, index) => profile.id !== next.profiles[index]?.id)) {
+      const ids = new Set(next.profiles.map((profile) => profile.id))
+      for (const id in profileUpdates) {
+        if (!ids.has(id)) delete profileUpdates[id]
+      }
+      for (const id of pendingUpdates.keys()) {
+        if (!ids.has(id)) {
+          pendingUpdates.delete(id)
+          delete busy[`update:${id}`]
+        }
+      }
     }
-    if (Boolean(next.connected) !== Boolean(snapshot.value.connected)) {
+    const wasConnected = Boolean(snapshot.value.connected)
+    const prevActiveId = snapshot.value.active_id
+    const disconnected = wasConnected && !next.connected
+    const profileSwitched = prevActiveId !== null && next.active_id !== prevActiveId
+    if (Boolean(next.connected) !== wasConnected || profileSwitched) {
       connectionSessionId.value += 1
+    }
+    if (disconnected || profileSwitched) {
+      if (diagnosticTarget.value) diagnosticTarget.value = null
+      if (ruleReturn.value) {
+        const onTarget = page.value === ruleReturn.value.targetPage
+        ruleReturn.value = null
+        if (onTarget) {
+          toast(
+            disconnected ? tr('连接已断开，规则返回上下文已重置') : tr('配置已切换，规则返回上下文已重置'),
+            'info',
+          )
+        }
+      }
     }
     if (!next.connected) {
       prevActiveConnections.clear()
@@ -465,7 +803,7 @@ export function createStore(backend: Backend) {
     if (!seen.size) return null
     const ok = [...seen.values()].filter(Boolean).length
     const failed = seen.size - ok
-    return failed ? `测速完成：${ok} 个可用，${failed} 个超时` : `测速完成：${ok} 个节点全部可用`
+    return failed ? tr('测速完成：{0} 个可用，{1} 个超时', { 0: ok, 1: failed }) : tr('测速完成：{0} 个节点全部可用', { 0: ok })
   }
 
   function clearTestProgress() {
@@ -527,18 +865,25 @@ export function createStore(backend: Backend) {
     const result = await run(key, action)
     if (!result) {
       if (attempt) {
-        lastActionError.value = lastRunError.value ?? '操作没有完成'
+        lastActionError.value = lastRunError.value ?? tr('操作没有完成')
         lastFailedAction.value = attempt.action
       }
       return undefined
     }
     const changed = newFailure(before, result)
     const failed = attempt ? !attempt.done(result) : false
-    if (changed) toast(changed, 'error')
-    else if (!failed && success) toast(success, 'success')
+    if (changed) {
+      toast(
+        changed,
+        'error',
+        page.value !== 'logs' ? { label: tr('查看日志'), onClick: () => go('logs') } : undefined,
+      )
+    } else if (!failed && success) {
+      toast(success, 'success')
+    }
     if (attempt) {
       if (failed) {
-        lastActionError.value = result.failure ?? changed ?? '操作没有完成'
+        lastActionError.value = result.failure ?? changed ?? tr('操作没有完成')
         lastFailedAction.value = attempt.action
       } else if (changed) {
         lastActionError.value = changed
@@ -577,6 +922,7 @@ export function createStore(backend: Backend) {
       result = await backend.refresh(id)
       if (!current()) return false
       apply(result)
+      if (!current()) return false
     } catch (error) {
       if (!current()) return false
       console.error(error)
@@ -585,19 +931,26 @@ export function createStore(backend: Backend) {
     }
     let reason: string | null = null
     if (!result) {
-      reason = thrownError ?? '订阅没有更新'
+      reason = thrownError ?? tr('订阅没有更新')
     } else {
       const profile = result.profiles.find((item) => item.id === id)
-      reason = profile ? profile.failure : '没有这份配置'
+      reason = profile ? profile.failure : tr('没有这份配置')
     }
     if (reason) {
       profileUpdates[id] = { state: 'failure', reason }
-      if (!quiet) toast(reason, 'error')
+      if (!quiet) {
+        toast(reason, 'error', {
+          label: tr('重试'),
+          onClick: () => {
+            void trackUpdate(id, false)
+          },
+        })
+      }
       if (!quiet && backend.live) void backend.syncTray()
       return false
     }
     profileUpdates[id] = { state: 'success', reason: null }
-    if (!quiet) toast('订阅已更新', 'success')
+    if (!quiet) toast(tr('订阅已更新'), 'success')
     if (!quiet && backend.live) void backend.syncTray()
     return true
   }
@@ -642,9 +995,23 @@ export function createStore(backend: Backend) {
       )
       if (backend.live) void backend.syncTray()
       if (ids.length) {
+        const failedIds = failed ? ids.filter((id) => profileUpdates[id]?.state === 'failure') : []
         toast(
-          failed ? `更新完成：${done}/${ids.length}，${failed} 个订阅失败` : '全部订阅已更新',
+          failed ? tr('更新完成：{0}/{1}，{2} 个订阅失败', { 0: done, 1: ids.length, 2: failed }) : tr('全部订阅已更新'),
           failed ? 'error' : 'success',
+          failed && failedIds.length
+            ? {
+                label: tr('重试失败'),
+                onClick: () => {
+                  void updateAll(failedIds)
+                },
+              }
+            : failed
+              ? {
+                  label: tr('查看配置'),
+                  onClick: () => go('profiles'),
+                }
+              : undefined,
         )
       }
     } finally {
@@ -667,6 +1034,39 @@ export function createStore(backend: Backend) {
       if (id !== prevId || (prevRunning && !running)) clearTestProgress()
     },
   )
+
+  // Reconnecting gets a fresh automatic lookup when the option is on (R40).
+  watch(
+    () => snapshot.value.connected,
+    (connected, was) => {
+      if (connected && !was && autoExitIp.value) void queryExitIp()
+    },
+  )
+
+  // App settings can arrive after the first snapshot, e.g. a released window
+  // reopening on a live connection or a launch auto-connect that finished first
+  // (R44). The connected watcher above already missed that transition while
+  // `auto_exit_ip` was still unknown, so evaluate once the option becomes known.
+  // The card exists only while the option is on, so disabling it clears the old
+  // answer and any error; enabling again queries the current connection (R40).
+  watch(autoExitIp, (enabled) => {
+    if (!enabled) {
+      exitIp.value = null
+      exitIpStale.value = false
+      exitIpError.value = null
+      return
+    }
+    if (snapshot.value.connected && exitIp.value === null) void queryExitIp()
+  })
+
+  // A node, outbound-mode or profile switch may change the exit (R40). Leaving
+  // the connection (empty catalog) does not mark the last answer.
+  watch(exitIpSignature, (next, prev) => {
+    if (!prev || next === prev) return
+    if (!snapshot.value.connected || snapshot.value.node_catalog.length === 0) return
+    if (exitIp.value) exitIpStale.value = true
+    if (autoExitIp.value) void queryExitIp()
+  })
 
   const isCurrent = (session: number) => !stopped && session === generation
   const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
@@ -716,12 +1116,16 @@ export function createStore(backend: Backend) {
       const shell = await backend.shell()
       if (!isCurrent(session)) return
       theme.value = shell.theme
+      palette.value = normalizePalette(shell.palette)
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
       page.value = resolvePage(shell.last_entry)
     } catch (error) {
       console.error(error)
     }
     if (!isCurrent(session)) return
     applyTheme(theme.value)
+    applyPalette(palette.value)
     try {
       const next = await backend.state()
       if (!isCurrent(session)) return
@@ -782,6 +1186,7 @@ export function createStore(backend: Backend) {
     activeTest.value = null
     pendingTests.value = new Set()
     appUpdate.stop()
+    releaseTrafficStats()
     stopped = true
     generation += 1
     starting = null
@@ -797,8 +1202,9 @@ export function createStore(backend: Backend) {
     toasts.value = []
   }
 
-  function openSettings(tab: SettingsTab) {
+  function openSettings(tab: SettingsTab, focus?: string) {
     settingsTab.value = tab
+    settingsFocus.value = focus ?? null
     go('settings')
   }
 
@@ -813,6 +1219,35 @@ export function createStore(backend: Backend) {
     if (!trimmed) return
     focusProvider.value = { kind, name: trimmed }
     go('resources')
+  }
+
+  /** Jump to Rules and run a one-shot static rule match evaluation (R5). */
+  function openRuleMatch(payload: {
+    target: string
+    dstPort?: number | null
+    process?: string | null
+    fromConnections?: boolean
+  }) {
+    const target = payload.target.trim()
+    if (!target) return
+    diagnosticTarget.value = {
+      kind: 'rule-match',
+      target,
+      dstPort: payload.dstPort ?? null,
+      process: payload.process?.trim() || null,
+    }
+    go('rules')
+  }
+
+  /** Jump to Connections and prefill the search box with a domain/IP from Logs (R5). */
+  function openConnectionSearch(query: string) {
+    const trimmed = query.trim()
+    if (!trimmed) return
+    diagnosticTarget.value = {
+      kind: 'connection-search',
+      query: trimmed,
+    }
+    go('connections')
   }
 
   async function saveEntry(next: PageId) {
@@ -832,12 +1267,32 @@ export function createStore(backend: Backend) {
 
   function go(next: PageId, group?: string) {
     const changed = page.value !== next
+    // Preserve connectionReturn across nested connections -> rules -> resources/proxies hops (R5).
+    const nestedFromRules =
+      connectionReturn.value?.targetPage === 'rules' &&
+      ruleReturn.value != null &&
+      next === ruleReturn.value.targetPage
     if (
       connectionReturn.value &&
       next !== 'connections' &&
-      next !== connectionReturn.value.targetPage
+      next !== connectionReturn.value.targetPage &&
+      !nestedFromRules
     ) {
       connectionReturn.value = null
+    }
+    if (
+      ruleReturn.value &&
+      next !== 'rules' &&
+      next !== ruleReturn.value.targetPage
+    ) {
+      ruleReturn.value = null
+    }
+    if (
+      diagnosticTarget.value &&
+      ((diagnosticTarget.value.kind === 'rule-match' && next !== 'rules') ||
+        (diagnosticTarget.value.kind === 'connection-search' && next !== 'connections'))
+    ) {
+      diagnosticTarget.value = null
     }
     page.value = next
     focusGroup.value = group ?? null
@@ -852,6 +1307,70 @@ export function createStore(backend: Backend) {
     void backend.setTheme(next).catch(console.error)
   }
 
+  function setPalette(next: PalettePreference) {
+    const resolved = normalizePalette(next)
+    palette.value = resolved
+    applyPalette(resolved)
+    void backend.setPalette(resolved).catch(console.error)
+  }
+
+  /** Switching takes effect at once; the backend answers with the effective locale (R42). */
+  async function setLanguage(next: LanguagePreference) {
+    const preference = normalizeLanguage(next)
+    language.value = preference
+    if (preference !== 'system') applyLocale(preference)
+    try {
+      const shell = await backend.setLanguage(preference)
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  /** Re-read the app-level settings a restore may have replaced (R38). */
+  async function refreshShell() {
+    try {
+      const shell = await backend.shell()
+      theme.value = shell.theme
+      palette.value = normalizePalette(shell.palette)
+      language.value = normalizeLanguage(shell.language)
+      applyLocale(normalizeLocale(shell.locale))
+      applyTheme(theme.value)
+      applyPalette(palette.value)
+    } catch (error) {
+      console.error(error)
+    }
+    try {
+      app.value = await backend.appInfo()
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  /** Write a backup file; the returned path is shown to the user. */
+  function exportBackup() {
+    return run('backup', () => backend.exportBackup())
+  }
+
+  /** Restore the whole state from a file. The confirmation happens in the UI. */
+  async function restoreBackup(text: string) {
+    const result = await run('backup', () => backend.restoreBackup(text))
+    if (!result) return undefined
+    await refreshShell()
+    toast(t('backup.restored'), 'success')
+    return result
+  }
+
+  /** Restore a cloud backup; the upload/restore choice is always the user's (R45). */
+  async function restoreRemoteBackup(name: string) {
+    const result = await run('backup', () => backend.restoreRemoteBackup(name))
+    if (!result) return undefined
+    await refreshShell()
+    toast(t('backup.restored'), 'success')
+    return result
+  }
+
   /** Explicit connect used by the command palette; no implicit add-profile dialog. */
   function connect() {
     if (connecting.value || snapshot.value.connected) return Promise.resolve(undefined)
@@ -861,23 +1380,28 @@ export function createStore(backend: Backend) {
     }
     if (!snapshot.value.active_id && snapshot.value.profiles.length > 1) {
       go('profiles')
-      toast('请先选择要使用的配置', 'info')
+      toast(tr('请先选择要使用的配置'), 'info')
       return Promise.resolve(undefined)
     }
     return act('connect', async () => {
       try {
         if (!snapshot.value.active_id) {
-          connectStage.value = '正在初始化内核和配置资源…'
-          const id = snapshot.value.profiles[0]!.id
-          const enabled = await backend.enable(id)
-          if (enabled.active_id !== id || enabled.failure) return enabled
+          connectStage.value = tr('正在初始化内核和配置资源…')
+          if (snapshot.value.profiles.length === 0) {
+            const activated = await backend.useCustomProfile()
+            if (!activated.custom_profile_active || activated.failure) return activated
+          } else {
+            const id = snapshot.value.profiles[0]!.id
+            const enabled = await backend.enable(id)
+            if (enabled.active_id !== id || enabled.failure) return enabled
+          }
         }
-        connectStage.value = isAndroid.value ? '正在建立 VPN，请留意系统授权提示…' : '正在建立代理连接…'
+        connectStage.value = isAndroid.value ? tr('正在建立 VPN，请留意系统授权提示…') : tr('正在建立代理连接…')
         return await backend.connect()
       } finally {
         connectStage.value = ''
       }
-    }, '已连接', {
+    }, tr('已连接'), {
       action: { kind: 'connect' },
       done: (next) => next.connected,
     })
@@ -885,7 +1409,7 @@ export function createStore(backend: Backend) {
 
   function disconnect() {
     if (connecting.value || !snapshot.value.connected) return Promise.resolve(undefined)
-    return act('connect', () => backend.disconnect(), '已断开', {
+    return act('connect', () => backend.disconnect(), tr('已断开'), {
       action: { kind: 'disconnect' },
       done: (next) => !next.connected,
     })
@@ -897,13 +1421,13 @@ export function createStore(backend: Backend) {
     restarting.value = true
     try {
       return await act('connect', async () => {
-        connectStage.value = '正在重启内核…'
+        connectStage.value = tr('正在重启内核…')
         try {
           return await backend.restartKernel()
         } finally {
           connectStage.value = ''
         }
-      }, '内核已重启')
+      }, tr('内核已重启'))
     } finally {
       restarting.value = false
     }
@@ -916,7 +1440,7 @@ export function createStore(backend: Backend) {
       await backend.gcKernel()
       return true
     })
-    if (ok) toast('已回收', 'success')
+    if (ok) toast(tr('已回收'), 'success')
     return ok
   }
 
@@ -959,14 +1483,22 @@ export function createStore(backend: Backend) {
     engines,
     app,
     theme,
+    palette,
+    language,
     page,
     focusGroup,
     focusProvider,
     openProvider,
     connectionReturn,
+    ruleReturn,
+    diagnosticTarget,
+    openRuleMatch,
+    openConnectionSearch,
     connectionSessionId,
     settingsTab,
+    settingsFocus,
     overrideRequest,
+    customNodeImportRequest,
     dnsQueryOpen,
     openSettings,
     loaded,
@@ -996,6 +1528,14 @@ export function createStore(backend: Backend) {
     lastRunError,
     current,
     hasProfiles,
+    customNodes,
+    hasCustomNodes,
+    enabledCustomNodes,
+    customNodesWarnings,
+    customProfileActive,
+    customNodesFeatureEnabled,
+    customNodesVisible,
+    landingPresets,
     isAndroid,
     isLinux,
     isMac,
@@ -1017,6 +1557,12 @@ export function createStore(backend: Backend) {
     stop,
     go,
     setTheme,
+    setPalette,
+    setLanguage,
+    refreshShell,
+    exportBackup,
+    restoreBackup,
+    restoreRemoteBackup,
     connect,
     disconnect,
     retryLastAction,
@@ -1025,6 +1571,11 @@ export function createStore(backend: Backend) {
       const order: ThemePreference[] = ['system', 'light', 'dark']
       const next = order[(order.indexOf(theme.value) + 1) % order.length] ?? 'system'
       setTheme(next)
+      return next
+    },
+    cyclePalette() {
+      const next = PALETTES[(PALETTES.indexOf(palette.value) + 1) % PALETTES.length] ?? 'teal'
+      setPalette(next)
       return next
     },
     refresh: () => run(null, () => backend.state()),
@@ -1043,7 +1594,7 @@ export function createStore(backend: Backend) {
 
     addSubscription: (url: string) => act('add', () => backend.addSubscription(url)),
     addLocal: (name: string, content: string) => act('add', () => backend.addLocal(name, content)),
-    confirmInstall: () => act(null, () => backend.confirmInstall(), '已添加订阅'),
+    confirmInstall: () => act(null, () => backend.confirmInstall(), tr('已添加订阅')),
     cancelInstall: () => act(null, () => backend.cancelInstall()),
     async enable(id: string) {
       const before = snapshot.value
@@ -1054,10 +1605,10 @@ export function createStore(backend: Backend) {
       const switched = result.active_id === id && Boolean(target?.current) && !target?.failure && !target?.override_error
       const changed = newFailure(before, result)
       const targetError = !switched
-        ? (target?.failure || target?.override_error || changed || result.failure || '配置未能启用')
+        ? (target?.failure || target?.override_error || changed || result.failure || tr('配置未能启用'))
         : null
       if (changed || targetError) toast(changed ?? targetError!, 'error')
-      else toast('已切换配置', 'success')
+      else toast(tr('已切换配置'), 'success')
       if (backend.live) void backend.syncTray()
       return result
     },
@@ -1070,14 +1621,80 @@ export function createStore(backend: Backend) {
     setUserAgent: (id: string, userAgent: string) => act(null, () => backend.setUserAgent(id, userAgent)),
     setInterval: (id: string, hours: number) => act(null, () => backend.setInterval(id, hours)),
     setAgeKey: (id: string, key: string) => act(null, () => backend.setAgeKey(id, key)),
-    saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), '配置已保存'),
+    saveContent: (id: string, content: string) => act('content', () => backend.saveContent(id, content), tr('配置已保存')),
     saveOverride: (id: string, text: string) => act('override', () => backend.saveOverride(id, text)),
     /** Re-apply the active profile so a saved 覆写 takes effect without a manual re-enable. */
     applyOverride: (id: string) => act('override', () => backend.enable(id)),
 
+    /** Preview custom-node input outside the action queue so typing never blocks mutations. */
+    previewCustomNodesImport: (raw: string) => backend.previewCustomNodesImport(raw),
+    async importCustomNodes(
+      raw: string,
+      dialer?: DialerTarget | null,
+    ): Promise<CustomNodesImportResult | undefined> {
+      lastRunError.value = null
+      const result = await run('customNodes:import', async () => {
+        const res = await backend.importCustomNodes(raw, dialer)
+        apply(res.snapshot)
+        return res
+      })
+      if (!result) return undefined
+      if (result.imported.length > 0) {
+        customNodesFeatureEnabled.value = true
+        rememberCustomNodesEnabled(true)
+      }
+      if (result.errors.length > 0) {
+        toast(
+          tr('已导入 {0} 个自建节点，{1} 条未识别', {
+            0: result.imported.length,
+            1: result.errors.length,
+          }),
+          'info',
+        )
+      } else {
+        toast(tr('已导入 {0} 个自建节点', { 0: result.imported.length }), 'success')
+      }
+      if (backend.live) void backend.syncTray()
+      return result
+    },
+    saveCustomNode: (input: SaveCustomNodeInput) =>
+      act('customNodes:save', () => backend.saveCustomNode(input), tr('已保存自建节点')),
+    deleteCustomNode: (id: string) =>
+      act(`customNodes:delete:${id}`, () => backend.deleteCustomNode(id), tr('已删除自建节点')),
+    setCustomNodeEnabled: (id: string, enabled: boolean) =>
+      act(`customNodes:toggle:${id}`, () => backend.setCustomNodeEnabled(id, enabled)),
+    setCustomNodesOverlay: (enabled: boolean) =>
+      act(
+        'customNodes:overlay',
+        () => backend.setCustomNodesOverlay(enabled),
+        enabled ? tr('已开启叠加到当前订阅') : tr('已关闭叠加到当前订阅'),
+      ),
+    saveLandingRules: (rulesEnabled: boolean, rules: LandingRule[]) =>
+      act('customNodes:rules', () => backend.saveLandingRules(rulesEnabled, rules), tr('已保存落地分流规则')),
+    useCustomProfile: () =>
+      act('customNodes:useProfile', () => backend.useCustomProfile(), tr('已切换到纯自建节点')),
+    async setCustomNodesFeatureEnabled(enabled: boolean, options?: { silent?: boolean }) {
+      customNodesFeatureEnabled.value = enabled
+      rememberCustomNodesEnabled(enabled)
+      if (!enabled) {
+        if (snapshot.value.custom_profile_active && snapshot.value.profiles.length > 0) {
+          const fallback = snapshot.value.profiles[0]!
+          await act(`enable:${fallback.id}`, () => backend.enable(fallback.id))
+        }
+        if (snapshot.value.custom_nodes.overlay_enabled) {
+          await act('customNodes:overlay', () => backend.setCustomNodesOverlay(false))
+        }
+        if (!options?.silent) {
+          toast(tr('已关闭自建节点，可在「设置 → 通用」重新开启'), 'info')
+        }
+      } else if (!options?.silent) {
+        toast(tr('已开启自建节点与落地'), 'success')
+      }
+    },
+
     selectNode: (group: string, node: string) => act(`select:${group}`, () => backend.selectNode(group, node)),
     /** 恢复自动: a fixed url-test / fallback group picks by its own strategy again (R28). */
-    unfixGroup: (group: string) => act(`select:${group}`, () => backend.unfixGroup(group), '已恢复自动选择'),
+    unfixGroup: (group: string) => act(`select:${group}`, () => backend.unfixGroup(group), tr('已恢复自动选择')),
 
     /** Per-group test stamps the local result time so headers can show "测速 …" (R26). */
     async testGroup(group: string) {
@@ -1121,24 +1738,50 @@ export function createStore(backend: Backend) {
       const result = await run('close-connections', () => backend.closeConnections(ids))
       if (!result) return undefined
       // The backend sets `notice` for this call alone, so a repeated failure count still toasts.
-      if (result.notice) toast(result.notice, 'error')
-      else toast(ids ? `已关闭 ${ids.length} 条连接` : '已关闭全部连接', 'success')
+      if (result.notice) toast(result.notice, 'error', { dedupe: false })
+      else toast(ids ? tr('已关闭 {0} 条连接', { 0: ids.length }) : tr('已关闭全部连接'), 'success')
       return result
     },
     /** Runs outside the action queue: a slow resolver must not hold up other controls. */
     dnsQuery: (name: string, qtype: DnsQueryType) => backend.dnsQuery(name, qtype),
+    /** Read-only static rule match evaluation outside the mutating action queue (R2). */
+    matchRule: (input: RuleMatchInput) => backend.matchRule(input),
+    /** Exit IP lookup, its stale mark and last failure (R40). */
+    exitIp,
+    exitIpStale,
+    exitIpBusy,
+    exitIpError,
+    autoExitIp,
+    queryExitIp,
+    setAutoExitIp,
+    /** Traffic stats dialog, recording switch and clear-all (R43). */
+    trafficStatsOpen,
+    trafficStats,
+    trafficStatsBusy,
+    trafficStatsError,
+    trafficStatsRange,
+    loadTrafficStats,
+    releaseTrafficStats,
+    openTrafficStats,
+    setTrafficRecording,
+    clearTrafficHistory,
     clearLogs: () => act(null, () => backend.clearLogs()),
     flushCache: (which: 'fakeip' | 'dns') =>
-      act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? 'FakeIP 缓存已清除' : 'DNS 缓存已清除'),
+      act(`flush:${which}`, () => backend.flushCache(which), which === 'fakeip' ? tr('FakeIP 缓存已清除') : tr('DNS 缓存已清除')),
     restartKernel,
     gcKernel,
-    saveSettings: (settings: KernelSettings) => act('settings', () => backend.saveSettings(settings), '内核设置已保存'),
+    /**
+     * `quiet` skips the success toast for rows that apply in place and show their
+     * own state; `message` replaces it, e.g. for a reset.
+     */
+    saveSettings: (settings: KernelSettings, options?: { quiet?: boolean; message?: string }) =>
+      act('settings', () => backend.saveSettings(settings), options?.message ?? (options?.quiet ? undefined : tr('内核设置已保存'))),
     async openUwpTool() {
       const ok = await run('uwp', async () => {
         await backend.openUwpTool()
         return true
       })
-      if (ok) toast('已打开 UWP 回环豁免工具', 'success')
+      if (ok) toast(tr('已打开 UWP 回环豁免工具'), 'success')
     },
 
     async setChannel(channel: KernelChannel) {
@@ -1146,7 +1789,7 @@ export function createStore(backend: Backend) {
       try {
         kernel.value = await backend.setChannel(channel)
         if (kernel.value.failure) toast(kernel.value.failure, 'error')
-        else toast(`已切换到${channel === 'stable' ? '稳定版' : '预览版'}内核`, 'success')
+        else toast(tr('已切换到{0}内核', { 0: channel === 'stable' ? tr('稳定版') : tr('预览版') }), 'success')
       } catch (error) {
         toast(String(error), 'error')
       } finally {
@@ -1158,7 +1801,7 @@ export function createStore(backend: Backend) {
       try {
         kernel.value = await backend.refreshKernel()
         if (kernel.value.failure) toast(kernel.value.failure, 'error')
-        else toast('内核已是最新', 'success')
+        else toast(tr('内核已是最新'), 'success')
       } catch (error) {
         toast(String(error), 'error')
       } finally {
@@ -1172,7 +1815,7 @@ export function createStore(backend: Backend) {
       try {
         snapshot.value = await backend.setEngine(engine)
         engines.value = await backend.engines()
-        toast(`已切换到 ${engine === 'rust' ? 'Rust' : 'Mihomo'} 内核`, 'success')
+        toast(tr('已切换到 {0} 内核', { 0: engine === 'rust' ? 'Rust' : 'Mihomo' }), 'success')
       } catch (error) {
         toast(String(error), 'error')
         engines.value = await backend.engines().catch(() => engines.value)
@@ -1204,7 +1847,7 @@ export function createStore(backend: Backend) {
       try {
         iosSelected.value = await backend.iosSelect(engine)
         await this.refreshIosVpn()
-        toast(`已选择 ${engine === 'rust' ? 'Rust' : 'Mihomo'} 扩展`, 'success')
+        toast(tr('已选择 {0} 扩展', { 0: engine === 'rust' ? 'Rust' : 'Mihomo' }), 'success')
       } catch (error) {
         toast(String(error), 'error')
       } finally {
@@ -1288,8 +1931,8 @@ export function createStore(backend: Backend) {
     async setAutostart(enabled: boolean) {
       app.value = await backend.setAutostart(enabled)
     },
-    async setBehavior(closeToTray: boolean, silentStart: boolean) {
-      app.value = await backend.setAppBehavior(closeToTray, silentStart)
+    async setBehavior(closeToTray: boolean, silentStart: boolean, releaseUiOnClose: boolean) {
+      app.value = await backend.setAppBehavior(closeToTray, silentStart, releaseUiOnClose)
     },
   }
 }

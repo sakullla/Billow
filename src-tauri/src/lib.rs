@@ -1,10 +1,14 @@
 mod age_key;
 mod app_update;
+mod backup;
 mod bundled_geo;
+mod custom_nodes;
 mod diagnostics;
 mod engine;
 #[cfg(target_os = "windows")]
 mod elevation;
+mod hotkeys;
+mod i18n;
 mod ios_vpn;
 mod kernel;
 mod mrs;
@@ -13,8 +17,10 @@ mod override_engine;
 mod packed;
 mod profile;
 mod shell;
+mod shutdown;
 mod takeover;
 mod tray;
+mod traffic_history;
 mod resources;
 #[cfg(target_os = "windows")]
 mod win_process;
@@ -32,12 +38,18 @@ use profile::{
     HttpSubscriptionClient, KernelLaunch, KernelSettings, ProcessRuntime, ProfileBook,
     ProfileSnapshot, ProvidersSnapshot, RuleToggle, RulesSnapshot,
 };
-use shell::{ShellState, read_shell_state, resolve_entry, resolve_theme, write_shell_state};
+use shell::{
+    ShellState, read_shell_state, resolve_entry, resolve_language, resolve_palette, resolve_theme,
+    write_shell_state,
+};
 
 struct Store {
     state: Mutex<ShellState>,
     /// Ignore the initial default-size event until the restored size is seen.
     accept_resize: AtomicBool,
+    /// Set only by a successful WebDAV connection test in this session (R38), so
+    /// a restart never shows a stale "usable" state.
+    webdav_ok: AtomicBool,
 }
 
 struct KernelStore {
@@ -56,6 +68,22 @@ struct ProfileStore {
     session: Mutex<ProfileSession>,
 }
 
+/// The traffic aggregate and the file it lives in (R43). The recorder thread
+/// and the stats dialog share it; nothing here depends on a window existing.
+struct TrafficStore {
+    history: Mutex<traffic_history::TrafficHistory>,
+    enabled: std::sync::Condvar,
+}
+
+impl TrafficStore {
+    fn set_enabled(&self, enabled: bool) {
+        lock_traffic(&self.history).set_enabled(enabled);
+        if enabled {
+            self.enabled.notify_one();
+        }
+    }
+}
+
 fn lock(state: &Mutex<ShellState>) -> std::sync::MutexGuard<'_, ShellState> {
     state
         .lock()
@@ -69,6 +97,14 @@ fn lock_kernel(state: &Mutex<KernelManager>) -> std::sync::MutexGuard<'_, Kernel
 }
 
 fn lock_profiles(state: &Mutex<ProfileSession>) -> std::sync::MutexGuard<'_, ProfileSession> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_traffic(
+    state: &Mutex<traffic_history::TrafficHistory>,
+) -> std::sync::MutexGuard<'_, traffic_history::TrafficHistory> {
     state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -125,6 +161,12 @@ fn restore_window(app: &AppHandle, state: &ShellState) {
         eprintln!("Billow main window is missing; the default window stays open");
         return;
     };
+    #[cfg(target_os = "windows")]
+    {
+        // Guard against any native caption bar so custom TitleBar never duplicates close buttons (#3).
+        let _ = window.set_decorations(false);
+        let _ = window.set_shadow(true);
+    }
     if let Some((width, height)) = shell::usable_window_size(state.width, state.height) {
         if let Err(err) = window.set_size(tauri::LogicalSize::new(width, height)) {
             eprintln!("Billow window size restore failed: {err}");
@@ -181,10 +223,13 @@ fn remember_window_size(_app: &AppHandle) {}
 
 fn prepare_shell(app: &tauri::App) {
     let state = load_state(app.handle());
+    // The tray, the guardian and background actions read the process locale.
+    i18n::apply_preference(&state.language);
     restore_window(app.handle(), &state);
     app.manage(Store {
         state: Mutex::new(state),
         accept_resize: AtomicBool::new(false),
+        webdav_ok: AtomicBool::new(false),
     });
 }
 
@@ -317,6 +362,146 @@ fn prepare_profiles(app: &tauri::App) {
     bind_install_links(app.handle());
 }
 
+/// `<app_data_dir>/traffic-history.json`, next to the kernels, never in a backup.
+fn traffic_history_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+    Ok(directory.join("traffic-history.json"))
+}
+
+/// Load the aggregate and mirror the stored switch before any sample arrives.
+///
+/// The recorder samples from a Rust thread (see [`spawn_traffic_recorder`]), so
+/// it keeps running while the window is hidden, closed or released (R43, R44).
+fn prepare_traffic_history(app: &tauri::App) {
+    let enabled = {
+        let store = app.state::<Store>();
+        lock(&store.state).traffic_history
+    };
+    let path = match traffic_history_path(app.handle()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Billow traffic history path unavailable: {err}");
+            std::env::temp_dir()
+                .join(format!("billow-traffic-{}", std::process::id()))
+                .join("traffic-history.json")
+        }
+    };
+    let mut history = traffic_history::TrafficHistory::new(path);
+    history.set_enabled(enabled);
+    if enabled {
+        history.prune(&traffic_history::today());
+        history.save_if_dirty();
+    }
+    app.manage(TrafficStore {
+        history: Mutex::new(history),
+        enabled: std::sync::Condvar::new(),
+    });
+}
+
+/// Forget every sampled counter so a restarted kernel's connections count from
+/// zero instead of subtracting the old session's values.
+///
+/// This does not consume the seed set when recording is switched on: enabling
+/// while the kernel is already running must still adopt the open connections,
+/// otherwise their pre-enable counters would be added in full.
+fn reset_traffic_baselines(app: &AppHandle) {
+    let store = app.state::<TrafficStore>();
+    let mut history = lock_traffic(&store.history);
+    history.reset_baselines();
+    history.save_if_dirty();
+}
+
+fn flush_traffic_history(app: &AppHandle) {
+    let Some(store) = app.try_state::<TrafficStore>() else {
+        return;
+    };
+    lock_traffic(&store.history).save_if_dirty();
+}
+
+/// One sample a second while recording is on and a profile is running. The id
+/// table is dropped on disconnect and on a profile switch, so counters from an
+/// earlier kernel session are never subtracted from the new one.
+fn spawn_traffic_recorder(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut profile: Option<String> = None;
+        let store = handle.state::<TrafficStore>();
+        let mut next_sleep = std::time::Duration::from_secs(1);
+        loop {
+            {
+                let history = lock_traffic(&store.history);
+                if !history.enabled() {
+                    profile = None;
+                    let _history = store
+                        .enabled
+                        .wait_while(history, |history| !history.enabled())
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            }
+            std::thread::sleep(next_sleep);
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
+            if !lock_traffic(&store.history).enabled() {
+                continue;
+            }
+            let context = with_profile(&handle, |session| {
+                if !session.book.is_connected() {
+                    return None;
+                }
+                let (id, name) = session.book.active_profile()?;
+                Some((id, name, ProfileBook::controller_of(&mut session.runtime)))
+            });
+            let Some((id, name, endpoint)) = context else {
+                if profile.take().is_some() {
+                    reset_traffic_baselines(&handle);
+                }
+                next_sleep = if cfg!(target_os = "android") {
+                    std::time::Duration::from_secs(10)
+                } else {
+                    std::time::Duration::from_secs(5)
+                };
+                continue;
+            };
+            next_sleep = traffic_sample_interval();
+            if profile.as_deref() != Some(id.as_str()) {
+                // A profile switch starts a new kernel; its connections restart
+                // their counters, so the old ids must not contribute.
+                reset_traffic_baselines(&handle);
+                profile = Some(id);
+            }
+            let Some(endpoint) = endpoint else {
+                // The kernel is between restarts; keep the table for the next read.
+                continue;
+            };
+            let revision = {
+                let history = lock_traffic(&store.history);
+                if !history.enabled() {
+                    continue;
+                }
+                history.sample_revision()
+            };
+            let Ok(connections) = diagnostics::fetch_connection_traffic(&endpoint) else {
+                // A failed read is not "no connections": keeping the baselines
+                // avoids counting the same bytes twice when it recovers.
+                continue;
+            };
+            let date = traffic_history::today();
+            let mut history = lock_traffic(&store.history);
+            if history.sample_revision() == revision {
+                history.record(&date, &name, &connections);
+            }
+        }
+    });
+}
+
 fn accept_install_link(app: &AppHandle, link: &str) {
     let store = app.state::<ProfileStore>();
     let snapshot = {
@@ -377,28 +562,86 @@ fn prepare_kernel(app: &tauri::App) {
     });
 }
 
-#[tauri::command]
-fn shell_state(app: AppHandle) -> ShellState {
-    let store = app.state::<Store>();
-    lock(&store.state).clone()
+/// Window chrome state plus the language the UI should render in.
+#[derive(serde::Serialize)]
+struct ShellInfo {
+    theme: String,
+    palette: String,
+    last_entry: String,
+    language: String,
+    /// Effective locale after resolving "follow system" (R42).
+    locale: &'static str,
+}
+
+impl ShellInfo {
+    fn of(state: &ShellState) -> Self {
+        Self {
+            theme: state.theme.clone(),
+            palette: state.palette.clone(),
+            last_entry: state.last_entry.clone(),
+            language: state.language.clone(),
+            locale: i18n::locale().tag(),
+        }
+    }
 }
 
 #[tauri::command]
-fn set_theme(app: AppHandle, theme: String) -> ShellState {
+fn shell_state(app: AppHandle) -> ShellInfo {
+    let store = app.state::<Store>();
+    let state = lock(&store.state).clone();
+    ShellInfo::of(&state)
+}
+
+#[tauri::command]
+fn set_theme(app: AppHandle, theme: String) -> ShellInfo {
     let resolved = resolve_theme(&theme).to_string();
     let store = app.state::<Store>();
-    let snapshot = {
+    let state = {
         let mut state = lock(&store.state);
         state.theme = resolved.clone();
         persist(&app, &state);
         state.clone()
     };
     apply_native_theme(&app, &resolved);
-    snapshot
+    ShellInfo::of(&state)
+}
+
+#[tauri::command]
+fn set_palette(app: AppHandle, palette: String) -> ShellInfo {
+    let resolved = resolve_palette(&palette).to_string();
+    let store = app.state::<Store>();
+    let state = {
+        let mut state = lock(&store.state);
+        state.palette = resolved;
+        persist(&app, &state);
+        state.clone()
+    };
+    ShellInfo::of(&state)
+}
+
+/// Switch the UI language now: the webview, the tray and later background text
+/// all read the locale, so no restart is needed (R42).
+#[tauri::command(async)]
+fn set_language(app: AppHandle, language: String) -> ShellInfo {
+    let resolved = resolve_language(&language).to_string();
+    let state = {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        state.language = resolved.clone();
+        persist(&app, &state);
+        state.clone()
+    };
+    i18n::apply_preference(&resolved);
+    let snapshot = with_profile(&app, |session| session.book.snapshot());
+    refresh_tray(&app, &snapshot);
+    // The notification, the tile and the widget render their own text in this
+    // language, so they are republished with the new one (R41, R42).
+    publish_android(&app);
+    ShellInfo::of(&state)
 }
 
 #[tauri::command(async)]
-fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
+fn set_last_entry(app: AppHandle, entry: String) -> ShellInfo {
     let store = app.state::<Store>();
     let mut state = lock(&store.state);
     let entry = resolve_entry(&entry);
@@ -406,7 +649,7 @@ fn set_last_entry(app: AppHandle, entry: String) -> ShellState {
         state.last_entry = entry.to_string();
         persist(&app, &state);
     }
-    state.clone()
+    ShellInfo::of(&state)
 }
 
 #[tauri::command(async)]
@@ -458,40 +701,32 @@ fn kernel_engines(app: AppHandle) -> engine::EnginesState {
 fn switch_engine_now(app: &AppHandle, target: Engine) -> Result<ProfileSnapshot, String> {
     let (mihomo, rust) = engine_paths(app);
     let store = app.state::<ProfileStore>();
-    let result = {
-        let mut session = lock_profiles(&store.session);
-        prepare_runtime_paths(&mut session, mihomo, rust);
-        let ProfileSession {
-            book,
-            runtime,
-            proxy,
-            tun,
-            vpn,
-        } = &mut *session;
-        book.switch_engine(target, runtime, proxy, tun, vpn)
-    };
-    let snapshot = match result {
-        Ok(snapshot) => snapshot,
-        Err(message) => {
-            // The switch may have restored the previous session or dropped
-            // takeover; the UI still needs that final state, then the reason.
-            let snapshot = profile_snapshot(app);
-            refresh_tray(app, &snapshot);
-            let _ = app.emit("profile-changed", &snapshot);
-            return Err(message);
-        }
-    };
-    refresh_tray(app, &snapshot);
-    let _ = app.emit("profile-changed", &snapshot);
-    Ok(snapshot)
+    let mut session = lock_profiles(&store.session);
+    prepare_runtime_paths(&mut session, mihomo, rust);
+    let ProfileSession {
+        book,
+        runtime,
+        proxy,
+        tun,
+        vpn,
+    } = &mut *session;
+    book.switch_engine(target, runtime, proxy, tun, vpn)
 }
 
 #[tauri::command]
 async fn set_kernel_engine(app: AppHandle, engine: String) -> Result<ProfileSnapshot, String> {
     let target = Engine::parse(&engine)?;
-    tauri::async_runtime::spawn_blocking(move || switch_engine_now(&app, target))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = switch_engine_now(&app, target);
+        // A failed switch can roll back or release takeover; publish the final state either way.
+        let snapshot = result.as_ref().cloned().unwrap_or_else(|_| profile_snapshot(&app));
+        publish_android(&app);
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", &snapshot);
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(async)]
@@ -573,23 +808,28 @@ fn activate_profile(app: &AppHandle, id: &str, update: bool) -> ProfileSnapshot 
     let (mihomo, rust) = engine_paths(app);
     let client = subscription_client(&app);
     let store = app.state::<ProfileStore>();
-    let mut session = lock_profiles(&store.session);
-    prepare_runtime_paths(&mut session, mihomo, rust);
-    let ProfileSession {
-        book,
-        runtime,
-        proxy,
-        tun,
-        vpn,
-    } = &mut *session;
-    if update {
-        book.update(id, &client, runtime);
-    } else {
-        book.enable(id, &client, runtime);
-    }
-    book.apply_release(proxy, tun, vpn);
-    book.reconcile_system_proxy(proxy);
-    book.snapshot()
+    let snapshot = {
+        let mut session = lock_profiles(&store.session);
+        prepare_runtime_paths(&mut session, mihomo, rust);
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = &mut *session;
+        if update {
+            book.update(id, &client, runtime);
+        } else {
+            book.enable(id, &client, runtime);
+        }
+        book.apply_release(proxy, tun, vpn);
+        book.reconcile_system_proxy(proxy);
+        book.snapshot()
+    };
+    // Switching profiles can release or re-establish the VPN (R41).
+    publish_android(app);
+    snapshot
 }
 
 fn with_session(
@@ -653,9 +893,115 @@ fn save_profile_override(app: AppHandle, id: String, text: String) -> ProfileSna
     with_profile(&app, |session| session.book.save_override(&id, &text))
 }
 
+fn with_session_result<T>(
+    app: &AppHandle,
+    change: impl FnOnce(&mut ProfileSession) -> Result<T, String>,
+) -> Result<T, String> {
+    let (mihomo, rust) = engine_paths(app);
+    let store = app.state::<ProfileStore>();
+    let mut session = lock_profiles(&store.session);
+    prepare_runtime_paths(&mut session, mihomo, rust);
+    let outcome = change(&mut session);
+    if outcome.is_ok() {
+        let ProfileSession { book, proxy, .. } = &mut *session;
+        book.reconcile_system_proxy(proxy);
+    }
+    outcome
+}
+
+#[tauri::command(async)]
+fn preview_custom_nodes_import(app: AppHandle, raw: String) -> custom_nodes::ParseNodesResult {
+    with_profile(&app, |session| session.book.preview_custom_nodes_import(&raw))
+}
+
+#[tauri::command(async)]
+fn import_custom_nodes(
+    app: AppHandle,
+    raw: String,
+    dialer: Option<custom_nodes::DialerTarget>,
+) -> Result<profile::CustomNodesImportResult, String> {
+    let result = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.import_custom_nodes(&raw, dialer, runtime)
+    })?;
+    publish_android(&app);
+    Ok(result)
+}
+
+#[tauri::command(async)]
+fn save_custom_node(
+    app: AppHandle,
+    input: profile::SaveCustomNodeInput,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.save_custom_node(input, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn delete_custom_node(app: AppHandle, id: String) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.delete_custom_node(&id, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn set_custom_node_enabled(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_custom_node_enabled(&id, enabled, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn set_custom_nodes_overlay(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.set_custom_nodes_overlay(enabled, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn save_landing_rules(
+    app: AppHandle,
+    rules_enabled: bool,
+    rules: Vec<custom_nodes::LandingRule>,
+) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.save_landing_rules(rules_enabled, rules, runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn use_custom_profile(app: AppHandle) -> Result<ProfileSnapshot, String> {
+    let snapshot = with_session_result(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.use_custom_profile(runtime)
+    })?;
+    publish_android(&app);
+    Ok(snapshot)
+}
+
 #[tauri::command(async)]
 fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
-    Ok(with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -664,12 +1010,14 @@ fn connect_session(app: AppHandle) -> Result<ProfileSnapshot, String> {
             vpn,
         } = session;
         book.connect(runtime, proxy, tun, vpn)
-    }))
+    });
+    publish_android(&app);
+    Ok(snapshot)
 }
 
 #[tauri::command(async)]
 fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -678,7 +1026,20 @@ fn disconnect_session(app: AppHandle) -> ProfileSnapshot {
             vpn,
         } = session;
         book.disconnect(runtime, proxy, tun, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
+}
+
+/// The tray, a global shortcut and the Android tile all toggle the same way
+/// (R39, R41): connect when disconnected, disconnect when connected.
+fn toggle_connection(app: &AppHandle) -> Result<ProfileSnapshot, String> {
+    let connected = with_profile(app, |session| session.book.is_connected());
+    if connected {
+        Ok(disconnect_session(app.clone()))
+    } else {
+        connect_session(app.clone())
+    }
 }
 
 static APP_UPDATING: AtomicBool = AtomicBool::new(false);
@@ -735,33 +1096,39 @@ fn set_tun_enabled(app: AppHandle, enabled: bool) -> Result<ProfileSnapshot, Str
 
 #[tauri::command(async)]
 fn exclude_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.exclude_package(&package_name, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 #[tauri::command(async)]
 fn include_package(app: AppHandle, package_name: String) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.include_package(&package_name, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 /// Android app access control: `mode` is `exclude` or `include`, `packages` replaces that mode's list.
 #[tauri::command(async)]
 fn set_app_rules(app: AppHandle, mode: String, packages: Vec<String>) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book, runtime, vpn, ..
         } = session;
         book.set_app_rules(&mode, &packages, runtime, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 #[tauri::command(async)]
@@ -1145,6 +1512,18 @@ fn dns_query(app: AppHandle, name: String, qtype: String) -> diagnostics::DnsQue
     diagnostics::dns_query(endpoint.as_ref(), &name, &qtype, std::time::Duration::from_secs(8))
 }
 
+/// Queries the exit IP through the local mixed port (R40). It only runs when the
+/// user asks for it: disconnected Billow rejects without sending a request, and
+/// the network call runs without the session lock.
+#[tauri::command(async)]
+fn exit_ip(app: AppHandle) -> Result<diagnostics::ExitIp, String> {
+    let Some(port) = with_profile(&app, |session| session.book.connected_mixed_port()) else {
+        return Err(i18n::tr(i18n::Key::ExitIpNotConnected).to_string());
+    };
+    let proxy = format!("http://127.0.0.1:{port}");
+    diagnostics::query_exit_ip(&proxy, std::time::Duration::from_secs(8))
+}
+
 #[tauri::command(async)]
 fn kernel_rules(app: AppHandle) -> RulesSnapshot {
     with_session_raw(&app, |session| {
@@ -1160,6 +1539,29 @@ fn set_rule_disabled(app: AppHandle, command: RuleToggle) -> Result<RulesSnapsho
         let ProfileSession { book, runtime, .. } = session;
         book.set_rule_disabled(command, runtime)
     })
+}
+
+/// Read-only static rule match evaluation (explicit rules + cached local RULE-SET penetration).
+/// Captures runtime state under a short lock, then fetches live rules and evaluates off-lock.
+#[tauri::command]
+async fn match_rule(
+    app: AppHandle,
+    input: diagnostics::RuleMatchInput,
+) -> Result<diagnostics::RuleMatchResult, String> {
+    let ctx = with_session_raw(&app, |session| {
+        let ProfileSession { book, runtime, .. } = session;
+        book.rule_match_context(runtime)
+    })?;
+    // Validate input early before making a controller HTTP round-trip.
+    diagnostics::parse_rule_target(&input)?;
+    let home = kernel_home(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let kernel_rules = diagnostics::fetch_rules(&ctx.endpoint)?;
+        let rows = diagnostics::rule_rows(&ctx.config_rules, &kernel_rules, &ctx.disabled_rules);
+        diagnostics::match_rules(&rows, &ctx.config_yaml, home.as_deref(), &input)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command(async)]
@@ -1207,12 +1609,17 @@ impl Drop for ProviderActionGuard {
 #[tauri::command]
 async fn provider_action(app: AppHandle, kind: String, name: String, action: String) -> Result<(), String> {
     let endpoint = controller(&app)?;
+    let updates_nodes = kind != "rule";
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = ProviderActionGuard::acquire();
         diagnostics::provider_action(&endpoint, &kind, &name, &action)
     })
     .await
-    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())??;
+    if updates_nodes {
+        with_profile(&app, |session| session.runtime.invalidate_node_catalog());
+    }
+    Ok(())
 }
 
 /// Nodes of a proxy provider (live from the kernel) or rules of a rule provider (from its file).
@@ -1367,6 +1774,232 @@ fn refresh_kernel(app: AppHandle) -> KernelStatus {
     manager.sync(channel, &GithubReleaseClient::new())
 }
 
+// ─────────────────────── 备份与恢复 (R38) ───────────────────────
+
+fn backup_platform() -> String {
+    takeover::ClientPlatform::current().as_str().to_string()
+}
+
+/// Build the live state as a backup document.
+fn current_backup(app: &AppHandle) -> Result<backup::BackupFile, String> {
+    let profiles = with_profile(app, |session| session.book.backup_state());
+    let shell = {
+        let store = app.state::<Store>();
+        lock(&store.state).clone()
+    };
+    Ok(backup::compose(
+        profiles,
+        &shell,
+        &app.package_info().version.to_string(),
+        &backup_platform(),
+        &backup::device_name(),
+        diagnostics::now_ms(),
+    ))
+}
+
+fn backup_directory(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    export_directory(app).map_err(|_| i18n::tr(i18n::Key::BackupExportFailed).to_string())
+}
+
+/// Write a backup with profiles, 覆写, age keys, kernel settings and app
+/// settings. WebDAV credentials, window size, traffic history and kernel/GEO
+/// files are deliberately left out.
+#[tauri::command(async)]
+fn export_backup(app: AppHandle) -> Result<String, String> {
+    let directory = backup_directory(&app)?;
+    let file = current_backup(&app)?;
+    backup::export(&directory, &file, diagnostics::now_ms())
+        .map(|path| path.display().to_string())
+}
+
+/// Restore a whole backup. Validation happens first; a failure partway restores
+/// the state captured before the attempt, so nothing is half applied. After a
+/// success the restored shortcut bindings are registered and the recorder
+/// follows the restored switch (R38, R39, R43).
+#[tauri::command(async)]
+fn restore_backup_text(app: AppHandle, text: String) -> Result<ProfileSnapshot, String> {
+    let version = app.package_info().version.to_string();
+    let mut file = backup::parse(&text, &version)?;
+    let shell_before = {
+        let store = app.state::<Store>();
+        lock(&store.state).clone()
+    };
+    let profiles_before = with_profile(&app, |session| session.book.backup_state());
+    backup::merge_platform(&mut file, &backup_platform(), &profiles_before, &shell_before);
+    let shell_after = file.shell.apply(&shell_before);
+
+    let (mihomo, rust) = engine_paths(&app);
+    let client = subscription_client(&app);
+    let outcome = {
+        let store = app.state::<ProfileStore>();
+        let mut session = lock_profiles(&store.session);
+        prepare_runtime_paths(&mut session, mihomo, rust);
+        let ProfileSession {
+            book,
+            runtime,
+            proxy,
+            tun,
+            vpn,
+        } = &mut *session;
+        match book.restore_backup(file.profiles, &client, runtime) {
+            Ok(snapshot) => {
+                // Restored settings can defer a takeover release or move the
+                // listener port; follow the new state instead of the old one.
+                book.apply_release(proxy, tun, vpn);
+                book.reconcile_system_proxy(proxy);
+                Ok(snapshot)
+            }
+            Err(reason) => Err(reason),
+        }
+    };
+    let restored = match outcome {
+        Ok(snapshot) => snapshot,
+        Err(reason) => {
+            return Err(i18n::tr_args(i18n::Key::BackupRestoreFailed, &[("reason", &reason)]))
+        }
+    };
+
+    let path = shell_path(&app)?;
+    if let Err(error) = write_shell_state(&path, &shell_after) {
+        // The profile half is already written, so undo it too.
+        let _ = with_profile(&app, |session| {
+            let ProfileSession { book, runtime, proxy, .. } = session;
+            let undone = book.restore_backup(profiles_before, &client, runtime);
+            book.reconcile_system_proxy(proxy);
+            undone
+        });
+        return Err(i18n::tr_args(i18n::Key::BackupRestoreFailed, &[("reason", &error)]));
+    }
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        *state = shell_after.clone();
+        if let Some(traffic) = app.try_state::<TrafficStore>() {
+            traffic.set_enabled(state.traffic_history);
+        }
+    }
+    // Restored bindings have to work at once instead of waiting for the next
+    // launch, and the recorder mirrors the restored switch immediately. The file
+    // carries the switch only, never traffic history rows (R39, R43).
+    //
+    // Bindings this session still holds that the file no longer contains are
+    // dropped first, so a restore never leaves an invisible old shortcut or
+    // blocks the restored combination with its own previous one.
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        for (action, combo) in &shell_before.hotkeys {
+            if shell_after.hotkeys.get(action) != Some(combo) {
+                let _ = app.global_shortcut().unregister(combo.as_str());
+            }
+        }
+    }
+    hotkeys::prepare(&app);
+    i18n::apply_preference(&shell_after.language);
+    apply_native_theme(&app, &shell_after.theme);
+    refresh_tray(&app, &restored);
+    Ok(restored)
+}
+
+#[derive(serde::Serialize)]
+struct WebdavInfo {
+    url: String,
+    username: String,
+    password: String,
+    /// A connection test succeeded in this session; any change resets it.
+    available: bool,
+}
+
+fn webdav_info(app: &AppHandle) -> WebdavInfo {
+    let store = app.state::<Store>();
+    let state = lock(&store.state);
+    WebdavInfo {
+        url: state.webdav_url.clone(),
+        username: state.webdav_user.clone(),
+        password: state.webdav_password.clone(),
+        available: store.webdav_ok.load(Ordering::SeqCst),
+    }
+}
+
+fn webdav_account(app: &AppHandle) -> backup::WebDavAccount {
+    let store = app.state::<Store>();
+    backup::WebDavAccount::from_state(&lock(&store.state))
+}
+
+#[tauri::command]
+fn webdav_settings(app: AppHandle) -> WebdavInfo {
+    webdav_info(&app)
+}
+
+/// Save the WebDAV account. Changing it makes a previous test result stale;
+/// saving the same values again (as the button flows do) keeps it.
+#[tauri::command(async)]
+fn set_webdav_settings(
+    app: AppHandle,
+    url: String,
+    username: String,
+    password: String,
+) -> WebdavInfo {
+    let changed = {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        let changed = state.webdav_url != url
+            || state.webdav_user != username
+            || state.webdav_password != password;
+        state.webdav_url = url;
+        state.webdav_user = username;
+        state.webdav_password = password;
+        persist(&app, &state);
+        changed
+    };
+    if changed {
+        app.state::<Store>().webdav_ok.store(false, Ordering::SeqCst);
+    }
+    webdav_info(&app)
+}
+
+#[derive(serde::Serialize)]
+struct WebdavTest {
+    available: bool,
+    error: Option<String>,
+}
+
+/// "Test connection": create the folder when needed, then read it. Only a
+/// success marks WebDAV as usable.
+#[tauri::command(async)]
+fn test_webdav(app: AppHandle) -> WebdavTest {
+    let result = backup::test_connection(&webdav_account(&app));
+    let available = result.is_ok();
+    app.state::<Store>().webdav_ok.store(available, Ordering::SeqCst);
+    WebdavTest {
+        available,
+        error: result.err(),
+    }
+}
+
+/// Upload the current state. Only a user action starts an upload; nothing is
+/// uploaded automatically (R45).
+#[tauri::command(async)]
+fn upload_backup(app: AppHandle) -> Result<String, String> {
+    if !app.state::<Store>().webdav_ok.load(Ordering::SeqCst) {
+        return Err(i18n::tr(i18n::Key::WebdavNotTested).to_string());
+    }
+    let file = current_backup(&app)?;
+    let text = backup::to_text(&file)?;
+    backup::upload(&webdav_account(&app), &text, diagnostics::now_ms())
+}
+
+#[tauri::command(async)]
+fn list_remote_backups(app: AppHandle) -> Result<Vec<backup::RemoteBackup>, String> {
+    backup::list(&webdav_account(&app))
+}
+
+#[tauri::command(async)]
+fn restore_remote_backup(app: AppHandle, name: String) -> Result<ProfileSnapshot, String> {
+    let text = backup::download(&webdav_account(&app), &name)?;
+    restore_backup_text(app, text)
+}
+
 #[derive(serde::Serialize)]
 struct AppInfo {
     version: String,
@@ -1374,15 +2007,27 @@ struct AppInfo {
     autostart: Option<bool>,
     close_to_tray: bool,
     silent_start: bool,
+    /// Desktop only; hidden while "stay in tray" is off (R44).
+    release_ui_on_close: bool,
+    /// Query the exit IP automatically; off by default (R40).
+    auto_exit_ip: bool,
+    /// Keep a traffic history; off by default (R43).
+    traffic_history: bool,
     data_dir: Option<String>,
 }
 
 #[tauri::command]
 fn app_info(app: AppHandle) -> AppInfo {
-    let (close_to_tray, silent_start) = {
+    let (close_to_tray, silent_start, release_ui_on_close, auto_exit_ip, traffic_history) = {
         let store = app.state::<Store>();
         let state = lock(&store.state);
-        (state.close_to_tray, state.silent_start)
+        (
+            state.close_to_tray,
+            state.silent_start,
+            state.release_ui_on_close,
+            state.auto_exit_ip,
+            state.traffic_history,
+        )
     };
     AppInfo {
         version: app.package_info().version.to_string(),
@@ -1390,6 +2035,9 @@ fn app_info(app: AppHandle) -> AppInfo {
         autostart: autostart_enabled(&app),
         close_to_tray,
         silent_start,
+        release_ui_on_close,
+        auto_exit_ip,
+        traffic_history,
         data_dir: app
             .path()
             .app_config_dir()
@@ -1427,15 +2075,104 @@ fn set_autostart(app: AppHandle, enabled: bool) -> AppInfo {
 }
 
 #[tauri::command]
-fn set_app_behavior(app: AppHandle, close_to_tray: bool, silent_start: bool) -> AppInfo {
+fn set_app_behavior(
+    app: AppHandle,
+    close_to_tray: bool,
+    silent_start: bool,
+    release_ui_on_close: bool,
+) -> AppInfo {
     {
         let store = app.state::<Store>();
         let mut state = lock(&store.state);
         state.close_to_tray = close_to_tray;
         state.silent_start = silent_start;
+        state.release_ui_on_close = release_ui_on_close;
         persist(&app, &state);
     }
     app_info(app)
+}
+
+/// Turns the optional automatic exit IP query on or off (R40). Off by default;
+/// the frontend is the only caller, and nothing runs in the background.
+#[tauri::command]
+fn set_exit_ip_auto(app: AppHandle, enabled: bool) -> AppInfo {
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.auto_exit_ip != enabled {
+            state.auto_exit_ip = enabled;
+            persist(&app, &state);
+        }
+    }
+    app_info(app)
+}
+
+/// One stats read: the switch, the retained window and the aggregated rows.
+#[derive(serde::Serialize)]
+struct TrafficHistoryView {
+    enabled: bool,
+    retention_days: i64,
+    today: String,
+    from: String,
+    to: String,
+    entries: Vec<traffic_history::DatedTrafficEntry>,
+}
+
+/// Rows for the selected range. The dialog groups them by profile, group or node;
+/// the daily bars use the same rows so the totals always agree.
+#[tauri::command(async)]
+fn traffic_history(
+    app: AppHandle,
+    range: String,
+    from: Option<String>,
+    to: Option<String>,
+) -> TrafficHistoryView {
+    let today = traffic_history::today();
+    let (start, end) = traffic_history::range_bounds(&range, from.as_deref(), to.as_deref(), &today);
+    let (enabled, entries) = {
+        let store = app.state::<TrafficStore>();
+        let mut history = lock_traffic(&store.history);
+        // The stats view is the one place that always sees the clock, so expired
+        // days are dropped here even while recording is off.
+        history.load_if_needed();
+        history.prune(&today);
+        let enabled = history.enabled();
+        let entries = history.entries(&start, &end);
+        if !enabled {
+            history.save_if_dirty();
+            history.release_if_idle();
+        }
+        (enabled, entries)
+    };
+    TrafficHistoryView {
+        enabled,
+        retention_days: traffic_history::RETENTION_DAYS,
+        today,
+        from: start,
+        to: end,
+        entries,
+    }
+}
+
+/// Turn recording on or off (R43). Off keeps the recorded rows on disk.
+#[tauri::command(async)]
+fn set_traffic_history(app: AppHandle, enabled: bool) -> AppInfo {
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.traffic_history != enabled {
+            state.traffic_history = enabled;
+            persist(&app, &state);
+            app.state::<TrafficStore>().set_enabled(enabled);
+        }
+    }
+    app_info(app)
+}
+
+#[tauri::command(async)]
+fn clear_traffic_history(app: AppHandle) {
+    let store = app.state::<TrafficStore>();
+    lock_traffic(&store.history).clear();
 }
 
 fn with_session_raw<T>(app: &AppHandle, change: impl FnOnce(&mut ProfileSession) -> T) -> T {
@@ -1452,12 +2189,24 @@ fn spawn_auto_update(app: &AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
             let now = diagnostics::now_ms();
             let due = with_profile(&handle, |session| session.book.due_profiles(now));
             if due.is_empty() {
                 continue;
             }
             let snapshot = refresh_ids(&handle, &due);
+            if shutdown::suppress_background_work() {
+                continue;
+            }
+            // A background subscription update can change node names and the
+            // active profile while no window exists (R44), so the tray is told.
+            refresh_tray(&handle, &snapshot);
             let _ = handle.emit("profile-changed", snapshot);
         }
     });
@@ -1480,25 +2229,37 @@ fn spawn_kernel_guardian(app: &AppHandle) {
             book.auto_connect_on_launch(runtime, proxy, tun, vpn)
         });
         if let Some(snapshot) = auto {
-            refresh_tray(&handle, &snapshot);
-            let _ = handle.emit("profile-changed", snapshot);
+            if !shutdown::suppress_background_work() {
+                refresh_tray(&handle, &snapshot);
+                let _ = handle.emit("profile-changed", snapshot);
+            }
         }
+        let mut next_sleep = std::time::Duration::from_secs(3);
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let exited = with_profile(&handle, |session| {
+            std::thread::sleep(next_sleep);
+            if shutdown::is_system_shutting_down() {
+                break;
+            }
+            if shutdown::suppress_background_work() {
+                continue;
+            }
+            let (exited, connected, guard_pending) = with_profile(&handle, |session| {
                 let ProfileSession { book, runtime, .. } = session;
-                if !(book.is_connected() || book.startup_guard_pending()) {
-                    return false;
+                let connected = book.is_connected();
+                let guard_pending = book.startup_guard_pending();
+                if !(connected || guard_pending) {
+                    return (false, false, false);
                 }
                 if !runtime.running() {
-                    return true;
+                    return (true, connected, guard_pending);
                 }
-                if book.startup_guard_pending() {
+                if guard_pending {
                     book.check_startup_uptime(runtime.kernel_uptime_secs());
                 }
-                false
+                (false, connected, guard_pending)
             });
-            if !exited {
+            next_sleep = kernel_guardian_interval(connected, guard_pending);
+            if !exited || shutdown::suppress_background_work() {
                 continue;
             }
             let recovered = with_session_raw(&handle, |session| {
@@ -1512,11 +2273,116 @@ fn spawn_kernel_guardian(app: &AppHandle) {
                 book.recover_crashed_kernel(runtime, proxy, tun, vpn)
             });
             if let Some(snapshot) = recovered {
-                refresh_tray(&handle, &snapshot);
-                let _ = handle.emit("profile-changed", snapshot);
+                if !shutdown::suppress_background_work() {
+                    refresh_tray(&handle, &snapshot);
+                    let _ = handle.emit("profile-changed", snapshot);
+                }
             }
         }
     });
+}
+
+/// Set just before the main window is destroyed to give its memory back (R44).
+/// The "last window gone" exit request that follows must not quit Billow, while
+/// a later Quit or Cmd+Q still does.
+static RELEASING_UI: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(desktop, test))]
+fn build_main_window_config(
+    configs: &[tauri::utils::config::WindowConfig],
+    width: f64,
+    height: f64,
+    target_os: &str,
+) -> tauri::utils::config::WindowConfig {
+    let mut cfg = configs
+        .iter()
+        .find(|item| item.label == "main")
+        .cloned()
+        .unwrap_or_else(|| tauri::utils::config::WindowConfig {
+            label: "main".to_string(),
+            title: "Billow".to_string(),
+            min_width: Some(shell::MIN_WIDTH),
+            min_height: Some(shell::MIN_HEIGHT),
+            resizable: true,
+            fullscreen: false,
+            ..Default::default()
+        });
+    cfg.width = width;
+    cfg.height = height;
+    match target_os {
+        "windows" => {
+            cfg.decorations = false;
+            cfg.shadow = true;
+        }
+        "macos" => {
+            cfg.title_bar_style = tauri::utils::TitleBarStyle::Overlay;
+            cfg.hidden_title = true;
+        }
+        _ => {}
+    }
+    cfg
+}
+
+/// Build the main window again after lightweight mode released it (R44).
+///
+/// Reuses the packaged platform window config (`tauri.windows.conf.json` /
+/// `tauri.macos.conf.json`) so Windows stays undecorated and macOS keeps its
+/// overlay traffic lights instead of duplicating native titlebar controls (#3).
+#[cfg(desktop)]
+fn create_main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let (width, height, theme) = {
+        let store = app.state::<Store>();
+        let state = lock(&store.state);
+        let (width, height) = shell::usable_window_size(state.width, state.height)
+            .unwrap_or((shell::DEFAULT_WIDTH, shell::DEFAULT_HEIGHT));
+        (width, height, state.theme.clone())
+    };
+    let cfg = build_main_window_config(&app.config().app.windows, width, height, std::env::consts::OS);
+    let builder = match tauri::WebviewWindowBuilder::from_config(app, &cfg) {
+        Ok(builder) => builder,
+        Err(_) => {
+            let b = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Billow")
+            .inner_size(width, height)
+            .min_inner_size(shell::MIN_WIDTH, shell::MIN_HEIGHT)
+            .resizable(true);
+            #[cfg(target_os = "windows")]
+            let b = b.decorations(false).shadow(true);
+            #[cfg(target_os = "macos")]
+            let b = b
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true);
+            b
+        }
+    };
+    match builder.build() {
+        Ok(window) => {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = window.set_decorations(false);
+                let _ = window.set_shadow(true);
+            }
+            if let Some(icon) = app.default_window_icon() {
+                let _ = window.set_icon(icon.clone());
+            }
+            apply_native_theme(app, &theme);
+            Some(window)
+        }
+        Err(err) => {
+            eprintln!("Billow window was not recreated: {err}");
+            None
+        }
+    }
+}
+
+/// The main window, recreated on demand when lightweight mode released it.
+#[cfg(desktop)]
+fn main_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    app.get_webview_window("main").or_else(|| create_main_window(app))
 }
 
 #[cfg(desktop)]
@@ -1524,86 +2390,211 @@ fn show_main(app: &AppHandle) {
     // A hidden app on macOS must be activated before its window can take focus.
     #[cfg(target_os = "macos")]
     let _ = app.show();
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    let Some(window) = main_window(app) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// Show the window and ask the page to open a view ("settings", "profiles", "add-profile", …).
 #[cfg(desktop)]
 fn navigate_main(app: &AppHandle, target: &str) {
+    if app.get_webview_window("main").is_none() {
+        // A released window restores the stored page while it boots, so the page
+        // the tray asked for is written first; a fresh page cannot hear the
+        // navigation event yet (R44).
+        let page = if target == "add-profile" { "profiles" } else { target };
+        let entry = resolve_entry(page);
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.last_entry != entry {
+            state.last_entry = entry.to_string();
+            persist(app, &state);
+        }
+    }
     show_main(app);
     let _ = app.emit("tray-navigate", target.to_string());
 }
 
+/// One action the tray menu or a global shortcut asks the backend to run (R39).
+#[cfg(desktop)]
+enum BackendAction {
+    Show,
+    /// Show the window and open a page (or the add-profile dialog).
+    Navigate(String),
+    /// Show the window, or hide it when it is already in front.
+    ToggleWindow,
+    Quit,
+    ToggleConnection,
+    SystemProxy,
+    Tun,
+    Mode(String),
+    Engine(String),
+    Profile(String),
+    Node { group: String, node: String },
+}
+
+#[cfg(desktop)]
+impl BackendAction {
+    fn from_tray(command: tray::TrayCommand) -> Self {
+        use tray::TrayCommand;
+        match command {
+            TrayCommand::Show => Self::Show,
+            TrayCommand::Navigate(target) => Self::Navigate(target),
+            TrayCommand::ToggleConnection => Self::ToggleConnection,
+            TrayCommand::SystemProxy => Self::SystemProxy,
+            TrayCommand::Tun => Self::Tun,
+            TrayCommand::Mode(mode) => Self::Mode(mode),
+            TrayCommand::Engine(id) => Self::Engine(id),
+            TrayCommand::Profile(id) => Self::Profile(id),
+            TrayCommand::Node { group, node } => Self::Node { group, node },
+            TrayCommand::Quit => Self::Quit,
+        }
+    }
+
+    fn from_hotkey(action: hotkeys::Action) -> Self {
+        match action {
+            hotkeys::Action::ToggleConnection => Self::ToggleConnection,
+            hotkeys::Action::SystemProxy => Self::SystemProxy,
+            hotkeys::Action::Tun => Self::Tun,
+            hotkeys::Action::ToggleWindow => Self::ToggleWindow,
+            hotkeys::Action::ModeRule | hotkeys::Action::ModeGlobal | hotkeys::Action::ModeDirect => {
+                Self::Mode(action.mode().unwrap_or("rule").to_string())
+            }
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn toggle_main_window(app: &AppHandle) {
+    // Lightweight mode leaves no window; the first press brings it back (R44).
+    let Some(window) = app.get_webview_window("main") else {
+        show_main(app);
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if visible && !minimized {
+        let _ = window.hide();
+    } else {
+        show_main(app);
+    }
+}
+
+/// The reason a shortcut-triggered action should announce (R39).
+///
+/// Most takeover failures are not an `Err`: a denied TUN authorization, a
+/// refused system proxy or a kernel that will not start all come back as
+/// `Ok(snapshot)` with `snapshot.failure` set, so a shortcut compares the
+/// reason before and after its action. Only a reason this action raised or
+/// changed is announced; an unchanged banner left over from an earlier attempt
+/// is not repeated, and the tray path never notifies.
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn shortcut_failure(
+    notify_failure: bool,
+    previous: Option<&str>,
+    snapshot: &ProfileSnapshot,
+) -> Option<String> {
+    if !notify_failure {
+        return None;
+    }
+    let current = snapshot.failure.as_deref()?;
+    if previous == Some(current) {
+        return None;
+    }
+    Some(current.to_string())
+}
+
+/// The one place a tray click and a global shortcut meet (R39): run the action,
+/// refresh the tray, then tell the window what changed.
+#[cfg(desktop)]
+fn dispatch(app: &AppHandle, action: BackendAction, notify_failure: bool) {
+    match action {
+        BackendAction::Show => show_main(app),
+        BackendAction::Navigate(target) => navigate_main(app, &target),
+        BackendAction::ToggleWindow => toggle_main_window(app),
+        BackendAction::Quit => {
+            release_proxy_on_exit(app);
+            app.exit(0);
+        }
+        action => {
+            // Connecting, switching profiles (which may download) and node
+            // selection talk to the kernel; keep them off the menu thread so the
+            // tray never freezes.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                // Only a shortcut pays for the "before" reading; the tray never
+                // notifies, so it skips it and keeps its previous behaviour.
+                let previous = if notify_failure {
+                    with_profile(&app, |session| session.book.snapshot().failure)
+                } else {
+                    None
+                };
+                let snapshot = match apply_action(&app, action) {
+                    Ok(snapshot) => {
+                        // A shortcut can fire while the window is hidden, so a
+                        // failure the action raised also goes to a system
+                        // notification (R39).
+                        if let Some(message) =
+                            shortcut_failure(notify_failure, previous.as_deref(), &snapshot)
+                        {
+                            hotkeys::notify_failure(&app, &message);
+                        }
+                        snapshot
+                    }
+                    Err(message) => {
+                        // A shortcut can fire while the window is hidden, so the
+                        // reason also goes to a system notification (R39).
+                        if notify_failure {
+                            hotkeys::notify_failure(&app, &message);
+                        }
+                        with_profile(&app, |session| session.book.report_failure(message))
+                    }
+                };
+                refresh_tray(&app, &snapshot);
+                let _ = app.emit("profile-changed", snapshot);
+            });
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn apply_action(app: &AppHandle, action: BackendAction) -> Result<ProfileSnapshot, String> {
+    match action {
+        BackendAction::ToggleConnection => toggle_connection(app),
+        BackendAction::SystemProxy => {
+            let on = with_profile(app, |session| session.book.snapshot().system_proxy);
+            Ok(set_system_proxy(app.clone(), !on))
+        }
+        BackendAction::Tun => {
+            let on = with_profile(app, |session| session.book.snapshot().tun);
+            set_tun_enabled(app.clone(), !on)
+        }
+        BackendAction::Mode(mode) => Ok(set_outbound_mode(app.clone(), mode)),
+        BackendAction::Engine(id) => switch_engine_now(app, Engine::parse(&id)?),
+        BackendAction::Profile(id) => Ok(enable_profile(app.clone(), id)),
+        BackendAction::Node { group, node } => Ok(select_profile_node(app.clone(), group, node)),
+        BackendAction::Show
+        | BackendAction::Navigate(_)
+        | BackendAction::ToggleWindow
+        | BackendAction::Quit => unreachable!("handled synchronously"),
+    }
+}
+
 #[cfg(desktop)]
 fn tray_action(app: &AppHandle, id: &str) {
-    use tray::TrayCommand;
     let Some(command) = tray::parse(id) else {
         return;
     };
-    match command {
-        TrayCommand::Show => {
-            show_main(app);
-            return;
-        }
-        TrayCommand::Navigate(target) => {
-            navigate_main(app, &target);
-            return;
-        }
-        TrayCommand::Quit => {
-            release_proxy_on_exit(app);
-            app.exit(0);
-            return;
-        }
-        _ => {}
-    }
-    // Connecting, switching profiles (which may download) and node selection talk
-    // to the kernel; keep them off the menu thread so the tray never freezes.
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let snapshot = match command {
-            TrayCommand::ToggleConnection => {
-                let connected = with_profile(&app, |session| session.book.snapshot().connected);
-                if connected {
-                    disconnect_session(app.clone())
-                } else {
-                    connect_session(app.clone()).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
-                }
-            }
-            TrayCommand::SystemProxy => {
-                let on = with_profile(&app, |session| session.book.snapshot().system_proxy);
-                set_system_proxy(app.clone(), !on)
-            }
-            TrayCommand::Tun => {
-                let on = with_profile(&app, |session| session.book.snapshot().tun);
-                set_tun_enabled(app.clone(), !on).unwrap_or_else(|message| with_profile(&app, |s| s.book.report_failure(message)))
-            }
-            TrayCommand::Mode(mode) => set_outbound_mode(app.clone(), mode),
-            TrayCommand::Engine(id) => {
-                let target = match Engine::parse(&id) {
-                    Ok(target) => target,
-                    Err(message) => {
-                        let snapshot = with_profile(&app, |session| session.book.report_failure(message));
-                        refresh_tray(&app, &snapshot);
-                        let _ = app.emit("profile-changed", snapshot);
-                        return;
-                    }
-                };
-                match switch_engine_now(&app, target) {
-                    Ok(snapshot) => snapshot,
-                    Err(message) => with_profile(&app, |session| session.book.report_failure(message)),
-                }
-            }
-            TrayCommand::Profile(id) => enable_profile(app.clone(), id),
-            TrayCommand::Node { group, node } => select_profile_node(app.clone(), group, node),
-            TrayCommand::Show | TrayCommand::Navigate(_) | TrayCommand::Quit => return,
-        };
-        refresh_tray(&app, &snapshot);
-        let _ = app.emit("profile-changed", snapshot);
-    });
+    dispatch(app, BackendAction::from_tray(command), false);
+}
+
+/// A global shortcut runs through the same dispatcher as the tray (R39).
+#[cfg(desktop)]
+fn run_hotkey(app: &AppHandle, action: hotkeys::Action) {
+    dispatch(app, BackendAction::from_hotkey(action), true);
 }
 
 #[cfg(desktop)]
@@ -1638,7 +2629,7 @@ fn build_menu_items(
 
 #[cfg(desktop)]
 fn tray_menu(app: &AppHandle, snapshot: &ProfileSnapshot) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let items = build_menu_items(app, &tray::model(snapshot))?;
+    let items = build_menu_items(app, &tray::model(snapshot, i18n::locale()))?;
     let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|item| item.as_ref()).collect();
     tauri::menu::Menu::with_items(app, &refs)
 }
@@ -1651,7 +2642,7 @@ fn refresh_tray(app: &AppHandle, snapshot: &ProfileSnapshot) {
     if let Ok(menu) = tray_menu(app, snapshot) {
         let _ = tray.set_menu(Some(menu));
     }
-    let _ = tray.set_tooltip(Some(tray::tooltip(snapshot)));
+    let _ = tray.set_tooltip(Some(tray::tooltip(snapshot, i18n::locale())));
 }
 
 #[cfg(not(desktop))]
@@ -1688,7 +2679,7 @@ fn prepare_tray(app: &tauri::App) {
         return;
     };
     let mut builder = TrayIconBuilder::with_id("billow")
-        .tooltip(tray::tooltip(&snapshot))
+        .tooltip(tray::tooltip(&snapshot, i18n::locale()))
         .menu(&menu)
         // Left click opens the window on Windows/Linux; macOS menu bar items
         // conventionally open their menu on any click.
@@ -1725,6 +2716,19 @@ fn sync_tray(app: AppHandle) {
     refresh_tray(&app, &snapshot);
 }
 
+/// The global shortcut bindings, whether this platform can use them and why not (R39).
+#[tauri::command(async)]
+fn hotkey_settings(app: AppHandle) -> hotkeys::Settings {
+    hotkeys::settings(&app)
+}
+
+/// Bind one action to a combination, or clear it with an empty string. A
+/// rejected edit leaves the stored binding untouched and returns its reason.
+#[tauri::command(async)]
+fn set_hotkey(app: AppHandle, action: String, combo: String) -> Result<hotkeys::Settings, String> {
+    hotkeys::set(&app, &action, &combo)
+}
+
 fn release_proxy_on_exit(app: &AppHandle) {
     let store = app.state::<ProfileStore>();
     let mut session = lock_profiles(&store.session);
@@ -1732,6 +2736,13 @@ fn release_proxy_on_exit(app: &AppHandle) {
     book.prepare_exit();
     runtime.shutdown();
     book.release_lingering_proxy(proxy);
+}
+
+pub(crate) fn cleanup_for_exit(app: &AppHandle) {
+    shutdown::run_exit_cleanup_once(|| {
+        release_proxy_on_exit(app);
+        flush_traffic_history(app);
+    });
 }
 
 fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
@@ -1745,15 +2756,28 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
         tauri::WindowEvent::ScaleFactorChanged { .. } => remember_window_size(app),
         tauri::WindowEvent::CloseRequested { api, .. } => {
             remember_window_size(app);
-            let to_tray = {
+            let (to_tray, release_ui) = {
                 let store = app.state::<Store>();
-                lock(&store.state).close_to_tray
+                let state = lock(&store.state);
+                (state.close_to_tray, shell::releases_ui_on_close(&state))
             };
             if !APP_UPDATING.load(Ordering::SeqCst) && to_tray && has_tray(app) {
                 api.prevent_close();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                let Some(window) = app.get_webview_window("main") else {
+                    return;
+                };
+                if release_ui {
+                    // Lightweight mode: destroy the webview so its memory goes
+                    // back, and leave the tray, shortcuts, the kernel and
+                    // background tasks running (R44).
+                    RELEASING_UI.store(true, Ordering::SeqCst);
+                    if let Err(err) = window.destroy() {
+                        RELEASING_UI.store(false, Ordering::SeqCst);
+                        eprintln!("Billow window was not released: {err}");
+                    }
+                    return;
                 }
+                let _ = window.hide();
                 return;
             }
             release_proxy_on_exit(app);
@@ -1762,17 +2786,335 @@ fn on_window_event(app: &AppHandle, label: &str, event: tauri::WindowEvent) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Android tile, widget and notification (R41)
+//
+// Kotlin owns the three surfaces; Rust owns the connection. A tap is handed to
+// the same toggle the tray uses, and every state the surfaces render is pushed
+// from here after it changed.
+// ---------------------------------------------------------------------------
+
+/// Set once the Tauri runtime exists. A tile tap before that opens the app,
+/// which is also the only place the VPN permission dialog can appear (R41).
+#[cfg(target_os = "android")]
+static ANDROID_APP: Mutex<Option<AppHandle>> = Mutex::new(None);
+
+/// True while a tap connects, so the tile can show 连接中 instead of the
+/// disconnected state the cancelled kernel would otherwise report (R41).
+#[cfg(target_os = "android")]
+static ANDROID_CONNECTING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+fn android_app() -> Option<AppHandle> {
+    ANDROID_APP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Push what the tile, the widget and the notification show (R41). Cheap enough
+/// for a two-second ticker: an unchanged status never crosses into Kotlin.
+#[cfg(target_os = "android")]
+fn publish_android(app: &AppHandle) {
+    let link = with_profile(app, |session| {
+        session.book.refresh_link_rates(&mut session.runtime);
+        session.book.link_status()
+    });
+    // A tap that is connecting shows 连接中 instead of the state of the kernel
+    // it is about to replace.
+    let connecting = ANDROID_CONNECTING.load(Ordering::SeqCst);
+    takeover::publish_status(takeover::AndroidStatus::of(
+        &link,
+        connecting,
+        i18n::locale(),
+    ));
+}
+
+#[cfg(not(target_os = "android"))]
+fn publish_android(_app: &AppHandle) {}
+
+fn android_screen_interactive() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_SCREEN_INTERACTIVE.load(Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
+fn traffic_sample_interval() -> std::time::Duration {
+    #[cfg(target_os = "android")]
+    {
+        if android_screen_interactive() {
+            std::time::Duration::from_secs(3)
+        } else {
+            std::time::Duration::from_secs(15)
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        std::time::Duration::from_secs(1)
+    }
+}
+
+fn kernel_guardian_interval(connected: bool, guard_pending: bool) -> std::time::Duration {
+    if guard_pending {
+        return std::time::Duration::from_secs(3);
+    }
+    if !connected {
+        return std::time::Duration::from_secs(15);
+    }
+    if cfg!(target_os = "android") && !android_screen_interactive() {
+        std::time::Duration::from_secs(20)
+    } else {
+        std::time::Duration::from_secs(5)
+    }
+}
+
+/// The tile and the widget keep showing the two rates while no window exists,
+/// so the publish loop lives in Rust, not in the page (R41).
+/// Backs off aggressively when disconnected or when the screen is off to save battery.
+#[cfg(target_os = "android")]
+fn spawn_android_status(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        let interactive = android_screen_interactive();
+        let connected = with_profile(&handle, |session| session.book.is_connected());
+        let wait = if !interactive {
+            std::time::Duration::from_secs(30)
+        } else if !connected {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_secs(2)
+        };
+        std::thread::sleep(wait);
+        if android_screen_interactive() {
+            publish_android(&handle);
+        }
+    });
+}
+
+/// Ask the running page to open `target`, or store it so a window that is not
+/// loaded yet restores it — the same path the tray uses (R41).
+#[cfg(target_os = "android")]
+fn open_page(app: &AppHandle, target: &str) {
+    let entry = resolve_entry(target);
+    {
+        let store = app.state::<Store>();
+        let mut state = lock(&store.state);
+        if state.last_entry != entry {
+            state.last_entry = entry.to_string();
+            persist(app, &state);
+        }
+    }
+    let _ = app.emit("tray-navigate", target.to_string());
+}
+
+/// One tap on the Quick Settings tile or the widget switch (R41).
+///
+/// 0 = handled in the background, 1 = the app has to show a page (or ask for the
+/// VPN permission), 2 = the runtime is not ready yet, try again after it starts.
+#[cfg(target_os = "android")]
+fn android_tap(in_app: bool) -> i32 {
+    let Some(app) = android_app() else {
+        return 2;
+    };
+    let (connected, has_profile) = with_profile(&app, |session| {
+        (
+            session.book.is_connected(),
+            session.book.active_profile().is_some(),
+        )
+    });
+    match takeover::plan_tap(
+        connected,
+        has_profile,
+        takeover::android_has_consent(),
+        in_app,
+    ) {
+        takeover::TapPlan::Toggle => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if !connected {
+                    ANDROID_CONNECTING.store(true, Ordering::SeqCst);
+                    publish_android(&handle);
+                }
+                let result = toggle_connection(&handle);
+                ANDROID_CONNECTING.store(false, Ordering::SeqCst);
+                let snapshot = match result {
+                    Ok(snapshot) => snapshot,
+                    Err(message) => with_profile(&handle, |session| {
+                        session.book.report_failure(message)
+                    }),
+                };
+                // A failed connect leaves the tile on 未连接 and hands the
+                // reason to the notification (R41).
+                publish_android(&handle);
+                refresh_tray(&handle, &snapshot);
+                let _ = handle.emit("profile-changed", snapshot);
+            });
+            0
+        }
+        takeover::TapPlan::OpenProfiles => {
+            open_page(&app, "profiles");
+            1
+        }
+        takeover::TapPlan::OpenForConsent => 1,
+    }
+}
+
+/// `BillowVpnBridge.tap` from the tile and the widget switch (R41).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeTap(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    in_app: i32,
+) -> i32 {
+    android_tap(in_app != 0)
+}
+
+/// The system revoked our VPN permission: disconnect and keep the app, the tile,
+/// the widget and the notification in step (R41).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeRevoked(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        ANDROID_CONNECTING.store(false, Ordering::SeqCst);
+        let snapshot = disconnect_session(app.clone());
+        publish_android(&app);
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", snapshot);
+    });
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_RECOVERY: Mutex<()> = Mutex::new(());
+
+#[cfg(target_os = "android")]
+static ANDROID_SCREEN_INTERACTIVE: AtomicBool = AtomicBool::new(true);
+
+/// Serialize wake checks and handovers so a concurrent read-only probe cannot drop a roam.
+#[cfg(target_os = "android")]
+fn recover_android_connection(app: AppHandle, change: diagnostics::AndroidRecovery) {
+    let _guard = ANDROID_RECOVERY.lock().unwrap_or_else(|err| err.into_inner());
+    let endpoint = with_profile(&app, |session| {
+        session.book.is_connected().then(|| ProfileBook::controller_of(&mut session.runtime))
+    });
+    let Some(endpoint) = endpoint else { return };
+    if endpoint.as_ref().is_some_and(|ep| diagnostics::android_controller_ready(ep, change)) {
+        return;
+    }
+
+    let snapshot = with_session_raw(&app, |session| {
+        let ProfileSession { book, runtime, proxy, tun, vpn } = session;
+        if !book.is_connected() || ProfileBook::controller_of(runtime) != endpoint {
+            return None;
+        }
+        if !runtime.running() {
+            return book.recover_crashed_kernel(runtime, proxy, tun, vpn);
+        }
+        // Recheck before replacing a live tunnel after a slow or interrupted request.
+        if endpoint.as_ref().is_some_and(diagnostics::controller_responds) {
+            return None;
+        }
+        book.restart_kernel(runtime, proxy, tun, vpn).ok()
+    });
+    if let Some(snapshot) = snapshot {
+        publish_android(&app);
+        refresh_tray(&app, &snapshot);
+        let _ = app.emit("profile-changed", snapshot);
+    }
+}
+
+/// The default route or its DNS configuration changed.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeNetworkChanged(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    route_changed: i32,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    let change = if route_changed != 0 {
+        diagnostics::AndroidRecovery::Route
+    } else {
+        diagnostics::AndroidRecovery::Dns
+    };
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, change));
+}
+
+/// App resumed to foreground: verify the kernel is still alive if marked connected.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeResumeCheck(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || recover_android_connection(app, diagnostics::AndroidRecovery::Check));
+}
+
+/// Screen interactive state changed: refresh widget immediately on wake, back off when off.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeScreenInteractive(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    interactive: i32,
+) {
+    let is_on = interactive != 0;
+    let was_on = ANDROID_SCREEN_INTERACTIVE.swap(is_on, Ordering::SeqCst);
+    if is_on && !was_on {
+        if let Some(app) = android_app() {
+            tauri::async_runtime::spawn_blocking(move || publish_android(&app));
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
     if elevation::run_helper_if_requested() { return; }
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_opener::init());
+    #[cfg(target_os = "windows")]
+    shutdown::configure_main_process();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    // The single-instance plugin must come before deep links (R44): a second
+    // launch hands its arguments over and exits, and the deep-link feature lets
+    // the running instance stage a `billow://` link it was started with.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(
+            tauri_plugin_single_instance::Builder::new()
+                .callback(|app, _argv, _cwd| {
+                    // Bring the running window back, recreating it when
+                    // lightweight mode released it (R44).
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || show_main(&handle));
+                })
+                .build(),
+        )
+        .plugin(tauri_plugin_deep_link::init());
+    #[cfg(not(desktop))]
+    let builder = builder.plugin(tauri_plugin_deep_link::init());
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Global shortcuts (R39) and the notification a failed action sends.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         Some(vec!["--autostart"]),
@@ -1794,6 +3136,8 @@ pub fn run() {
             ios_vpn_prepare_active,
             shell_state,
             set_theme,
+            set_palette,
+            set_language,
             set_last_entry,
             kernel_state,
             kernel_engines,
@@ -1810,6 +3154,14 @@ pub fn run() {
             update_profile,
             save_profile_override,
             preview_profile_override,
+            preview_custom_nodes_import,
+            import_custom_nodes,
+            save_custom_node,
+            delete_custom_node,
+            set_custom_node_enabled,
+            set_custom_nodes_overlay,
+            save_landing_rules,
+            use_custom_profile,
             connect_session,
             disconnect_session,
             set_system_proxy,
@@ -1844,16 +3196,32 @@ pub fn run() {
             close_connection,
             close_connections,
             dns_query,
+            exit_ip,
             kernel_rules,
+            match_rule,
             set_rule_disabled,
             clear_logs,
             export_logs,
+            export_backup,
+            restore_backup_text,
+            webdav_settings,
+            set_webdav_settings,
+            test_webdav,
+            upload_backup,
+            list_remote_backups,
+            restore_remote_backup,
             clear_notice,
             refresh_kernel,
             app_info,
             set_autostart,
             set_app_behavior,
+            set_exit_ip_auto,
+            traffic_history,
+            set_traffic_history,
+            clear_traffic_history,
             sync_tray,
+            hotkey_settings,
+            set_hotkey,
             flush_cache,
             restart_kernel,
             kernel_gc,
@@ -1870,10 +3238,15 @@ pub fn run() {
             prepare_shell(app);
             prepare_kernel(app);
             prepare_profiles(app);
+            prepare_traffic_history(app);
+            #[cfg(target_os = "windows")]
+            shutdown::spawn_windows_shutdown_listener(app.handle().clone());
             spawn_auto_update(app.handle());
             #[cfg(desktop)]
             {
                 prepare_tray(app);
+                // Bindings from the previous run come back before the window loads (R39).
+                hotkeys::prepare(app.handle());
                 let silent = {
                     let store = app.state::<Store>();
                     lock(&store.state).silent_start
@@ -1886,14 +3259,33 @@ pub fn run() {
                 }
             }
             spawn_kernel_guardian(app.handle());
+            spawn_traffic_recorder(app.handle());
+            // The tile and widget exist without a window, so they get their
+            // first status as soon as the runtime is up (R41).
+            #[cfg(target_os = "android")]
+            {
+                if let Ok(mut slot) = ANDROID_APP.lock() {
+                    *slot = Some(app.handle().clone());
+                }
+                publish_android(app.handle());
+                spawn_android_status(app.handle());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building Billow")
         .run(|app, event| match event {
             tauri::RunEvent::WindowEvent { label, event, .. } => on_window_event(app, &label, event),
+            // Lightweight mode leaves no window, which normally means "quit".
+            // Only the request raised by our own destroy is ignored; Quit and
+            // Cmd+Q still exit (R44).
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
+                if code.is_none() && RELEASING_UI.swap(false, Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
             // Clicking the Dock icon (or relaunching from Finder/Launchpad) while the
-            // window sits hidden in the menu bar brings it back.
+            // window sits hidden or released brings it back.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { has_visible_windows, .. } => {
                 if !has_visible_windows {
@@ -1902,7 +3294,62 @@ pub fn run() {
             }
             // Dock "Quit", Cmd+Q and system logout skip the window close path;
             // never leave the OS proxy pointing at a kernel that is gone.
-            tauri::RunEvent::Exit => release_proxy_on_exit(app),
+            tauri::RunEvent::Exit => {
+                cleanup_for_exit(app);
+                #[cfg(target_os = "windows")]
+                shutdown::terminate_current_process_if_shutting_down();
+            }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed(reason: &str) -> ProfileSnapshot {
+        ProfileSnapshot {
+            failure: Some(reason.to_string()),
+            ..ProfileSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn a_shortcut_announces_only_a_reason_its_own_action_raised() {
+        let clean = ProfileSnapshot::default();
+        // Nothing failed: nothing to announce.
+        assert_eq!(shortcut_failure(true, None, &clean), None);
+        // A failure that was not there before is announced.
+        assert_eq!(shortcut_failure(true, None, &failed("授权被拒绝")), Some("授权被拒绝".to_string()));
+        // A different reason replaces the old one, so it is announced again.
+        assert_eq!(
+            shortcut_failure(true, Some("授权被拒绝"), &failed("内核没有启动")),
+            Some("内核没有启动".to_string())
+        );
+        // The same stale banner is not repeated on the next press.
+        assert_eq!(shortcut_failure(true, Some("授权被拒绝"), &failed("授权被拒绝")), None);
+        // The tray path never sends a notification, even when the action failed.
+        assert_eq!(shortcut_failure(false, None, &failed("授权被拒绝")), None);
+        assert_eq!(shortcut_failure(false, Some("授权被拒绝"), &failed("内核没有启动")), None);
+    }
+
+    #[test]
+    fn recreated_main_window_preserves_undecorated_windows_and_overlay_macos_chrome() {
+        let win_cfg = build_main_window_config(&[], 1080.0, 720.0, "windows");
+        assert_eq!(win_cfg.label, "main");
+        assert_eq!(win_cfg.width, 1080.0);
+        assert_eq!(win_cfg.height, 720.0);
+        assert!(!win_cfg.decorations, "Windows main window must remain undecorated (#3)");
+        assert!(win_cfg.shadow);
+
+        let mut base = tauri::utils::config::WindowConfig::default();
+        base.label = "main".to_string();
+        base.decorations = true;
+        let win_from_base = build_main_window_config(&[base.clone()], 960.0, 680.0, "windows");
+        assert!(!win_from_base.decorations);
+
+        let mac_cfg = build_main_window_config(&[base], 960.0, 680.0, "macos");
+        assert_eq!(mac_cfg.title_bar_style, tauri::utils::TitleBarStyle::Overlay);
+        assert!(mac_cfg.hidden_title);
+    }
 }

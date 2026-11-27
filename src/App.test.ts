@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
@@ -821,16 +821,18 @@ describe('App', () => {
     await wrapper.find('.tabbar [data-page="settings"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="settings-tabs"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="open-dns"]').text()).toContain('跟随配置')
+    // Seven grouped categories on desktop-compact (General, System & TUN, Ports & Network, Proxy & Speed, DNS, Kernel, Backup & About).
+    expect(wrapper.findAll('.settings-root .srow-cat')).toHaveLength(7)
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="open-network"]').text()).toContain(':7890')
     await wrapper.find('[data-testid="open-dns"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('.settings-subhead h1').text()).toBe('DNS')
     expect(wrapper.find('[data-testid="dns-settings"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-dns"]').exists()).toBe(false)
     await wrapper.find('[data-testid="settings-back"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="settings-network"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="open-tun"]').text()).toContain('关闭')
+    expect(wrapper.find('[data-testid="open-network"]').text()).toContain(':7890')
   })
 
   it('opens TUN settings from home and saves a changed stack', async () => {
@@ -841,10 +843,10 @@ describe('App', () => {
     expect(tunCard.exists()).toBe(true)
     // The default leaves the stack to the kernel (Mips on mihomo v1.19.32+).
     expect(tunCard.find('[data-value=""]').attributes('aria-checked')).toBe('true')
+    // Choices apply at once; there is no separate save step.
     await tunCard.find('[data-value="gvisor"]').trigger('click')
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
     await settle(600)
-    expect(wrapper.find('[data-testid="save-tun"]').exists()).toBe(false)
+    expect(storeOf(wrapper).snapshot.value.settings.tun.stack).toBe('gvisor')
     expect(wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').attributes('aria-checked')).toBe('true')
   })
 
@@ -859,12 +861,12 @@ describe('App', () => {
     await toggle.trigger('click')
     await settle(600)
     expect(wrapper.find('[data-testid="dns-override"]').attributes('aria-checked')).toBe('true')
+    expect(storeOf(wrapper).snapshot.value.settings.dns_override).toBe(true)
     expect(wrapper.text()).toContain('Fake-IP 过滤')
-    await wrapper.find('[data-testid="dns-settings"] [data-value="redir-host"]').trigger('click')
-    expect(wrapper.text()).not.toContain('Fake-IP 过滤')
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await wrapper.find('[data-testid="dns-enhanced-mode"] [data-value="redir-host"]').trigger('click')
     await settle(600)
-    expect(wrapper.find('[data-testid="save-dns"]').exists()).toBe(false)
+    expect(storeOf(wrapper).snapshot.value.settings.dns.enhanced_mode).toBe('redir-host')
+    expect(wrapper.text()).not.toContain('Fake-IP 过滤')
   })
 
   it('lists proxy and rule providers once connected', async () => {
@@ -1068,6 +1070,9 @@ describe('App', () => {
     await wrapper.find('.sidebar [data-page="home"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="groups-card"] [data-group="节点选择"]').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
     expect(main.scrollTop).toBe(0)
@@ -1435,6 +1440,9 @@ describe('App', () => {
       await flushPromises()
       await second.wrapper.find('[data-testid="groups-card"] [data-group="流媒体"]').trigger('click')
       await flushPromises()
+      expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+      document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+      await flushPromises()
       const target = second.wrapper.find('[data-group-card="流媒体"]').element as HTMLElement
       expect(target.style.scrollMarginTop).toBe('95px')
       expect(scroll.targets).toContain('流媒体')
@@ -1455,6 +1463,9 @@ describe('App', () => {
     try {
       const { wrapper } = await mountApp({}, 390)
       await wrapper.find('[data-testid="groups-card"] [data-group="OpenAI"]').trigger('click')
+      await flushPromises()
+      expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+      document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
       await flushPromises()
       const card = () => wrapper.find('[data-group-card="OpenAI"]')
       expect(card().classes()).toEqual(expect.arrayContaining(['open', 'located']))
@@ -1620,6 +1631,9 @@ describe('App', () => {
     expect(homeTile('故障转移').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
     expect(homeTile('节点选择').find('[data-testid="home-group-fixed"]').exists()).toBe(false)
     await homeTile('自动选择').trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await settle(100)
     expect(autoCard().find('[data-node="日本 01"]').classes()).toContain('selected')
 
@@ -1765,7 +1779,8 @@ describe('App', () => {
 
   it('lets users keep long-lived connections when switching nodes', async () => {
     const { wrapper, backend } = await mountApp()
-    await openPage(wrapper, 'settings')
+    storeOf(wrapper).openSettings('behavior')
+    await flushPromises()
     const save = vi.spyOn(backend, 'saveSettings')
     const toggle = wrapper.find('[data-testid="close-on-node-switch"]')
     expect(toggle.attributes('aria-checked')).toBe('true')
@@ -2424,6 +2439,8 @@ describe('App', () => {
       level: index % 5 === 0 ? 'error' : 'info',
       message: `line-${index}`,
       time_ms: 1000 + index,
+      hint: null,
+      hint_kind: null,
     }))
     demo.state = async () => ({ ...(await read.call(demo)), logs: logs.map((line) => ({ ...line })) })
     const wrapper = await mountWith(demo)
@@ -2436,7 +2453,7 @@ describe('App', () => {
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
     const frozenHeader = wrapper.find('.page-head p').text()
 
-    logs = [...logs, { level: 'error', message: 'new-line', time_ms: 2000 }]
+    logs = [...logs, { level: 'error', message: 'new-line', time_ms: 2000, hint: null, hint_kind: null }]
     await storeOf(wrapper).refresh()
     await flushPromises()
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('20 条')
@@ -2514,7 +2531,9 @@ describe('App', () => {
       await appendOne(index)
       expect(gap()).toBe(0)
       expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
-      expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+      expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+      expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+      expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
     }
     expect(wrapper.findAll('.log-line').at(-1)!.text()).toContain('cap-new-2')
 
@@ -2612,7 +2631,9 @@ describe('App', () => {
     logs = [...logs, { level: 'info', message: 'tail', time_ms: 2000 }]
     await storeOf(wrapper).refresh()
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(51)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('51 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(51)
     expect((wrapper.find('[data-testid="log-scroll"]').element as HTMLElement).scrollTop).toBe(1200)
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
   })
@@ -2629,16 +2650,23 @@ describe('App', () => {
     const wrapper = await mountWith(demo)
     await openPage(wrapper, 'logs')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
 
     await wrapper.find('.toolbar [data-value="warning"]').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(100)
+    expect(wrapper.find('[data-testid="log-match-count"]').text()).toBe('100/1000')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
+    expect(wrapper.findAll('.log-line').every((row) => row.classes().includes('warning'))).toBe(true)
 
     await wrapper.find('.toolbar [data-value="all"]').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+    expect(wrapper.find('[data-testid="log-match-count"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
   })
 
   it('keeps log row keys stable when the capped buffer trims from the front', async () => {
@@ -2662,16 +2690,18 @@ describe('App', () => {
       '4000|info|repeat#1',
     ])
 
-    const target = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    const target = wrapper.find('[data-log-key="2000|info|row-1000#0"]')
     expect(target.exists()).toBe(true)
+    expect(target.attributes('data-log-index')).toBe('1000')
     const element = target.element
 
     logs.splice(0, 10)
     await storeOf(wrapper).refresh()
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(997)
-    const moved = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('997 条')
+    const moved = wrapper.find('[data-log-key="2000|info|row-1000#0"]')
     expect(moved.exists()).toBe(true)
+    expect(moved.attributes('data-log-index')).toBe('990')
     // The surviving row keeps its DOM node even though its index shifted by ten.
     expect(moved.element).toBe(element)
   })
@@ -3123,11 +3153,12 @@ describe('App', () => {
   it('preserves kernel port, TUN and DNS input drafts across polling ticks without resetting', async () => {
     const { wrapper, backend } = await mountApp()
     const saveSpy = vi.spyOn(backend, 'saveSettings')
+    const body = new DOMWrapper(document.body)
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
 
     await openPage(wrapper, 'settings')
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="kernel"]').trigger('click')
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="network"]').trigger('click')
     await flushPromises()
 
     const portInput = wrapper.find('[data-testid="mixed-port-input"]')
@@ -3146,32 +3177,36 @@ describe('App', () => {
     expect((portInput.element as HTMLInputElement).value).toBe('7891')
     expect(wrapper.find('[data-testid="save-port"]').exists()).toBe(false)
 
-    // TUN drafts survive polling ticks too.
-    await wrapper.find('[data-testid="settings-tabs"] [data-value="tun"]').trigger('click')
+    // A focused TUN field survives polling ticks too, and commits when it loses focus.
+    await wrapper.find('[data-testid="settings-tabs"] [data-value="proxy"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="subtab-tun"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').trigger('click')
     const mtuInput = wrapper.find('input[aria-label="MTU"]')
+    await mtuInput.trigger('focus')
     await mtuInput.setValue('1420')
     await settle(3500)
     expect((mtuInput.element as HTMLInputElement).value).toBe('1420')
     expect(wrapper.find('[data-testid="tun-settings"] [data-value="gvisor"]').attributes('aria-checked')).toBe('true')
-    expect(wrapper.find('[data-testid="save-tun"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="save-tun"]').trigger('click')
+    await mtuInput.trigger('blur')
     await settle(600)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({ tun: expect.objectContaining({ stack: 'gvisor', mtu: 1420 }) }),
     )
 
-    // DNS drafts survive polling ticks too.
+    // The DNS server editor keeps its draft while the snapshot keeps refreshing.
     await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-testid="dns-settings"] [data-value="redir-host"]').trigger('click')
-    const nsInput = wrapper.find('textarea[aria-label="主 DNS 服务器"]')
+    await wrapper.find('[data-testid="dns-enhanced-mode"] [data-value="redir-host"]').trigger('click')
+    await settle(600)
+    await wrapper.find('[data-testid="open-dns-nameserver"]').trigger('click')
+    await flushPromises()
+    const nsInput = body.find('[data-testid="dns-nameserver-input"]')
     await nsInput.setValue('https://1.1.1.1/dns-query')
     await settle(3500)
     expect((nsInput.element as HTMLTextAreaElement).value).toBe('https://1.1.1.1/dns-query')
-    expect(wrapper.find('[data-testid="save-dns"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    await body.find('[data-testid="dns-nameserver-save"]').trigger('click')
     await settle(600)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3195,7 +3230,8 @@ describe('App', () => {
       if (!conflicted) return snap
       return {
         ...snap,
-        logs: [...snap.logs, { time_ms: Date.now(), level: 'error' as const, message: conflictMsg }],
+        failure_hint: 'port' as const,
+        logs: [...snap.logs, { time_ms: Date.now(), level: 'error' as const, message: conflictMsg, hint: 'port' as const, hint_kind: 'mixed' as const }],
       }
     }
 
@@ -3218,6 +3254,10 @@ describe('App', () => {
   it('jumps directly to a collapsed proxy group from the quick group strip on phones', async () => {
     const { wrapper } = await mountApp({}, 360)
     await wrapper.find('.tabbar [data-page="proxies"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
     await flushPromises()
 
     const strip = wrapper.find('[data-testid="group-jump-bar"]')
@@ -3271,7 +3311,7 @@ describe('App', () => {
     const { wrapper, backend } = await mountApp({ platform: 'android' }, 375)
     const enableSpy = vi.spyOn(backend, 'enable')
 
-    // Disconnected: dock has no live dot yet; profile trigger opens the quick switcher sheet
+    // Disconnected: dock stays clean without status dots; profile trigger opens the quick switcher sheet
     expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
     expect(wrapper.find('[data-testid="mobile-profile-trigger"]').exists()).toBe(true)
     await wrapper.find('[data-testid="mobile-profile-trigger"]').trigger('click')
@@ -3284,18 +3324,22 @@ describe('App', () => {
     expect(document.body.querySelector('[data-testid="home-profile-sheet"]')).toBeNull()
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
 
-    // Connect and verify the dock live indicator lights up even after switching tabs
+    // Connect and verify the dock stays free of distracting corner dots
     await wrapper.find('[data-testid="power"]').trigger('click')
     await settle(1500)
-    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
 
-    // Tapping the active node capsule jumps directly to its group on ProxiesView
+    // Tapping the active node capsule opens the in-place node picker, which links to ProxiesView
     const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
     expect(nodePill.exists()).toBe(true)
     await nodePill.trigger('click')
     await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+    await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
-    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(true)
+    expect(wrapper.find('.tabbar [data-page="home"] .tab-live-dot').exists()).toBe(false)
   })
 
   it('connects inline from mobile proxies when disconnected and focuses one group per pill tap', async () => {
@@ -3307,8 +3351,10 @@ describe('App', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(true)
 
-    // Tapping a second group pill on mobile collapses the previously open group for zero clutter
+    // Tapping a second group pill on mobile (after expanding options) collapses the previously open group for zero clutter
     expect(wrapper.find('[data-group-card="节点选择"]').classes('open')).toBe(true)
+    await wrapper.find('[data-testid="toggle-options"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="jump-group-OpenAI"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-group-card="OpenAI"]').classes('open')).toBe(true)
@@ -3331,16 +3377,30 @@ describe('App', () => {
     expect(wrapper.find('.main').attributes('data-page')).toBe('settings')
     expect(wrapper.find('[data-testid="proxy-settings"]').exists()).toBe(true)
 
-    await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
+    const body = new DOMWrapper(document.body)
+    // Each row applies on its own: the host on blur, the mode on click.
+    const host = wrapper.find('[data-testid="proxy-host-input"]')
+    await host.trigger('focus')
+    await host.setValue('127.0.0.2')
+    await host.trigger('blur')
+    await settle(300)
     await wrapper.find('[data-testid="proxy-mode"] [data-value="pac"]').trigger('click')
-    expect(wrapper.find('[data-testid="pac-script-input"]').exists()).toBe(true)
-
-    await wrapper.find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
-    await wrapper.find('[data-testid="bypass-add-btn"]').trigger('click')
+    await settle(300)
+    await wrapper.find('[data-testid="open-pac"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="bypass-list"]').text()).toContain('*.corp.internal')
+    expect(body.find('[data-testid="pac-script-input"]').exists()).toBe(true)
+    await body.find('[data-testid="editor-cancel"]').trigger('click')
+    await flushPromises()
 
-    await wrapper.find('[data-testid="save-proxy"]').trigger('click')
+    // The bypass list is edited in its own dialog and saved together.
+    await wrapper.find('[data-testid="open-bypass"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
+    await body.find('[data-testid="bypass-add-btn"]').trigger('click')
+    await flushPromises()
+    expect(body.find('[data-testid="bypass-list"]').text()).toContain('*.corp.internal')
+
+    await body.find('[data-testid="save-bypass"]').trigger('click')
     await settle(500)
     expect(saveSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3351,54 +3411,69 @@ describe('App', () => {
         }),
       }),
     )
-    expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(false)
+    expect(body.find('[data-testid="save-bypass"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-bypass"]').text()).toContain('24')
   })
 
   it('saves complete DNS overrides including filter mode, nameserver-policy and custom hosts', async () => {
     const { wrapper, backend } = await mountApp()
     const saveSpy = vi.spyOn(backend, 'saveSettings')
+    const body = new DOMWrapper(document.body)
+    const lastDns = () => saveSpy.mock.calls.at(-1)![0].dns
 
     await wrapper.find('.sidebar [data-page="settings"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="settings-tabs"] [data-value="dns"]').trigger('click')
     await flushPromises()
 
+    // Advanced rows apply one at a time; each save builds on the previous one.
     await wrapper.find('[data-testid="dns-filter-mode"] [data-value="whitelist"]').trigger('click')
-    await wrapper.find('[data-testid="dns-listen"]').setValue('127.0.0.1:1053')
+    await settle(300)
+    const listen = wrapper.find('[data-testid="dns-listen"]')
+    await listen.trigger('focus')
+    await listen.setValue('127.0.0.1:1053')
+    await listen.trigger('blur')
+    await settle(300)
     await wrapper.find('[data-testid="dns-prefer-h3"]').trigger('click')
+    await settle(300)
     await wrapper.find('[data-testid="dns-cache-algorithm"] [data-value="arc"]').trigger('click')
-
-    // Add CN preset + custom policy
-    await wrapper.find('[data-testid="preset-cn-policy"]').trigger('click')
-    await wrapper.find('[data-testid="policy-pattern-input"]').setValue('+.corp.local')
-    await wrapper.find('[data-testid="policy-servers-input"]').setValue('10.0.0.53')
-    await wrapper.find('[data-testid="add-policy-btn"]').trigger('click')
-
-    // Add custom host mapping and toggle system hosts
+    await settle(300)
     await wrapper.find('[data-testid="dns-system-hosts"]').trigger('click')
-    await wrapper.find('[data-testid="host-domain-input"]').setValue('router.local')
-    await wrapper.find('[data-testid="host-target-input"]').setValue('192.168.1.1')
-    await wrapper.find('[data-testid="add-host-btn"]').trigger('click')
+    await settle(300)
 
-    await wrapper.find('[data-testid="save-dns"]').trigger('click')
+    // Policy: CN preset + a custom entry, saved from its dialog.
+    await wrapper.find('[data-testid="open-dns-policy"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="preset-cn-policy"]').trigger('click')
+    await body.find('[data-testid="policy-pattern-input"]').setValue('+.corp.local')
+    await body.find('[data-testid="policy-servers-input"]').setValue('10.0.0.53')
+    await body.find('[data-testid="add-policy-btn"]').trigger('click')
+    await body.find('[data-testid="save-dns-policy"]').trigger('click')
     await settle(500)
 
-    expect(saveSpy).toHaveBeenCalledWith(
+    // Hosts: one mapping, saved from its dialog.
+    await wrapper.find('[data-testid="open-dns-hosts"]').trigger('click')
+    await flushPromises()
+    await body.find('[data-testid="host-domain-input"]').setValue('router.local')
+    await body.find('[data-testid="host-target-input"]').setValue('192.168.1.1')
+    await body.find('[data-testid="add-host-btn"]').trigger('click')
+    await body.find('[data-testid="save-dns-hosts"]').trigger('click')
+    await settle(500)
+
+    expect(lastDns()).toEqual(
       expect.objectContaining({
-        dns: expect.objectContaining({
-          listen: '127.0.0.1:1053',
-          fake_ip_filter_mode: 'whitelist',
-          prefer_h3: true,
-          cache_algorithm: 'arc',
-          use_system_hosts: false,
-          nameserver_policy: {
-            'geosite:cn,private': ['https://doh.pub/dns-query', '223.5.5.5'],
-            '+.corp.local': ['10.0.0.53'],
-          },
-          hosts: {
-            'router.local': ['192.168.1.1'],
-          },
-        }),
+        listen: '127.0.0.1:1053',
+        fake_ip_filter_mode: 'whitelist',
+        prefer_h3: true,
+        cache_algorithm: 'arc',
+        use_system_hosts: false,
+        nameserver_policy: {
+          'geosite:cn,private': ['https://doh.pub/dns-query', '223.5.5.5'],
+          '+.corp.local': ['10.0.0.53'],
+        },
+        hosts: {
+          'router.local': ['192.168.1.1'],
+        },
       }),
     )
   })
@@ -3478,10 +3553,14 @@ describe('App', () => {
     expect(enableSpy).toHaveBeenCalledWith('p2')
     expect(wrapper.find('.main').attributes('data-page')).toBe('home')
 
-    // Desktop Home active node capsule jumps directly to the outbound group
+    // Desktop Home active node capsule opens the in-place node picker, which links to ProxiesView
     const nodePill = wrapper.find('[data-testid="hero-node-pill"]')
     expect(nodePill.exists()).toBe(true)
     await nodePill.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    expect(wrapper.find('.main').attributes('data-page')).toBe('home')
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
     await flushPromises()
     expect(wrapper.find('.main').attributes('data-page')).toBe('proxies')
 
@@ -3491,5 +3570,49 @@ describe('App', () => {
     await settle(1500)
     expect(store.snapshot.value.connected).toBe(true)
     expect(wrapper.find('[data-testid="proxies-connect-bar"]').exists()).toBe(false)
+  })
+
+  it('supports selecting the GLOBAL node after switching outbound mode on Home and Proxies', async () => {
+    localStorage.clear()
+    const { wrapper, backend } = await mountApp({}, 1280)
+    const selectSpy = vi.spyOn(backend, 'selectNode')
+
+    // Rule mode: GLOBAL is hidden from Home groups card
+    expect(wrapper.find('[data-testid="groups-card"] [data-group="GLOBAL"]').exists()).toBe(false)
+
+    // Switch to global mode on Home: hero node capsule and first group tile point to GLOBAL
+    await wrapper.find('[data-testid="mode-segmented"] [data-value="global"]').trigger('click')
+    await settle(200)
+    expect(wrapper.find('[data-testid="hero-node-pill"]').text()).toContain('GLOBAL')
+    const homeGroups = wrapper.findAll('[data-testid="groups-card"] [data-group]')
+    expect(homeGroups[0]?.attributes('data-group')).toBe('GLOBAL')
+
+    // Pick a GLOBAL node from Home's in-place node picker
+    await wrapper.find('[data-testid="hero-node-pill"]').trigger('click')
+    await flushPromises()
+    const picker = document.body.querySelector<HTMLElement>('[data-testid="home-node-picker"]')
+    expect(picker?.getAttribute('data-group')).toBe('GLOBAL')
+    document.body.querySelector<HTMLElement>('[data-testid="picker-node-日本 01"]')?.click()
+    await settle(200)
+    expect(selectSpy).toHaveBeenCalledWith('GLOBAL', '日本 01')
+    expect(wrapper.find('[data-testid="hero-node-pill"]').text()).toContain('日本 01')
+
+    // Navigate to Proxies: GLOBAL leads the list and is automatically expanded
+    storeOf(wrapper).go('proxies')
+    await flushPromises()
+    const cards = wrapper.findAll('[data-group-card]')
+    expect(cards[0]?.attributes('data-group-card')).toBe('GLOBAL')
+    expect(cards[0]?.classes('open')).toBe(true)
+
+    // Pick another GLOBAL node in Proxies
+    await cards[0]!.find('[data-testid="node-select-香港 02"]').trigger('click')
+    await settle(200)
+    expect(selectSpy).toHaveBeenCalledWith('GLOBAL', '香港 02')
+    expect(cards[0]!.find('.group-now-name').text()).toContain('香港 02')
+
+    // Switch back to rule mode in Proxies: GLOBAL disappears
+    await wrapper.find('.proxies .head-actions [data-value="rule"]').trigger('click')
+    await settle(200)
+    expect(wrapper.find('[data-group-card="GLOBAL"]').exists()).toBe(false)
   })
 })

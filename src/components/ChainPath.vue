@@ -1,5 +1,7 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed } from 'vue'
+import { splitNodePrefix } from '../lib/format'
 import Icon from './Icon.vue'
 
 /**
@@ -34,6 +36,7 @@ function isRelayServer(hop: string, index: number): boolean {
 }
 
 const exit = computed(() => props.hops[props.hops.length - 1] ?? '')
+const exitParts = computed(() => splitNodePrefix(exit.value))
 const relayServers = computed(() =>
   props.hops.filter((hop, index) => isRelayServer(hop, index)),
 )
@@ -60,13 +63,13 @@ const full = computed(() => props.hops.join(' → '))
 
 function stepRole(hop: string, index: number): { kind: 'exit' | 'relay' | 'group' | ''; label: string } {
   if (index === props.hops.length - 1) {
-    return { kind: 'exit', label: props.hops.length > 1 ? '出口' : '' }
+    return { kind: 'exit', label: props.hops.length > 1 ? tr('出口') : '' }
   }
   if (isRelayServer(hop, index)) {
-    return { kind: 'relay', label: '中转' }
+    return { kind: 'relay', label: tr('中转') }
   }
   if (props.groups && props.groups.size > 0 && isGroupHop(hop)) {
-    return { kind: 'group', label: '策略组' }
+    return { kind: 'group', label: tr('策略组') }
   }
   return { kind: '', label: '' }
 }
@@ -91,19 +94,19 @@ function stepRole(hop: string, index: number): { kind: 'exit' | 'relay' | 'group
     <span class="chain" :class="{ 'is-chained': hasRelay }" :title="full || undefined" data-testid="chain-path">
       <template v-if="via">
         <span class="chain-via">{{ via }}</span>
-        <span v-if="hidden" class="chain-more mono" :aria-label="`经过另外 ${hidden} 跳`">+{{ hidden }}</span>
+        <span v-if="hidden" class="chain-more mono" :aria-label="tr('经过另外 {0} 跳', { 0: hidden })">+{{ hidden }}</span>
         <span v-if="fold && !hasRelay" class="chain-count mono" aria-hidden="true">+{{ hops.length - 1 }}</span>
         <Icon name="chevron-right" :size="12" class="chain-sep" :class="{ 'chain-via-sep': hasRelay }" />
       </template>
       <template v-else-if="hasRelay && hidden">
-        <span class="chain-more mono" :aria-label="`经过另外 ${hidden} 跳`">+{{ hidden }}</span>
+        <span class="chain-more mono" :aria-label="tr('经过另外 {0} 跳', { 0: hidden })">+{{ hidden }}</span>
       </template>
       <template v-if="hasRelay">
-        <span class="chain-relay-badge" data-testid="chain-relay-badge">链式</span>
+        <span class="chain-relay-badge" data-testid="chain-relay-badge">{{ tr('链式') }}</span>
         <span class="chain-relay" data-testid="chain-relay">{{ lastRelay }}</span>
         <span class="chain-relay-arrow" aria-hidden="true">→</span>
       </template>
-      <span class="chain-exit" :class="{ 'outbound-pill': pill }" :data-policy="pill ? exit.toUpperCase() : undefined">{{ exit || '—' }}</span>
+      <span class="chain-exit" :class="{ 'outbound-pill': pill }" :data-policy="pill ? exit.toUpperCase() : undefined"><template v-if="exitParts.prefix"><span class="chain-exit-prefix">{{ exitParts.prefix }}</span>{{ exitParts.rest }}</template><template v-else>{{ exit || '—' }}</template></span>
     </span>
   </span>
 </template>

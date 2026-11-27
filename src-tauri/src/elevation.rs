@@ -359,6 +359,7 @@ pub fn run_helper_if_requested() -> bool {
     if args.get(1).map(String::as_str) != Some(HELPER) {
         return false;
     }
+    crate::shutdown::configure_helper_process();
     let run = || -> io::Result<()> {
         if !is_admin() || args.len() != 5 {
             return Err(io::Error::other("授权参数无效"));
@@ -385,6 +386,7 @@ pub fn run_helper_if_requested() -> bool {
     if let Err(error) = run() {
         eprintln!("Billow kernel supervisor: {error}");
     }
+    crate::shutdown::terminate_current_process_if_shutting_down();
     true
 }
 

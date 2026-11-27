@@ -1,12 +1,15 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChainPath from '../components/ChainPath.vue'
+import ContextMenu from '../components/ContextMenu.vue'
 import EmptyState from '../components/EmptyState.vue'
 import GroupIcon from '../components/GroupIcon.vue'
 import ProxyNodeGrid from '../components/ProxyNodeGrid.vue'
 import Icon from '../components/Icon.vue'
+import type { MenuItem } from '../components/Menu.vue'
 import Segmented from '../components/Segmented.vue'
-import { autoTypeLabel, canPickNode, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, protocolLabel, resolveChain, splitNodePrefix } from '../lib/format'
+import { autoTypeLabel, canPickNode, compareText, delayText, delayTone, effectiveGroupDelay, formatRelative, groupStrategy, groupTypeLabel, isInfoNode, listedGroups, parseSubscriptionInfo, protocolLabel, resolveChain, splitNodePrefix, type SubscriptionInfo } from '../lib/format'
 import { highlightTokens, matchesTokens, splitQueryTokens } from '../lib/search'
 import { useStore } from '../lib/store'
 import type { Mode, NodeGroup, NodeItem } from '../lib/types'
@@ -20,18 +23,27 @@ const catalog = computed(() => snap.value.node_catalog)
 const listed = computed(() => listedGroups(catalog.value))
 const allGroupsHidden = computed(() => catalog.value.length > 0 && listed.value.length === 0)
 const mode = computed(() => snap.value.mode)
+const modeListed = computed(() => {
+  if (mode.value === 'global') {
+    const globalGroup = listed.value.find((group) => group.name === 'GLOBAL')
+    return globalGroup
+      ? [globalGroup, ...listed.value.filter((group) => group.name !== 'GLOBAL')]
+      : listed.value
+  }
+  return listed.value.filter((group) => group.name !== 'GLOBAL')
+})
 const busyKeys = computed(() => Object.keys(store.busy).join('\0'))
 
 type Sort = 'default' | 'delay' | 'name'
 const SORTS: { id: Sort; label: string }[] = [
-  { id: 'default', label: '默认' },
-  { id: 'delay', label: '延迟' },
-  { id: 'name', label: '名称' },
+  { id: 'default', get label() { return tr('默认') } },
+  { id: 'delay', get label() { return tr('延迟') } },
+  { id: 'name', get label() { return tr('名称') } },
 ]
 const MODES: { id: Mode; label: string }[] = [
-  { id: 'rule', label: '规则' },
-  { id: 'global', label: '全局' },
-  { id: 'direct', label: '直连' },
+  { id: 'rule', get label() { return tr('规则') } },
+  { id: 'global', get label() { return tr('全局') } },
+  { id: 'direct', get label() { return tr('直连') } },
 ]
 
 const OPEN_KEY = 'proxy-open'
@@ -58,6 +70,9 @@ const toolbarEl = ref<HTMLElement | null>(null)
 const optionsOpen = ref<boolean>(readPref('proxy-options-open', false))
 const showOptions = computed(() => !props.compact || optionsOpen.value)
 watch(optionsOpen, (value) => writePref('proxy-options-open', value))
+/** Desktop keeps the sticky bar a calm single row by default; filter chips & group jump fold behind a persisted toggle. */
+const filtersOpen = ref<boolean>(readPref<unknown>('proxy-filters-open', false) === true)
+watch(filtersOpen, (value) => writePref('proxy-filters-open', value))
 /** Open group headers stick under the toolbar; its height can change when options open. */
 const toolbarHeight = ref(0)
 let toolbarObserver: ResizeObserver | null = null
@@ -65,8 +80,8 @@ const sort = ref<Sort>(readPref('proxy-sort', 'default'))
 type NodeView = 'card' | 'dense' | 'list'
 /** Desktop offers a card grid and a one-row-per-node list; phones keep their two-column toggle. */
 const VIEWS: { id: NodeView; label: string; icon: string }[] = [
-  { id: 'card', label: '卡片', icon: 'grid' },
-  { id: 'list', label: '列表', icon: 'list' },
+  { id: 'card', get label() { return tr('卡片') }, icon: 'grid' },
+  { id: 'list', get label() { return tr('列表') }, icon: 'list' },
 ]
 function readView(): NodeView {
   const stored = readPref<string>('proxy-view', '')
@@ -132,7 +147,7 @@ function openAuto(name: string) {
   void locate(name, 'smooth')
 }
 
-const hiddenAutoCount = computed(() => listed.value.filter((group) => autoHidden(group)).length)
+const hiddenAutoCount = computed(() => modeListed.value.filter((group) => autoHidden(group)).length)
 /** Read once at setup so the first paint already has the right groups expanded (R26). */
 const storedOpen = readOpen()
 const open = ref<Set<string>>(storedOpen ?? defaultOpen())
@@ -143,15 +158,164 @@ if (!storedOpen && open.value.size > 0) persistOpen()
 watch(sort, (value) => writePref('proxy-sort', value))
 watch(view, (value) => writePref('proxy-view', value))
 
+function readBoolPref(key: string, fallback: boolean): boolean {
+  const value = readPref<unknown>(key, fallback)
+  return typeof value === 'boolean' ? value : fallback
+}
+
 const needle = computed(() => query.value.trim().toLowerCase())
 const queryTokens = computed(() => splitQueryTokens(query.value))
-const hideFailed = ref(false)
+const hideFailed = ref<boolean>(readBoolPref('proxy-hide-failed', false))
+watch(hideFailed, (value) => writePref('proxy-hide-failed', value))
 
-type ViewGroup = NodeGroup & { info?: NodeItem[] }
+interface QuickFilter {
+  id: string
+  label: string
+  kind: 'udp' | 'chained' | 'protocol'
+  count: number
+}
+
+const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
+const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
+
+const NON_PROTOCOL_TYPES = new Set([
+  'direct',
+  'reject',
+  'reject-drop',
+  'pass',
+  'selector',
+  'url-test',
+  'urltest',
+  'fallback',
+  'load-balance',
+  'loadbalance',
+  'smart',
+  'relay',
+  'compatible',
+])
+const MAX_PROTOCOL_QUICK_FILTERS = 4
+
+const activeTag = ref<string | null>(null)
+
+function isUdpNode(node: NodeItem): boolean {
+  return node.tags.some((tag) => tag.toUpperCase() === 'UDP')
+}
+
+function isChainedNode(node: NodeItem): boolean {
+  return Boolean(node.dialer_proxy) || node.tags.some((tag) => tag === 'chained' || tag === '链式')
+}
+
+const quickFilters = computed<QuickFilter[]>(() => {
+  const seen = new Set<string>()
+  let udpCount = 0
+  let chainedCount = 0
+  const protocolCounts = new Map<string, number>()
+
+  for (const group of modeListed.value) {
+    if (autoHidden(group)) continue
+    for (const node of group.nodes) {
+      if (
+        groupNamesSet.value.has(node.name) ||
+        BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+        isInfoNode(node.name) ||
+        seen.has(node.name)
+      ) {
+        continue
+      }
+      seen.add(node.name)
+      if (isUdpNode(node)) udpCount += 1
+      if (isChainedNode(node)) chainedCount += 1
+      const rawType = node.node_type.trim().toLowerCase()
+      if (rawType && !NON_PROTOCOL_TYPES.has(rawType)) {
+        const label = protocolLabel(node.node_type).trim()
+        if (label) protocolCounts.set(label, (protocolCounts.get(label) ?? 0) + 1)
+      }
+    }
+  }
+
+  const chips: QuickFilter[] = []
+  if (udpCount > 0) chips.push({ id: 'tag:udp', label: 'UDP', kind: 'udp', count: udpCount })
+  if (chainedCount > 0) chips.push({ id: 'tag:chained', label: tr('链式'), kind: 'chained', count: chainedCount })
+  const topProtocols = [...protocolCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || compareText(a[0], b[0]))
+    .slice(0, MAX_PROTOCOL_QUICK_FILTERS)
+  for (const [label, count] of topProtocols) {
+    chips.push({ id: `proto:${label}`, label, kind: 'protocol', count })
+  }
+  return chips
+})
+
+watch(quickFilters, (chips) => {
+  if (activeTag.value && !chips.some((chip) => chip.id === activeTag.value)) {
+    activeTag.value = null
+  }
+})
+
+function toggleQuickTag(id: string) {
+  activeTag.value = activeTag.value === id ? null : id
+}
+
+function matchesQuickTag(node: NodeItem): boolean {
+  const selectedId = activeTag.value
+  if (!selectedId) return true
+  if (selectedId === 'tag:udp') return isUdpNode(node)
+  if (selectedId === 'tag:chained') return isChainedNode(node)
+  if (selectedId.startsWith('proto:')) {
+    const target = selectedId.slice('proto:'.length)
+    return protocolLabel(node.node_type).trim() === target
+  }
+  return true
+}
+
+const hasSearchOrTag = computed(() => Boolean(needle.value || activeTag.value))
+const hasActiveFilter = computed(() => Boolean(hasSearchOrTag.value || (hideFailed.value && failedNodeCount.value > 0)))
+const activeQuickFilter = computed(() =>
+  activeTag.value ? (quickFilters.value.find((chip) => chip.id === activeTag.value) ?? null) : null,
+)
+const totalVisibleGroups = computed(() => modeListed.value.filter((group) => !autoHidden(group)).length)
+const canToggleFilters = computed(() => quickFilters.value.length > 0 || totalVisibleGroups.value > 2)
+const drawerExpanded = computed(() => (props.compact ? optionsOpen.value : filtersOpen.value))
+
+function resetFilters() {
+  query.value = ''
+  activeTag.value = null
+  hideFailed.value = false
+}
+
+type ViewGroup = NodeGroup & { info?: NodeItem[]; hiddenFailedCount?: number }
 
 /** Info text without the provider's leading 【tag】 prefix. */
 function infoText(name: string): string {
   return name.replace(/^\s*[【\[][^】\]]*[】\]]\s*/, '').trim() || name
+}
+
+const quotaCache = new Map<string, SubscriptionInfo>()
+/** Subscription quota / expiry / reset parsed from a group's info nodes (R6); cached per text set. */
+function quotaOf(info: readonly NodeItem[]): SubscriptionInfo {
+  const texts = info.map((item) => infoText(item.name))
+  const key = texts.join('\n')
+  let parsed = quotaCache.get(key)
+  if (!parsed) {
+    parsed = parseSubscriptionInfo(texts)
+    if (quotaCache.size > 64) quotaCache.clear()
+    quotaCache.set(key, parsed)
+  }
+  return parsed
+}
+
+function quotaTagCount(info: SubscriptionInfo): number {
+  return Number(Boolean(info.remaining)) + Number(Boolean(info.expire)) + Number(Boolean(info.resetDays)) + info.others.length
+}
+
+function resetText(days: number): string {
+  if (days <= 0) return tr('今天重置')
+  if (days === 1) return tr('明天重置')
+  return tr('{0} 天后重置', { 0: days })
+}
+
+function percentText(value: number): string {
+  if (value > 0 && value < 0.1) return '<0.1%'
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)}%`
 }
 
 function manifest(): NodeGroup[] {
@@ -160,7 +324,13 @@ function manifest(): NodeGroup[] {
 
 /** The group a first visit opens: the selected manual group, else the first manual one (R26). */
 function currentManualGroup(): NodeGroup | null {
-  const manual = manifest().filter((group) => group.kind === 'manual')
+  const manual = manifest().filter(
+    (group) => group.kind === 'manual' && (mode.value === 'global' || group.name !== 'GLOBAL'),
+  )
+  if (mode.value === 'global') {
+    const globalGroup = manual.find((group) => group.name === 'GLOBAL')
+    if (globalGroup) return globalGroup
+  }
   return manual.find((group) => Boolean(group.now)) ?? manual[0] ?? null
 }
 
@@ -228,7 +398,16 @@ function matches(node: NodeItem): boolean {
 
 /** Full protocol and tag list for the tooltip; rows may clip the tail. */
 function metaTitle(node: NodeItem): string {
-  const parts = [protocolLabel(node.node_type), ...node.tags.map((tag) => (tag === '链式' && node.dialer_proxy ? `链式（前置：${dialerTargetLabel(node)}）` : tag))]
+  const parts = [
+    protocolLabel(node.node_type),
+    ...node.tags.map((tag) =>
+      tag === 'chained'
+        ? node.dialer_proxy
+          ? tr('链式（前置：{0}）', { 0: dialerTargetLabel(node) })
+          : tr('链式')
+        : tag,
+    ),
+  ]
   return parts.filter(Boolean).join(' · ')
 }
 
@@ -247,7 +426,7 @@ function dialerTargetLabel(node: NodeItem): string {
 function sorted(nodes: NodeItem[]): NodeItem[] {
   if (sort.value === 'default') return nodes
   const list = nodes.map((node, index) => ({ node, index }))
-  if (sort.value === 'name') list.sort((a, b) => a.node.name.localeCompare(b.node.name, 'zh-CN') || a.index - b.index)
+  if (sort.value === 'name') list.sort((a, b) => compareText(a.node.name, b.node.name) || a.index - b.index)
   if (sort.value === 'delay') {
     const key = (node: NodeItem) => (node.failed ? 2e9 : node.delay_ms == null ? 1e9 : node.delay_ms)
     list.sort((a, b) => key(a.node) - key(b.node) || a.index - b.index)
@@ -256,34 +435,46 @@ function sorted(nodes: NodeItem[]): NodeItem[] {
 }
 
 const groups = computed(() => {
-  const source = mode.value === 'global'
-    ? listed.value
-    : listed.value.filter((group) => group.name !== 'GLOBAL')
+  const source = modeListed.value
   return source
     .filter((group) => !autoHidden(group))
     .map((group): ViewGroup => {
-      let nodes = needle.value ? group.nodes.filter(matches) : group.nodes
-      if (hideFailed.value) {
+      let nodes = group.nodes
+      if (needle.value) nodes = nodes.filter(matches)
+      if (activeTag.value) nodes = nodes.filter(matchesQuickTag)
+      const beforeHideFailed = nodes.length
+      if (hideFailed.value && failedNodeCount.value > 0) {
         nodes = nodes.filter((node) => node.selected || !nodeState(node).failed)
       }
+      const hiddenFailedCount = beforeHideFailed - nodes.length
       nodes = sorted(nodes)
       // Quota/expiry pseudo-nodes leave the grid unless selected or searched for (R11).
       const info = needle.value ? [] : nodes.filter((node) => !node.selected && isInfoNode(node.name))
       if (info.length) nodes = nodes.filter((node) => !info.includes(node))
-      if (nodes === group.nodes) return group
-      return info.length ? { ...group, nodes, info } : { ...group, nodes }
+      if (nodes === group.nodes && hiddenFailedCount === 0) return group
+      return {
+        ...group,
+        nodes,
+        ...(info.length ? { info } : {}),
+        ...(hiddenFailedCount > 0 ? { hiddenFailedCount } : {}),
+      }
     })
-    .filter((group) => !needle.value || group.nodes.length > 0 || matchesTokens(group.name, queryTokens.value))
+    .filter(
+      (group) =>
+        !hasSearchOrTag.value ||
+        group.nodes.length > 0 ||
+        (!activeTag.value && matchesTokens(group.name, queryTokens.value)),
+    )
 })
 
 const matchCount = computed(() =>
-  needle.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
+  hasSearchOrTag.value ? groups.value.reduce((total, group) => total + group.nodes.length, 0) : 0,
 )
 
 /** Groups share nodes, so the page total counts distinct names instead of row copies. */
 const distinctNodeCount = computed(() => {
   const seen = new Set<string>()
-  listed.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
+  modeListed.value.forEach((group) => group.nodes.forEach((node) => seen.add(node.name)))
   return seen.size
 })
 
@@ -337,15 +528,20 @@ function groupTestedAt(group: NodeGroup): number | null {
   return latest || null
 }
 
-const groupNamesSet = computed(() => new Set(catalog.value.map((group) => group.name)))
-
 const failedNodeCount = computed(() => {
   const seen = new Set<string>()
   let count = 0
-  for (const group of listed.value) {
+  for (const group of modeListed.value) {
     if (autoHidden(group)) continue
     for (const node of group.nodes) {
-      if (groupNamesSet.value.has(node.name) || seen.has(node.name)) continue
+      if (
+        groupNamesSet.value.has(node.name) ||
+        BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+        isInfoNode(node.name) ||
+        seen.has(node.name)
+      ) {
+        continue
+      }
       seen.add(node.name)
       if (nodeState(node).failed) count += 1
     }
@@ -353,15 +549,17 @@ const failedNodeCount = computed(() => {
   return count
 })
 
-watch(failedNodeCount, (count) => {
-  if (count === 0) hideFailed.value = false
-})
-
-function groupHealthText(group: NodeGroup): string {
+function groupHealthStats(group: NodeGroup): { ok: number; tested: number } | null {
   let tested = 0
   let ok = 0
   for (const node of group.nodes) {
-    if (groupNamesSet.value.has(node.name)) continue
+    if (
+      groupNamesSet.value.has(node.name) ||
+      BUILTIN_POLICIES.has(node.name.toUpperCase()) ||
+      isInfoNode(node.name)
+    ) {
+      continue
+    }
     const state = nodeState(node)
     if (state.failed) {
       tested += 1
@@ -370,8 +568,18 @@ function groupHealthText(group: NodeGroup): string {
       ok += 1
     }
   }
-  if (!tested) return ''
-  return `可用 ${ok}/${tested}`
+  return tested > 0 ? { ok, tested } : null
+}
+
+function groupHealthText(group: NodeGroup): string {
+  const stats = groupHealthStats(group)
+  if (!stats) return ''
+  return props.compact ? `${stats.ok}/${stats.tested}` : tr('可用 {0}/{1}', { 0: stats.ok, 1: stats.tested })
+}
+
+function showGroupCount(group: NodeGroup): boolean {
+  const stats = groupHealthStats(group)
+  return !stats || stats.tested < group.nodes.length
 }
 
 function highlight(name: string) {
@@ -385,7 +593,74 @@ function nameParts(name: string) {
 }
 
 function copyNodeName(node: NodeItem) {
-  void store.copyText(node.name, `已复制节点名称：${node.name}`)
+  void store.copyText(node.name, tr('已复制节点名称：{0}', { 0: node.name }))
+}
+
+const ctxMenu = ref<{ x: number; y: number; items: MenuItem[]; group: NodeGroup; node: NodeItem } | null>(null)
+
+function isTouchOrCompact(): boolean {
+  return (
+    Boolean(props.compact) ||
+    store.isAndroid.value ||
+    (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true)
+  )
+}
+
+function openNodeContextMenu(event: MouseEvent, group: NodeGroup, node: NodeItem) {
+  event.preventDefault()
+  if (isTouchOrCompact()) return
+  const items: MenuItem[] = []
+  if (canPickNode(group)) {
+    const isAuto = group.kind === 'auto'
+    const busy = Boolean(store.busy[`select:${group.name}`])
+    const alreadyPicked = isAuto ? group.fixed === node.name : node.selected
+    const offlineAuto = isAuto && !snap.value.kernel_running
+    items.push({
+      id: 'pick',
+      label: isAuto ? tr('固定此节点') : tr('选择此节点'),
+      icon: 'check',
+      disabled: alreadyPicked || offlineAuto || busy,
+      reason: busy
+        ? tr('切换中')
+        : alreadyPicked
+          ? (isAuto ? tr('已固定') : tr('当前已选'))
+          : offlineAuto
+            ? tr('未连接')
+            : undefined,
+    })
+  }
+  const testBusy = store.testing.value || store.pendingTests.value.has(node.name)
+  items.push({
+    id: 'test',
+    label: tr('测试延迟'),
+    icon: 'zap',
+    disabled: !snap.value.kernel_running || testBusy,
+    reason: !snap.value.kernel_running ? tr('未连接') : testBusy ? tr('测速中') : undefined,
+  })
+  items.push({
+    id: 'copy',
+    label: tr('复制节点名称'),
+    icon: 'copy',
+  })
+  const nestedAuto = autoOf(node)
+  if (nestedAuto && !nestedAuto.hidden) {
+    items.push({
+      id: 'open-auto',
+      label: tr('查看组策略与成员'),
+      icon: 'chevron-right',
+    })
+  }
+  ctxMenu.value = { x: event.clientX, y: event.clientY, items, group, node }
+}
+
+function onNodeContextSelect(item: MenuItem) {
+  const target = ctxMenu.value
+  ctxMenu.value = null
+  if (!target) return
+  if (item.id === 'pick') pick(target.group, target.node)
+  else if (item.id === 'test') void store.testNode(target.node.name)
+  else if (item.id === 'copy') copyNodeName(target.node)
+  else if (item.id === 'open-auto') openAuto(target.node.name)
 }
 
 function pick(group: NodeGroup, node: NodeItem) {
@@ -394,8 +669,6 @@ function pick(group: NodeGroup, node: NodeItem) {
   if (node.selected && (group.kind === 'manual' || group.fixed === node.name)) return
   void store.selectNode(group.name, node.name)
 }
-
-const BUILTIN_POLICIES = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS'])
 
 /** Lowest-latency tested proxy in a manual group, hidden if it is already selected. */
 function fastestCandidate(group: NodeGroup): { node: NodeItem; delay: number } | null {
@@ -419,7 +692,7 @@ async function pickFastest(group: NodeGroup) {
   if (!best) return
   const res = await store.selectNode(group.name, best.node.name)
   if (res) {
-    store.toast(`已切至最快节点：${best.node.name} (${delayText(best.delay, false)})`, 'success')
+    store.toast(tr('已切至最快节点：{0} ({1})', { 0: best.node.name, 1: delayText(best.delay, false) }), 'success')
   }
 }
 
@@ -435,12 +708,12 @@ function groupTestProgressPct(name: string): number | null {
 
 function nodeTitle(group: NodeGroup): string | undefined {
   if (group.kind === 'manual') return undefined
-  if (group.pinnable) return snap.value.kernel_running ? '点选后固定使用该节点，可随时恢复自动' : '内核没有运行，连接后才能固定节点'
-  return `${groupTypeLabel(group)}组由内核自动择优，不可手动切换`
+  if (group.pinnable) return snap.value.kernel_running ? tr('点选后固定使用该节点，可随时恢复自动') : tr('内核没有运行，连接后才能固定节点')
+  return tr('{0}组由内核自动择优，不可手动切换', { 0: groupTypeLabel(group) })
 }
 
 function isOpen(name: string) {
-  return needle.value.length > 0 || open.value.has(name)
+  return hasSearchOrTag.value || open.value.has(name)
 }
 
 /** Gap between the sticky toolbar and a located group header. */
@@ -497,6 +770,7 @@ async function locateActiveNode() {
   if (!preferred || !preferred.now) return
   revealAuto(preferred)
   if (query.value) query.value = ''
+  if (activeTag.value) activeTag.value = null
   if (!open.value.has(preferred.name)) {
     open.value = new Set([...open.value, preferred.name])
     persistOpen()
@@ -525,8 +799,9 @@ async function locate(name: string | null, behavior: ScrollBehavior = 'instant')
   const group = manifest().find((item) => item.name === name)
   if (!group) return
   revealAuto(group)
-  // A search could hide the group or its nodes; the deep link wins.
+  // A search or quick tag could hide the group or its nodes; the deep link wins.
   if (query.value) query.value = ''
+  if (activeTag.value) activeTag.value = null
   if (!open.value.has(name)) {
     open.value = new Set([...open.value, name])
     persistOpen()
@@ -568,6 +843,10 @@ onMounted(() => {
       }
       return
     }
+    if (mode.value === 'global' && modeListed.value.some((group) => group.name === 'GLOBAL') && !open.value.has('GLOBAL')) {
+      open.value = new Set([...open.value, 'GLOBAL'])
+      persistOpen()
+    }
     // Only a first visit scrolls to the default group; a saved state stays where the user left it.
     // When that group already leads the list, scrolling would only hide the page head and its
     // 全部测速 action, so the page stays at the top.
@@ -577,6 +856,16 @@ onMounted(() => {
 })
 
 watch(() => store.focusGroup.value, (name) => void locate(name, 'smooth'))
+
+watch(
+  [mode, () => modeListed.value.some((group) => group.name === 'GLOBAL')],
+  ([nextMode, hasGlobal], [prevMode]) => {
+    if (nextMode === 'global' && hasGlobal && prevMode !== 'global' && !open.value.has('GLOBAL')) {
+      open.value = new Set([...open.value, 'GLOBAL'])
+      persistOpen()
+    }
+  },
+)
 
 function measureToolbar() {
   toolbarHeight.value = Math.ceil(toolbarEl.value?.getBoundingClientRect().height ?? 0)
@@ -608,21 +897,100 @@ onBeforeUnmount(() => {
 
 /** Phones list one node per row and offer a two-column grid as their only other view. */
 /** A pressed toggle keeps one stable name; aria-pressed carries the on/off state (R3). */
-const denseLabel = '双列视图'
+const denseLabel = computed(() => tr('双列视图'))
 const denseIcon = 'grid'
 
-const optionsActive = computed(() => sort.value !== 'default' || view.value !== 'card' || hideFailed.value)
+const groupPillsEl = ref<HTMLElement | null>(null)
+const draggingPills = ref(false)
+let pillsDragCleanup: (() => void) | null = null
+let suppressNextPillClick = false
+let suppressClickTimer: ReturnType<typeof setTimeout> | null = null
+
+function stopPillsDrag() {
+  pillsDragCleanup?.()
+  pillsDragCleanup = null
+  draggingPills.value = false
+}
+
+function onPillsMouseDown(event: MouseEvent) {
+  if (event.button !== 0) return
+  const el = groupPillsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  stopPillsDrag()
+  const startX = event.clientX
+  const startScrollLeft = el.scrollLeft
+  let moved = false
+
+  const onMove = (moveEvent: MouseEvent) => {
+    const dx = moveEvent.clientX - startX
+    if (!moved && Math.abs(dx) >= 4) {
+      moved = true
+      draggingPills.value = true
+    }
+    if (moved) {
+      el.scrollLeft = startScrollLeft - dx
+      moveEvent.preventDefault()
+    }
+  }
+
+  const onUp = () => {
+    stopPillsDrag()
+    if (moved) {
+      suppressNextPillClick = true
+      if (suppressClickTimer) clearTimeout(suppressClickTimer)
+      suppressClickTimer = setTimeout(() => {
+        suppressNextPillClick = false
+        suppressClickTimer = null
+      }, 0)
+    }
+  }
+
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp, { once: true })
+  pillsDragCleanup = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+}
+
+function onPillsClickCapture(event: MouseEvent) {
+  if (!suppressNextPillClick) return
+  suppressNextPillClick = false
+  if (suppressClickTimer) {
+    clearTimeout(suppressClickTimer)
+    suppressClickTimer = null
+  }
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onPillsWheel(event: WheelEvent) {
+  const el = groupPillsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0) {
+    el.scrollLeft += event.deltaY
+    event.preventDefault()
+  }
+}
+
+onBeforeUnmount(() => {
+  stopPillsDrag()
+  if (suppressClickTimer) {
+    clearTimeout(suppressClickTimer)
+    suppressClickTimer = null
+  }
+})
 </script>
 
 <template>
   <div class="page proxies" :style="{ '--toolbar-h': `${toolbarHeight}px` }">
     <header class="page-head">
       <div>
-        <h1>代理</h1>
-        <p class="muted small" :title="hiddenAutoCount ? `另有 ${hiddenAutoCount} 个自动组由内核择优，未单独列出` : undefined">
-          <template v-if="listed.length">{{ listed.length - hiddenAutoCount }} 个代理组 · {{ distinctNodeCount }} 个节点</template>
-          <template v-else-if="allGroupsHidden">配置中的代理组均已隐藏</template>
-          <template v-else>{{ snap.nodes_notice ?? '没有代理组' }}</template>
+        <h1>{{ tr('代理') }}</h1>
+        <p class="muted small" :title="hiddenAutoCount ? tr('另有 {0} 个自动组由内核择优，未单独列出', { 0: hiddenAutoCount }) : undefined">
+          <template v-if="modeListed.length">{{ modeListed.length - hiddenAutoCount }} {{ tr('个代理组 ·') }} {{ distinctNodeCount }} {{ tr('个节点') }}</template>
+          <template v-else-if="allGroupsHidden">{{ tr('配置中的代理组均已隐藏') }}</template>
+          <template v-else>{{ snap.nodes_notice ? tr(snap.nodes_notice) : tr('没有代理组') }}</template>
         </p>
       </div>
       <div class="head-actions">
@@ -631,7 +999,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           :model-value="snap.mode"
           :options="MODES"
           size="sm"
-          label="出站模式"
+          :label="tr('出站模式')"
           :disabled="store.busy.mode"
           @update:model-value="store.setMode"
         />
@@ -640,15 +1008,13 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           class="test-progress small mono"
           data-testid="test-progress"
           aria-live="polite"
-        >已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+        >{{ tr('已测') }} {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
         <span
           v-if="!snap.kernel_running && snap.node_catalog.length"
           id="proxy-test-hint"
           class="test-hint sr-only"
           data-testid="test-hint"
-        >
-          连接后可测速
-        </span>
+        > {{ tr('连接后可测速') }} </span>
         <!-- Without groups there is nothing to test; the empty state below owns the next step. -->
         <button
           v-if="snap.node_catalog.length"
@@ -656,13 +1022,13 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
           class="btn primary sm"
           :disabled="store.testing.value || !snap.kernel_running"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-          :title="snap.kernel_running ? '测试全部节点延迟' : '连接后才能测速'"
+          :title="snap.kernel_running ? tr('测试全部节点延迟') : tr('连接后才能测速')"
           data-testid="test-all"
           @click="store.testAll()"
         >
           <span v-if="store.busy.testAll" class="spinner sm" />
           <Icon v-else name="zap" :size="15" />
-          {{ compact ? '测速' : '全部测速' }}
+          {{ compact ? tr('测速') : tr('全部测速') }}
         </button>
       </div>
     </header>
@@ -672,10 +1038,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       class="proxies-connect-bar"
       data-testid="proxies-connect-bar"
     >
-      <span class="proxies-connect-text small">
-        <span class="proxies-connect-dot" aria-hidden="true" />
-        当前未连接，连接后即可测速与实时生效
-      </span>
+      <span class="proxies-connect-text small">{{ tr('当前未连接，连接后即可测速与实时生效') }}</span>
       <button
         type="button"
         class="btn primary sm"
@@ -685,7 +1048,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       >
         <span v-if="store.connecting.value" class="spinner xs" />
         <Icon v-else name="power" :size="14" />
-        {{ store.connecting.value ? '连接中' : '立即连接' }}
+        {{ store.connecting.value ? tr('连接中') : tr('立即连接') }}
       </button>
     </div>
 
@@ -695,26 +1058,28 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       data-testid="proxies-direct-bar"
     >
       <span class="proxies-connect-text small">
-        <Icon name="zap" :size="15" />
-        当前为直连模式，选择的代理节点不会生效
-      </span>
+        <Icon name="zap" :size="15" /> {{ tr('当前为直连模式，选择的代理节点不会生效') }} </span>
       <button
         type="button"
         class="btn ghost sm"
         :disabled="Boolean(store.busy.mode)"
         data-testid="proxies-switch-rule"
         @click="store.setMode('rule')"
-      >
-        切回规则模式
-      </button>
+      > {{ tr('切回规则模式') }} </button>
     </div>
 
     <div v-if="listed.length" ref="toolbarEl" class="toolbar proxies-toolbar" data-testid="proxy-toolbar">
       <div class="search grow">
-        <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索节点、协议或 UDP 等标签" data-testid="node-search" data-page-search />
+        <Icon name="search" :size="15" />
+        <input v-model="query" type="search" :placeholder="tr('搜索节点或协议')" data-testid="node-search" data-page-search />
+        <span
+          v-if="!compact && hasSearchOrTag && matchCount > 0"
+          class="toolbar-count search-match-count small mono"
+          data-testid="match-count"
+          aria-live="polite"
+        >{{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }}</span>
         <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
-        <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" data-testid="clear-search" @click="query = ''">
+        <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空搜索')" data-testid="clear-search" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>
       </div>
@@ -722,21 +1087,45 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         v-if="compact"
         type="button"
         class="icon-btn options-btn"
-        :class="{ active: optionsOpen, marked: optionsActive && !optionsOpen }"
+        :class="{ active: optionsOpen }"
         :aria-expanded="optionsOpen"
         aria-controls="proxy-options"
-        aria-label="排序与视图"
-        title="排序与视图"
+        :aria-label="tr('排序与视图')"
+        :title="tr('排序与视图')"
         data-testid="toggle-options"
         @click="optionsOpen = !optionsOpen"
       >
         <Icon name="sliders" />
       </button>
-      <span v-if="needle && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite">
-        匹配 {{ matchCount }} 个节点
-      </span>
+      <span v-if="compact && hasSearchOrTag && matchCount > 0" class="toolbar-count small" data-testid="match-count" aria-live="polite"> {{ tr('匹配') }} {{ matchCount }} {{ tr('个节点') }} </span>
       <button
-        v-if="failedNodeCount > 0"
+        v-if="!drawerExpanded && activeQuickFilter"
+        type="button"
+        class="chip-btn active proxy-active-filter-pill"
+        :aria-label="tr('清除筛选：{0}', { 0: activeQuickFilter.label })"
+        :title="tr('点击清除筛选')"
+        data-testid="active-quick-filter-pill"
+        @click="activeTag = null"
+      >
+        <span>{{ activeQuickFilter.label }}</span>
+        <span class="proxy-quick-count mono">{{ activeQuickFilter.count }}</span>
+        <Icon name="x" :size="12" />
+      </button>
+      <button
+        v-if="compact && !drawerExpanded && hideFailed && failedNodeCount > 0"
+        type="button"
+        class="chip-btn active proxy-active-filter-pill"
+        :aria-label="tr('显示超时节点')"
+        :title="tr('显示超时节点')"
+        data-testid="active-hide-failed-pill"
+        @click="hideFailed = false"
+      >
+        <span>{{ tr('隐藏超时') }}</span>
+        <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
+        <Icon name="x" :size="12" />
+      </button>
+      <button
+        v-if="!compact && failedNodeCount > 0"
         type="button"
         class="chip-btn hide-failed-chip"
         :class="{ active: hideFailed }"
@@ -744,16 +1133,33 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         data-testid="hide-failed-nodes"
         @click="hideFailed = !hideFailed"
       >
-        隐藏超时 {{ failedNodeCount }}
+        <span>{{ tr('隐藏超时') }}</span>
+        <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
       </button>
       <div v-if="showOptions" id="proxy-options" class="toolbar-options">
-        <Segmented v-model="sort" :options="SORTS" size="sm" label="排序" />
+        <button
+          v-if="!compact && canToggleFilters"
+          type="button"
+          class="btn ghost sm tool-btn filter-drawer-toggle"
+          :class="{ active: filtersOpen }"
+          :aria-expanded="filtersOpen"
+          :aria-pressed="filtersOpen"
+          aria-controls="proxy-filter-drawer"
+          :aria-label="filtersOpen ? tr('收起筛选与分组导航') : tr('展开筛选与分组导航')"
+          :title="filtersOpen ? tr('收起筛选与分组导航') : tr('展开筛选与分组导航')"
+          data-testid="toggle-proxy-filters"
+          @click="filtersOpen = !filtersOpen"
+        >
+          <Icon name="filter" :size="14" />
+          <span class="filter-toggle-label">{{ tr('筛选') }}</span>
+        </button>
+        <Segmented v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
         <!-- Desktop: quiet icon buttons with tooltips; phones lay them out as labelled chips (R3, R12). Auto groups need no toggle (R13). -->
         <div
           v-if="!compact"
           class="view-switch"
           role="group"
-          aria-label="节点视图"
+          :aria-label="tr('节点视图')"
           :data-value="desktopView"
           data-testid="node-view"
         >
@@ -764,73 +1170,165 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
             class="view-switch-btn"
             :class="{ active: desktopView === item.id }"
             :aria-pressed="desktopView === item.id"
-            :aria-label="`${item.label}视图`"
-            :title="`${item.label}视图`"
+            :aria-label="tr('{0}视图', { 0: item.label })"
+            :title="tr('{0}视图', { 0: item.label })"
             :data-testid="`node-view-${item.id}`"
             @click="view = item.id"
           >
-            <Icon :name="item.icon" :size="15" />
+            <Icon :name="item.icon" :size="14" />
           </button>
         </div>
-        <button
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ 'icon-only': !compact }"
-          :disabled="!canLocateActive"
-          aria-label="定位当前选中节点"
-          :title="canLocateActive ? '定位当前选中节点' : '当前没有已选中的节点'"
-          data-testid="locate-active-node"
-          @click="locateActiveNode"
-        >
-          <Icon name="locate" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">定位</span>
-        </button>
-        <button
-          v-if="compact"
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ active: dense }"
-          :aria-pressed="dense"
-          :aria-label="denseLabel"
-          :title="denseLabel"
-          data-testid="toggle-dense"
-          @click="view = dense ? 'card' : 'dense'"
-        >
-          <Icon :name="denseIcon" :size="15" />
-          <span class="tool-btn-label">双列</span>
-        </button>
-        <button
-          type="button"
-          class="btn ghost sm tool-btn"
-          :class="{ 'icon-only': !compact }"
-          :title="allExpanded ? '收起全部代理组' : '展开全部代理组'"
-          data-testid="toggle-all"
-          @click="toggleAll"
-        >
-          <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
-          <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? '收起全部' : '展开全部' }}</span>
-        </button>
+        <div class="toolbar-quick-pair">
+          <button
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ 'icon-only': !compact }"
+            :disabled="!canLocateActive"
+            :aria-label="tr('定位当前选中节点')"
+            :title="canLocateActive ? tr('定位当前选中节点') : tr('当前没有已选中的节点')"
+            data-testid="locate-active-node"
+            @click="locateActiveNode"
+          >
+            <Icon name="locate" :size="15" />
+            <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ tr('定位') }}</span>
+          </button>
+          <button
+            v-if="compact"
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ active: dense }"
+            :aria-pressed="dense"
+            :aria-label="denseLabel"
+            :title="denseLabel"
+            data-testid="toggle-dense"
+            @click="view = dense ? 'card' : 'dense'"
+          >
+            <Icon :name="denseIcon" :size="15" />
+            <span class="tool-btn-label">{{ tr('双列') }}</span>
+          </button>
+          <button
+            type="button"
+            class="btn ghost sm tool-btn"
+            :class="{ 'icon-only': !compact }"
+            :title="allExpanded ? tr('收起全部代理组') : tr('展开全部代理组')"
+            data-testid="toggle-all"
+            @click="toggleAll"
+          >
+            <Icon :name="allExpanded ? 'collapse-all' : 'expand-all'" :size="15" />
+            <span class="tool-btn-label" :class="{ 'sr-only': !compact }">{{ allExpanded ? tr('收起全部') : tr('展开全部') }}</span>
+          </button>
+        </div>
       </div>
 
-      <nav
-        v-if="groups.length > 2 && !needle"
-        class="group-pills"
-        aria-label="代理组快速跳转"
-        data-testid="group-jump-bar"
+      <div
+        v-if="drawerExpanded && (quickFilters.length || (compact && failedNodeCount > 0) || (groups.length > 2 && !hasSearchOrTag))"
+        id="proxy-filter-drawer"
+        class="proxy-filter-drawer"
+        data-testid="proxy-filter-drawer"
       >
-        <button
-          v-for="group in groups"
-          :key="group.name"
-          type="button"
-          class="group-pill"
-          :class="{ open: isOpen(group.name), focused: store.focusGroup.value === group.name }"
-          :data-testid="`jump-group-${group.name}`"
-          @click="jumpToGroup(group.name)"
+        <div
+          v-if="quickFilters.length || (compact && failedNodeCount > 0)"
+          class="proxy-quick-row"
         >
-          <span class="group-pill-name">{{ group.name }}</span>
-          <span class="group-pill-count mono">{{ group.nodes.length }}</span>
-        </button>
-      </nav>
+          <span v-if="!compact" class="drawer-row-label">{{ tr('标签') }}</span>
+          <div
+            class="proxy-quick-filters"
+            role="group"
+            :aria-label="tr('筛选')"
+            data-testid="proxy-quick-filters"
+          >
+            <button
+              v-if="compact && failedNodeCount > 0"
+              type="button"
+              class="chip-btn proxy-quick-chip hide-failed-chip"
+              :class="{ active: hideFailed }"
+              :aria-pressed="hideFailed"
+              data-testid="hide-failed-nodes"
+              @click="hideFailed = !hideFailed"
+            >
+              <span>{{ tr('隐藏超时') }}</span>
+              <span class="proxy-quick-count mono">{{ failedNodeCount }}</span>
+            </button>
+            <button
+              v-for="chip in quickFilters"
+              :key="chip.id"
+              type="button"
+              class="chip-btn proxy-quick-chip"
+              :class="{ active: activeTag === chip.id }"
+              :aria-pressed="activeTag === chip.id"
+              :data-testid="`quick-filter-${chip.id}`"
+              @click="toggleQuickTag(chip.id)"
+            >
+              <span>{{ chip.label }}</span>
+              <span class="proxy-quick-count mono">{{ chip.count }}</span>
+            </button>
+            <button
+              v-if="hasActiveFilter"
+              type="button"
+              class="btn ghost sm proxy-quick-reset"
+              data-testid="clear-proxy-quick-filters"
+              @click="resetFilters"
+            >
+              <Icon name="x" :size="13" />
+              {{ tr('重置筛选') }}
+            </button>
+          </div>
+          <button
+            v-if="!compact"
+            type="button"
+            class="icon-btn sm drawer-close-btn"
+            :aria-label="tr('收起筛选与分组导航')"
+            :title="tr('收起筛选与分组导航')"
+            data-testid="close-proxy-filters"
+            @click="filtersOpen = false"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+
+        <div v-if="groups.length > 2 && !hasSearchOrTag" class="proxy-group-nav-row">
+          <span v-if="!compact" class="drawer-row-label">{{ tr('分组') }}</span>
+          <nav
+            ref="groupPillsEl"
+            class="group-pills"
+            :class="{ dragging: draggingPills }"
+            :aria-label="tr('代理组快速跳转')"
+            data-testid="group-jump-bar"
+            @mousedown="onPillsMouseDown"
+            @click.capture="onPillsClickCapture"
+            @wheel="onPillsWheel"
+          >
+            <button
+              v-for="group in groups"
+              :key="group.name"
+              type="button"
+              class="group-pill"
+              :class="{
+                open: isOpen(group.name),
+                focused: store.focusGroup.value === group.name,
+                testing: store.activeTest.value?.group === group.name,
+              }"
+              :aria-busy="store.activeTest.value?.group === group.name || undefined"
+              :data-testid="`jump-group-${group.name}`"
+              @click="jumpToGroup(group.name)"
+            >
+              <span class="group-pill-name">{{ group.name }}</span>
+              <span class="group-pill-count mono">{{ group.nodes.length }}</span>
+            </button>
+          </nav>
+          <button
+            v-if="!compact && !quickFilters.length"
+            type="button"
+            class="icon-btn sm drawer-close-btn"
+            :aria-label="tr('收起筛选与分组导航')"
+            :title="tr('收起筛选与分组导航')"
+            data-testid="close-proxy-filters"
+            @click="filtersOpen = false"
+          >
+            <Icon name="x" :size="14" />
+          </button>
+        </div>
+      </div>
       <div v-if="testAllProgressPct != null" class="test-progress-track" aria-hidden="true">
         <span class="test-progress-fill" :style="{ width: `${testAllProgressPct}%` }" />
       </div>
@@ -840,38 +1338,43 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
       v-if="!snap.node_catalog.length"
       variant="no-data"
       icon="globe"
-      :title="snap.nodes_notice ?? '没有代理组'"
-      description="添加并启用一份配置后，这里会列出它的代理组与节点。"
+      :title="snap.nodes_notice ? tr(snap.nodes_notice) : tr('没有代理组')"
+      :description="tr('添加并启用一份配置后，这里会列出它的代理组与节点。')"
     >
       <template #action>
-        <button type="button" class="btn primary sm" @click="store.go('profiles')">前往配置</button>
+        <button type="button" class="btn primary sm" @click="store.go('profiles')">{{ tr('前往配置') }}</button>
       </template>
     </EmptyState>
     <EmptyState
       v-else-if="allGroupsHidden"
       variant="no-data"
       icon="globe"
-      title="配置中的代理组均已隐藏"
-      description="这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。"
+      :title="tr('配置中的代理组均已隐藏')"
+      :description="tr('这份配置把全部代理组标记为 hidden，如需在这里选择节点，请在配置中取消隐藏。')"
       data-testid="all-groups-hidden"
     />
     <EmptyState
       v-else-if="!groups.length"
       compact
       variant="no-match"
-      title="没有匹配的节点"
-      description="换一个关键词或关闭「隐藏超时」筛选。"
+      :title="tr('没有匹配的节点')"
+      :description="tr('换一个关键词或关闭「隐藏超时」筛选。')"
       data-testid="no-match"
     >
       <template #action>
-        <button type="button" class="btn ghost sm" @click="query = ''; hideFailed = false">清空搜索</button>
+        <button
+          type="button"
+          class="btn ghost sm"
+          data-testid="reset-proxy-filters"
+          @click="resetFilters"
+        >{{ (hideFailed || activeTag) && !needle ? tr('重置筛选') : tr('清空筛选') }}</button>
       </template>
     </EmptyState>
 
     <section
       v-for="(group, index) in groups"
       :key="group.name"
-      v-memo="[group, autoNowKey, isOpen(group.name), view, needle, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
+      v-memo="[group, autoNowKey, isOpen(group.name), view, needle, activeTag, store.focusGroup.value, locatedNodeKey, snap.kernel_running, store.testProgress.value, store.testResults.value, store.activeTest.value, store.pendingTests.value.size, groupTestedAt(group), busyKeys]"
       class="card group"
       :class="{ open: isOpen(group.name), located: store.focusGroup.value === group.name }"
       :data-group-card="group.name"
@@ -893,60 +1396,60 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               <span
                 v-if="group.fixed"
                 class="tag accent fixed-tag"
-                :title="`已固定使用 ${group.fixed}，恢复自动后由组策略选择`"
+                :title="tr('已固定使用 {0}，恢复自动后由组策略选择', { 0: group.fixed })"
                 :data-testid="`group-fixed-${group.name}`"
-              >已固定</span>
-              <span class="muted small group-count mono">{{ group.nodes.length }}</span>
-              <span v-if="groupHealthText(group)" class="group-health muted small">{{ groupHealthText(group) }}</span>
+              >{{ tr('已固定') }}</span>
+              <span v-if="showGroupCount(group)" class="muted small group-count mono">{{ group.nodes.length }}</span>
+              <span v-if="groupHealthText(group)" class="group-health muted small mono">{{ groupHealthText(group) }}</span>
             </span>
             <span class="group-now small">
               <Icon v-if="group.kind === 'auto'" name="cpu" :size="13" />
-              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" />
-              <span v-else class="group-now-name">{{ group.kind === 'auto' ? '连接后显示' : '—' }}</span>
+              <ChainPath v-if="group.now" class="group-now-name" :hops="groupHops(group)" :groups="groupNamesSet" :fold="compact" />
+              <span v-else class="group-now-name">{{ group.kind === 'auto' ? tr('连接后显示') : '—' }}</span>
               <span v-if="groupNowDelay(group)" class="group-delay mono" :class="groupNowTone(group)">{{ groupNowDelay(group) }}</span>
-              <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">已测 {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
-              <span v-else-if="groupTestedAt(group)" class="group-tested">测速 {{ formatRelative(groupTestedAt(group)!) }}</span>
+              <span v-if="store.activeTest.value?.group === group.name" class="small mono" data-testid="group-test-progress" aria-live="polite">{{ tr('已测') }} {{ store.testProgress.value.tested }}/{{ store.testProgress.value.total }}</span>
+              <span v-else-if="groupTestedAt(group)" class="group-tested">{{ tr('测速') }} {{ formatRelative(groupTestedAt(group)!) }}</span>
             </span>
           </span>
-          <Icon name="chevron-down" class="chevron" />
         </button>
         <button
           v-if="fastestCandidate(group)"
           type="button"
           class="btn ghost sm group-fastest"
           :disabled="Boolean(store.busy[`select:${group.name}`])"
-          :title="`切换至当前最快的节点：${fastestCandidate(group)!.node.name} (${delayText(fastestCandidate(group)!.delay, false)})`"
+          :title="tr('切换至当前最快的节点：{0} ({1})', { 0: fastestCandidate(group)!.node.name, 1: delayText(fastestCandidate(group)!.delay, false) })"
           :data-testid="`pick-fastest-${group.name}`"
           @click="pickFastest(group)"
         >
           <Icon name="zap" :size="13" />
-          {{ compact ? '最快' : '选最快' }}
+          <span class="group-fastest-label">{{ compact ? tr('最快') : tr('选最快') }}</span>
         </button>
         <button
           v-if="group.fixed"
           type="button"
           class="btn ghost sm group-unfix"
           :disabled="!snap.kernel_running || Boolean(store.busy[`select:${group.name}`])"
-          :title="snap.kernel_running ? '解除固定，由组策略重新选择节点' : '内核没有运行'"
+          :title="snap.kernel_running ? tr('解除固定，由组策略重新选择节点') : tr('内核没有运行')"
           :data-testid="`unfix-group-${group.name}`"
           @click="store.unfixGroup(group.name)"
-        >
-          恢复自动
-        </button>
+        > {{ tr('恢复自动') }} </button>
         <button
           type="button"
           class="icon-btn group-test"
-          :aria-label="`测速 ${group.name}`"
+          :aria-label="tr('测速 {0}', { 0: group.name })"
           :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
-          :title="snap.kernel_running ? '测试该组延迟' : '连接后才能测速'"
+          :title="snap.kernel_running ? tr('测试该组延迟') : tr('连接后才能测速')"
           :disabled="!snap.kernel_running || store.testing.value"
           :aria-busy="store.activeTest.value?.group === group.name || undefined"
           :data-testid="`test-group-${group.name}`"
           @click="store.testGroup(group.name)"
         >
           <span v-if="store.busy[`test:${group.name}`]" class="spinner sm" />
-          <Icon v-else name="zap" />
+          <Icon v-else name="zap" :size="16" />
         </button>
+        <span class="group-chevron" aria-hidden="true" @click="toggle(group.name)">
+          <Icon name="chevron-down" class="chevron" :size="16" />
+        </span>
         <div v-if="groupTestProgressPct(group.name) != null" class="test-progress-track" aria-hidden="true">
           <span class="test-progress-fill" :style="{ width: `${groupTestProgressPct(group.name)}%` }" />
         </div>
@@ -964,16 +1467,58 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
         <template v-if="groupStrategy(group.group_type) || group.info?.length" #header>
           <p v-if="groupStrategy(group.group_type)" class="group-strategy small" data-testid="group-strategy">
             <Icon :name="groupStrategy(group.group_type)!.icon" :size="14" />
-            <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? `当前已固定为 ${group.fixed}。` : '点选节点可固定使用。' }}</template></span>
+            <span>{{ groupStrategy(group.group_type)!.hint }}<template v-if="group.pinnable">{{ group.fixed ? tr('当前已固定为 {0}。', { 0: group.fixed }) : tr('点选节点可固定使用。') }}</template></span>
           </p>
-          <p v-if="group.info?.length" class="group-info small" data-testid="group-info">
-            <Icon name="info" :size="13" />
-            <span v-for="item in group.info" :key="item.name" class="group-info-item" :title="item.name">{{ infoText(item.name) }}</span>
-          </p>
+          <div v-if="group.info?.length" class="group-quota small" data-testid="group-info">
+            <div
+              v-if="quotaOf(group.info).usage"
+              class="group-quota-usage"
+              :title="quotaOf(group.info).usage!.source"
+              data-testid="group-quota-usage"
+            >
+              <div
+                class="usage-bar"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuenow="Math.round(quotaOf(group.info).usage!.percent)"
+                :aria-label="tr('订阅流量用量')"
+              >
+                <span
+                  :style="{ width: `${quotaOf(group.info).usage!.percent > 0 ? Math.max(quotaOf(group.info).usage!.percent, 1.5) : 0}%` }"
+                  :class="{
+                    danger: quotaOf(group.info).usage!.percent >= 98,
+                    warn: quotaOf(group.info).usage!.percent > 85 && quotaOf(group.info).usage!.percent < 98,
+                  }"
+                />
+              </div>
+              <span class="group-quota-figure mono">{{ quotaOf(group.info).usage!.used }} / {{ quotaOf(group.info).usage!.total }}</span>
+              <span class="group-quota-pct mono">{{ percentText(quotaOf(group.info).usage!.percent) }}</span>
+            </div>
+            <div v-if="quotaTagCount(quotaOf(group.info))" class="group-quota-tags">
+              <span v-if="quotaOf(group.info).remaining" class="group-info-item" :title="quotaOf(group.info).remaining!.source">{{ tr('剩余 {0}', { 0: quotaOf(group.info).remaining!.value }) }}</span>
+              <span v-if="quotaOf(group.info).expire" class="group-info-item" :title="quotaOf(group.info).expire!.source">{{ tr('到期 {0}', { 0: quotaOf(group.info).expire!.value }) }}</span>
+              <span v-if="quotaOf(group.info).resetDays" class="group-info-item" :title="quotaOf(group.info).resetDays!.source">{{ resetText(quotaOf(group.info).resetDays!.value) }}</span>
+              <span v-for="(text, textIndex) in quotaOf(group.info).others" :key="`${textIndex}:${text}`" class="group-info-item" :title="text">{{ text }}</span>
+            </div>
+          </div>
         </template>
         <template #default="{ nodes: visibleNodes }">
-          <p v-if="!group.nodes.length" class="muted small">
-            {{ needle ? '没有匹配的节点' : snap.kernel_running ? '该组暂时没有可用节点，请检查资源页中的订阅源状态。' : '连接后加载订阅源节点。' }}
+          <div
+            v-if="!group.nodes.length && group.hiddenFailedCount"
+            class="group-empty-filter small muted"
+            data-testid="group-hidden-failed"
+          >
+            <span>{{ tr('当前已开启「隐藏超时」，已隐藏该组全部 {0} 个超时节点。', { 0: group.hiddenFailedCount }) }}</span>
+            <button
+              type="button"
+              class="btn ghost sm"
+              data-testid="show-failed-nodes"
+              @click="hideFailed = false"
+            >{{ tr('显示超时节点') }}</button>
+          </div>
+          <p v-else-if="!group.nodes.length" class="muted small">
+            {{ hasSearchOrTag ? tr('没有匹配的节点') : snap.kernel_running ? tr('该组暂时没有可用节点，请检查资源页中的订阅源状态。') : tr('连接后加载订阅源节点。') }}
           </p>
           <div
             v-for="node in visibleNodes"
@@ -986,7 +1531,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               'failed-node': nodeState(node).failed,
             }"
             :data-node="node.name"
-            @contextmenu.prevent="copyNodeName(node)"
+            @contextmenu.prevent="openNodeContextMenu($event, group, node)"
           >
             <button
               type="button"
@@ -1005,7 +1550,7 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                 <span
                   v-if="groupStrategy(group.group_type)?.ordered"
                   class="node-rank mono"
-                  :title="`优先级 ${rankOf(group, node)}`"
+                  :title="tr('优先级 {0}', { 0: rankOf(group, node) })"
                   data-testid="node-rank"
                 >{{ rankOf(group, node) }}</span>
                 <span v-if="nameParts(node.name).prefix.length" class="node-prefix"><template v-for="(part, partIndex) in nameParts(node.name).prefix" :key="partIndex"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
@@ -1014,12 +1559,12 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                 </template>
                 <!-- 紧凑 has no meta line, so an auto entry or chained node keeps its target beside the name. -->
                 <span v-if="dense && autoOf(node) && viaOf(node)" class="node-via-inline">→ {{ viaOf(node) }}</span>
-                <span v-else-if="dense && node.dialer_proxy" class="node-via-inline">经 {{ node.dialer_proxy }}</span>
+                <span v-else-if="dense && node.dialer_proxy" class="node-via-inline">{{ tr('经') }} {{ node.dialer_proxy }}</span>
               </span>
               <!-- An auto group entry says how it picks and where it currently points (R14). -->
               <span v-if="!dense && autoOf(node)" class="node-meta node-via" data-testid="node-via">
                 <span class="node-type strategy">{{ groupTypeLabel(autoOf(node)!) }}</span>
-                <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? '→ 等待测速' : '→ 连接后显示' }}</span>
+                <span class="node-via-target" :title="viaOf(node) || undefined">{{ viaOf(node) ? `→ ${viaOf(node)}` : snap.kernel_running ? tr('→ 等待测速') : tr('→ 连接后显示') }}</span>
               </span>
               <span v-else-if="!dense" class="node-meta" :title="metaTitle(node) || undefined" data-testid="node-meta">
                 <span class="node-type">{{ protocolLabel(node.node_type) || ' ' }}</span>
@@ -1027,16 +1572,16 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
                   v-for="tag in node.tags"
                   :key="tag"
                   class="node-tag"
-                  :class="{ udp: tag === 'UDP', chained: tag === '链式' }"
-                >{{ tag === '链式' && node.dialer_proxy ? `链式 · ${node.dialer_proxy}` : tag }}</span>
+                  :class="{ udp: tag === 'UDP', chained: tag === 'chained' }"
+                >{{ tag === 'chained' ? (node.dialer_proxy ? tr('链式 · {0}', { 0: node.dialer_proxy }) : tr('链式')) : tag }}</span>
               </span>
             </button>
             <button
               v-if="autoOf(node) && !autoOf(node)!.hidden"
               type="button"
               class="icon-btn sm node-open-auto"
-              :aria-label="`查看${groupTypeLabel(autoOf(node)!)}组 ${node.name}`"
-              :title="`查看「${node.name}」的${groupTypeLabel(autoOf(node)!)}策略与成员`"
+              :aria-label="tr('查看{0}组 {1}', { 0: groupTypeLabel(autoOf(node)!), 1: node.name })"
+              :title="tr('查看「{0}」的{1}策略与成员', { 0: node.name, 1: groupTypeLabel(autoOf(node)!) })"
               :data-testid="`open-auto-${node.name}`"
               @click="openAuto(node.name)"
             >
@@ -1046,21 +1591,219 @@ const optionsActive = computed(() => sort.value !== 'default' || view.value !== 
               type="button"
               class="delay"
               :class="[nodeTone(node), { busy: store.pendingTests.value.has(node.name), untested: !nodeDelay(node) }]"
-              :aria-label="`测速 ${node.name}`"
+              :aria-label="tr('测速 {0}', { 0: node.name })"
               :aria-describedby="snap.kernel_running ? undefined : 'proxy-test-hint'"
               :disabled="!snap.kernel_running || store.testing.value"
               :aria-busy="store.pendingTests.value.has(node.name) || undefined"
-              :title="snap.kernel_running ? '测试延迟' : '连接后才能测速'"
+              :title="snap.kernel_running ? tr('测试延迟') : tr('连接后才能测速')"
               :data-testid="`test-node-${node.name}`"
               @click="store.testNode(node.name)"
             >
-              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">测速中</span></template>
+              <template v-if="store.pendingTests.value.has(node.name)"><span class="spinner xs" /><span class="sr-only">{{ tr('测速中') }}</span></template>
               <template v-else-if="nodeDelay(node)">{{ nodeDelay(node) }}</template>
-              <Icon v-else name="zap" :size="13" />
+              <Icon v-else name="zap" :size="13" class="delay-zap" />
             </button>
           </div>
         </template>
       </ProxyNodeGrid>
     </section>
+
+    <ContextMenu
+      :open="Boolean(ctxMenu)"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxMenu?.items ?? []"
+      :label="tr('节点操作')"
+      @select="onNodeContextSelect"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>
+
+<style scoped>
+.btn.filter-drawer-toggle {
+  flex: none;
+  gap: 5px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 560;
+}
+
+.btn.filter-drawer-toggle:hover:not(:disabled) {
+  border-color: var(--border-input);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.btn.filter-drawer-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: none;
+}
+
+.search-match-count {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .btn.filter-drawer-toggle {
+    width: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+  .filter-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+.proxy-active-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 9px 0 10px;
+  border-radius: 10px;
+  font-size: var(--text-xs);
+  flex: none;
+}
+
+:global(.compact) .proxy-active-filter-pill {
+  height: 30px;
+  border-radius: var(--radius-pill);
+}
+
+.proxy-filter-drawer {
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  order: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.proxy-quick-row,
+.proxy-group-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.proxy-quick-filters {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  scrollbar-width: none;
+  padding: 1px 0;
+}
+
+.proxy-quick-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.proxy-group-nav-row .group-pills {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  order: 0;
+  margin: 0;
+  padding: 1px 0;
+}
+
+.drawer-row-label {
+  flex: none;
+  font-size: var(--text-xs);
+  font-weight: 580;
+  color: var(--text-3);
+  padding-right: 2px;
+  user-select: none;
+}
+
+.drawer-close-btn {
+  flex: none;
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  color: var(--text-3);
+}
+
+.drawer-close-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.proxy-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 27px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  gap: 5px;
+  flex: none;
+}
+
+.proxy-quick-chip:focus-visible,
+.proxy-quick-reset:focus-visible,
+.proxy-active-filter-pill:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.proxy-quick-count {
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.proxy-quick-reset {
+  flex: none;
+  height: 27px;
+  padding: 0 9px;
+  font-size: var(--text-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proxy-quick-chip,
+  .proxy-quick-reset {
+    transition: none;
+  }
+}
+</style>

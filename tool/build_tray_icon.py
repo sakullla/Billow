@@ -1,19 +1,17 @@
-"""Derive the macOS monochrome menu-bar template from Billow's app logo."""
+"""Derive the macOS monochrome menu-bar template from Billow's mark."""
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image
 
 
 def build_tray_icon(root: Path) -> None:
-    with Image.open(root / "assets/icon.png") as source:
-        source = source.convert("RGBA")
-        # The white crest and cyan edge are both bright in green; the navy
-        # background is dark. Keep their shared silhouette and soft edge.
-        mask = source.getchannel("G").point(lambda value: max(0, min(255, (value - 70) * 255 // 160)))
-        mask = ImageChops.multiply(mask, source.getchannel("A"))
+    # assets/mark.png is the transparent cut-out written by generate_app_icons.py;
+    # its alpha is exactly the silhouette a template image needs.
+    with Image.open(root / "assets/mark.png") as source:
+        mask = source.convert("RGBA").getchannel("A")
         bounds = mask.getbbox()
         if bounds is None:
-            raise ValueError("The app logo has no visible foreground")
+            raise ValueError("The app mark has no visible foreground")
         mask = mask.crop(bounds)
         mask.thumbnail((36, 36), Image.Resampling.LANCZOS)
         template = Image.new("RGBA", (44, 44))

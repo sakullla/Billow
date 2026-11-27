@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import EmptyState from '../components/EmptyState.vue'
 import Icon from '../components/Icon.vue'
@@ -25,6 +26,7 @@ defineProps<{ compact?: boolean }>()
 const store = useStore()
 const snap = computed(() => store.snapshot.value)
 const connectionBack = inject<(() => void) | null>('connectionBack', null)
+const ruleBack = inject<(() => void) | null>('ruleBack', null)
 
 function closeProviderDetail() {
   const closedName = detail.value?.row.name ?? null
@@ -37,6 +39,7 @@ function closeProviderDetail() {
       if (document.activeElement && document.activeElement !== document.body) return
       const target =
         document.querySelector<HTMLElement>('[data-testid="connection-return"]') ??
+        document.querySelector<HTMLElement>('[data-testid="rule-return"]') ??
         document.querySelector<HTMLElement>('[data-testid="page-back"]') ??
         (closedName ? document.querySelector<HTMLElement>(`[data-testid="open-provider-${CSS.escape(closedName)}"]`) : null)
       target?.focus({ preventScroll: true })
@@ -51,14 +54,29 @@ async function returnToConnection() {
   else store.go('connections')
 }
 
+async function returnToRule() {
+  detail.value = null
+  await nextTick()
+  if (ruleBack) ruleBack()
+  else store.go('rules')
+}
+
 type Action = 'update' | 'healthcheck'
 type RowState = 'pending' | 'error' | 'success'
+type ProviderFilter = 'all' | 'proxy' | 'rule' | 'failed'
 
 interface RowProgress {
   state: RowState
   action: Action
   reason: string | null
   at: number | null
+}
+
+interface BatchState {
+  running: boolean
+  action: Action | null
+  done: number
+  total: number
 }
 
 const providers = shallowRef<ProviderRow[]>([])
@@ -68,28 +86,46 @@ const loaded = ref(false)
 const geoBusy = ref(false)
 const geoError = ref<string | null>(null)
 const progress = reactive<Record<string, RowProgress>>({})
-const allRunning = reactive<Record<'proxy' | 'rule', boolean>>({ proxy: false, rule: false })
-const allProgress = reactive<Record<'proxy' | 'rule', { done: number; total: number }>>({
-  proxy: { done: 0, total: 0 },
-  rule: { done: 0, total: 0 },
+const batchState = reactive<Record<'proxy' | 'rule', BatchState>>({
+  proxy: { running: false, action: null, done: 0, total: 0 },
+  rule: { running: false, action: null, done: 0, total: 0 },
 })
 
 const proxySets = computed(() => providers.value.filter((item) => item.kind === 'proxy'))
 const ruleSets = computed(() => providers.value.filter((item) => item.kind === 'rule'))
 
-/** Long provider lists (a dozen rule sets is common) get a name filter. */
-const SEARCH_THRESHOLD = 8
 const query = ref('')
+const providerFilter = ref<ProviderFilter>('all')
 const needle = computed(() => query.value.trim().toLowerCase())
 const queryTokens = computed(() => splitQueryTokens(query.value))
-const showSearch = computed(() => providers.value.length > SEARCH_THRESHOLD || Boolean(query.value))
-const matches = (row: ProviderRow) =>
-  !queryTokens.value.length || matchesTokens(`${row.name} ${row.behavior} ${row.format}`, queryTokens.value)
-const sections = computed(() => [
-  { kind: 'proxy' as const, title: '代理集', all: proxySets.value, rows: proxySets.value.filter(matches) },
-  { kind: 'rule' as const, title: '规则集', all: ruleSets.value, rows: ruleSets.value.filter(matches) },
+const isFiltered = computed(() => Boolean(needle.value) || providerFilter.value !== 'all')
+const failedTotal = computed(() => providers.value.filter((row) => stateOf(row)?.state === 'error').length)
+const PROVIDER_FILTER_OPTIONS = computed(() => [
+  { id: 'all' as const, label: tr('全部') },
+  { id: 'proxy' as const, label: tr('代理集') },
+  { id: 'rule' as const, label: tr('规则集') },
+  { id: 'failed' as const, label: failedTotal.value > 0 ? `${tr('异常')} (${failedTotal.value})` : tr('异常') },
 ])
-const noMatch = computed(() => Boolean(needle.value) && providers.value.length > 0 && sections.value.every((section) => !section.rows.length))
+const matchesQuery = (row: ProviderRow) =>
+  !queryTokens.value.length || matchesTokens(`${row.name} ${row.behavior} ${row.format}`, queryTokens.value)
+const matchesFilter = (row: ProviderRow) => {
+  if (providerFilter.value === 'proxy' && row.kind !== 'proxy') return false
+  if (providerFilter.value === 'rule' && row.kind !== 'rule') return false
+  if (providerFilter.value === 'failed' && stateOf(row)?.state !== 'error') return false
+  return true
+}
+const matches = (row: ProviderRow) => matchesFilter(row) && matchesQuery(row)
+const sections = computed(() => [
+  { kind: 'proxy' as const, get title() { return tr('代理集') }, all: proxySets.value, rows: proxySets.value.filter(matches) },
+  { kind: 'rule' as const, get title() { return tr('规则集') }, all: ruleSets.value, rows: ruleSets.value.filter(matches) },
+])
+const visibleCount = computed(() => sections.value.reduce((sum, section) => sum + section.rows.length, 0))
+const noMatch = computed(() => isFiltered.value && providers.value.length > 0 && visibleCount.value === 0)
+
+function resetFilters() {
+  query.value = ''
+  providerFilter.value = 'all'
+}
 
 /** Sections fold away once they are just plumbing; the choice survives restarts. */
 const COLLAPSE_KEY = 'billow.resources.collapsed'
@@ -110,19 +146,22 @@ function toggleSection(kind: 'proxy' | 'rule') {
     // Storage is optional; the fold still applies for this session.
   }
 }
-/** A search always shows its hits, folded or not. */
-const isOpen = (kind: 'proxy' | 'rule') => !collapsed[kind] || Boolean(needle.value)
+/** Active search or category/status filter always reveals matching sections, folded or not. */
+const isOpen = (kind: 'proxy' | 'rule') => !collapsed[kind] || isFiltered.value
 
 /** One-line digest for a folded section: freshest update and anything needing attention. */
 function sectionSummary(rows: ProviderRow[]): string {
   const parts: string[] = []
-  const failed = rows.filter((row) => stateOf(row)?.state === 'error').length
-  if (failed) parts.push(`${failed} 个更新失败`)
+  const failed = rows.filter((row) => stateOf(row)?.state === 'error')
+  if (failed.length) {
+    const allHealthcheck = failed.every((row) => stateOf(row)?.action === 'healthcheck')
+    parts.push(allHealthcheck ? tr('{0} 个检查失败', { 0: failed.length }) : tr('{0} 个更新失败', { 0: failed.length }))
+  }
   const latest = rows.reduce<number | null>((max, row) => {
     const ms = updatedMs(row)
     return ms != null && (max == null || ms > max) ? ms : max
   }, null)
-  if (latest != null) parts.push(`最近更新 ${formatRelative(latest)}`)
+  if (latest != null) parts.push(tr('最近更新 {0}', { 0: formatRelative(latest) }))
   return parts.join(' · ')
 }
 
@@ -132,6 +171,10 @@ const isInline = (row: ProviderRow) => row.vehicle.toLowerCase().includes('inlin
 const keyOf = (row: ProviderRow) => `${row.kind}:${row.name}`
 const stateOf = (row: ProviderRow) => progress[keyOf(row)] ?? null
 const fruitless = (row: ProviderRow) => stateOf(row)?.state === 'pending'
+const hasPendingInKind = (kind: 'proxy' | 'rule') =>
+  Object.entries(progress).some(([key, value]) => key.startsWith(`${kind}:`) && value.state === 'pending')
+const sectionBusy = (kind: 'proxy' | 'rule') =>
+  batchState[kind].running || hasPendingInKind(kind)
 const updatedMs = (row: ProviderRow) => {
   const ms = Date.parse(row.updated_at)
   return Number.isNaN(ms) || ms < 86_400_000 ? null : ms
@@ -139,6 +182,7 @@ const updatedMs = (row: ProviderRow) => {
 
 let loadVersion = 0
 let detailVersion = 0
+let batchEpoch = 0
 let disposed = false
 
 async function load(quiet = false) {
@@ -169,17 +213,20 @@ async function load(quiet = false) {
   }
 }
 
-async function act(row: ProviderRow, action: Action, quiet = false) {
+async function act(row: ProviderRow, action: Action, quiet = false, expectedEpoch = batchEpoch) {
+  if (fruitless(row)) return false
   const key = keyOf(row)
   progress[key] = { state: 'pending', action, reason: null, at: null }
   try {
     await store.backend.providerAction(row.kind, row.name, action)
+    if (disposed || expectedEpoch !== batchEpoch) return false
     progress[key] = { state: 'success', action, reason: null, at: Date.now() }
     if (!quiet) {
-      store.toast(action === 'update' ? `${row.name} 已更新` : `${row.name} 健康检查完成`, 'success')
+      store.toast(action === 'update' ? tr('{0} 已更新', { 0: row.name }) : tr('{0} 健康检查完成', { 0: row.name }), 'success')
     }
     return true
   } catch (err) {
+    if (disposed || expectedEpoch !== batchEpoch) return false
     const reason = err instanceof Error ? err.message : String(err)
     progress[key] = { state: 'error', action, reason, at: null }
     if (!quiet) store.toast(`${row.name}：${reason}`, 'error')
@@ -187,54 +234,111 @@ async function act(row: ProviderRow, action: Action, quiet = false) {
   }
 }
 
-async function single(row: ProviderRow, action: Action) {
-  if (fruitless(row)) return
-  const ok = await act(row, action)
+async function single(row: ProviderRow, action: Action): Promise<boolean> {
+  if (!snap.value.kernel_running || sectionBusy(row.kind)) return false
+  const epoch = batchEpoch
+  const ok = await act(row, action, false, epoch)
+  if (disposed || epoch !== batchEpoch) return false
   if (ok) await load(true)
   // A health check only touches its own row; no full page reload and no other row state.
   if (action === 'healthcheck') void store.refresh()
+  return ok
+}
+
+async function runDetailAction(action: Action) {
+  const row = detail.value?.row
+  if (!row) return
+  const ok = await single(row, action)
+  if (!ok || disposed) return
+  const current = detail.value?.row
+  if (current && current.kind === row.kind && current.name === row.name) {
+    await openDetail(current)
+  }
 }
 
 const failedRows = (rows: ProviderRow[]) =>
-  rows.filter((row) => !isInline(row) && stateOf(row)?.state === 'error')
+  rows.filter((row) => {
+    const state = stateOf(row)
+    if (!state || state.state !== 'error') return false
+    return state.action === 'healthcheck' || !isInline(row)
+  })
 
 /**
- * Bounded concurrent pool: updates up to 3 proxy providers or 4 rule providers in parallel
- * while keeping per-row state isolated and updating the done/total counter live.
+ * Bounded concurrent pool: runs update or healthcheck across up to 3 proxy providers
+ * or 4 rule providers in parallel while keeping per-row state isolated, mutually
+ * excluding concurrent batches per section, and safely invalidating on profile switch / stop.
  */
-async function updateAll(rows: ProviderRow[], kind: 'proxy' | 'rule', onlyFailed = false) {
-  if (allRunning[kind]) return
-  const updatable = onlyFailed ? failedRows(rows) : rows.filter((row) => !isInline(row))
-  if (!updatable.length) return
-  allRunning[kind] = true
-  allProgress[kind] = { done: 0, total: updatable.length }
+async function runBatch(
+  rows: ProviderRow[],
+  kind: 'proxy' | 'rule',
+  action: Action,
+  onlyFailed = false,
+) {
+  if (!snap.value.kernel_running || sectionBusy(kind)) return
+  const targets: { row: ProviderRow; action: Action }[] = onlyFailed
+    ? failedRows(rows).map((row) => ({ row, action: stateOf(row)?.action ?? action }))
+    : rows
+        .filter((row) => action === 'healthcheck' || !isInline(row))
+        .map((row) => ({ row, action }))
+  if (!targets.length) return
+
+  const epoch = batchEpoch
+  const allHealthcheck = targets.every((item) => item.action === 'healthcheck')
+  const anyHealthcheck = targets.some((item) => item.action === 'healthcheck')
+  const displayAction: Action = allHealthcheck ? 'healthcheck' : 'update'
+
+  batchState[kind].running = true
+  batchState[kind].action = displayAction
+  batchState[kind].done = 0
+  batchState[kind].total = targets.length
   try {
     const { done, failed } = await runPool(
-      updatable,
+      targets,
       {
         concurrency: kind === 'rule' ? 4 : 3,
-        shouldStop: () => disposed || !snap.value.kernel_running,
+        shouldStop: () => disposed || epoch !== batchEpoch || !snap.value.kernel_running,
         onProgress: (completed) => {
-          allProgress[kind] = { done: completed, total: updatable.length }
+          if (disposed || epoch !== batchEpoch) return
+          batchState[kind].done = completed
         },
       },
-      (row) => act(row, 'update', true),
+      (item) => act(item.row, item.action, true, epoch),
     )
-    if (!disposed && snap.value.kernel_running) {
+    if (disposed || epoch !== batchEpoch) return
+    if (snap.value.kernel_running) {
       await load(true)
+      if (anyHealthcheck && !disposed && epoch === batchEpoch) void store.refresh()
     }
-    const total = updatable.length
-    if (!disposed && total) {
-      store.toast(
-        failed
-          ? `更新完成：${done}/${total}，${failed} 个失败`
-          : `已更新 ${done}/${total} 个${kind === 'proxy' ? '代理集' : '规则集'}`,
-        failed ? 'error' : 'success',
-      )
+    const total = targets.length
+    if (!disposed && epoch === batchEpoch && total) {
+      if (allHealthcheck) {
+        store.toast(
+          failed
+            ? tr('健康检查完成：{0}/{1}，{2} 个失败', { 0: done, 1: total, 2: failed })
+            : tr('已完成 {0}/{1} 个代理集健康检查', { 0: done, 1: total }),
+          failed ? 'error' : 'success',
+        )
+      } else {
+        store.toast(
+          failed
+            ? tr('更新完成：{0}/{1}，{2} 个失败', { 0: done, 1: total, 2: failed })
+            : tr('已更新 {0}/{1} 个{2}', { 0: done, 1: total, 2: kind === 'proxy' ? tr('代理集') : tr('规则集') }),
+          failed ? 'error' : 'success',
+        )
+      }
     }
   } finally {
-    allRunning[kind] = false
+    if (epoch === batchEpoch) {
+      batchState[kind].running = false
+      batchState[kind].action = null
+    }
   }
+}
+
+async function retryFailed(rows: ProviderRow[], kind: 'proxy' | 'rule') {
+  const firstFailed = failedRows(rows)[0]
+  if (!firstFailed) return
+  await runBatch(rows, kind, stateOf(firstFailed)?.action ?? 'update', true)
 }
 
 async function retry(row: ProviderRow) {
@@ -249,26 +353,26 @@ const lastFailedGeoKey = ref<string | undefined>(undefined)
 // ── GEO databases: file state, mode, source preset, and per-database URLs ──
 const geoFiles = shallowRef<GeoFile[]>([])
 const GEO_INTERVALS = [
-  { id: '24', label: '每天' },
-  { id: '72', label: '每 3 天' },
-  { id: '168', label: '每周' },
+  { id: '24', get label() { return tr('每天') } },
+  { id: '72', get label() { return tr('每 3 天') } },
+  { id: '168', get label() { return tr('每周') } },
 ] as const
 const GEO_SOURCES: { id: GeoSource; label: string }[] = [
-  { id: '', label: '默认' },
+  { id: '', get label() { return tr('默认') } },
   { id: 'github', label: 'GitHub' },
   { id: 'jsdelivr', label: 'jsDelivr' },
   { id: 'testingcf', label: 'CF' },
 ]
 const GEODATA_MODES = [
-  { id: '', label: '默认' },
+  { id: '', get label() { return tr('默认') } },
   { id: 'db', label: 'MMDB' },
   { id: 'dat', label: 'DAT' },
 ] as const
 /** mihomo defaults to the low-memory loader; 标准 reads each file whole. */
 const GEODATA_LOADERS = [
-  { id: '', label: '默认' },
-  { id: 'memconservative', label: '低内存' },
-  { id: 'standard', label: '标准' },
+  { id: '', get label() { return tr('默认') } },
+  { id: 'memconservative', get label() { return tr('低内存') } },
+  { id: 'standard', get label() { return tr('标准') } },
 ] as const
 const GEO_URL_FIELDS: { key: keyof GeoUrls; label: string }[] = [
   { key: 'geoip', label: 'GeoIP' },
@@ -284,12 +388,12 @@ const geoLatest = computed(() =>
 )
 /** One plain sentence instead of four cards: ready or not, how fresh, and whether it maintains itself. */
 const geoSummary = computed(() => {
-  if (!geoFiles.value.length) return '分流规则依赖的地域与域名数据'
+  if (!geoFiles.value.length) return tr('分流规则依赖的地域与域名数据')
   const parts = [
-    geoMissing.value ? `${geoMissing.value} 个尚未下载` : '全部就绪',
+    geoMissing.value ? tr('{0} 个尚未下载', { 0: geoMissing.value }) : tr('全部就绪'),
   ]
-  if (geoLatest.value) parts.push(`${formatRelative(geoLatest.value)}更新`)
-  parts.push(geoSettings.value.geo_auto_update ? '自动更新' : '手动更新')
+  if (geoLatest.value) parts.push(tr('{0}更新', { 0: formatRelative(geoLatest.value) }))
+  parts.push(geoSettings.value.geo_auto_update ? tr('自动更新') : tr('手动更新'))
   return parts.join(' · ')
 })
 const geoInterval = computed(() => String(geoSettings.value.geo_update_interval ?? 24))
@@ -300,9 +404,9 @@ const geodataModeId = computed(() => {
 const shownGeoFiles = computed(() => geoFiles.value)
 const geodataLoaderId = computed(() => geoSettings.value.geodata_loader ?? '')
 const geodataLoaderHint = computed(() => {
-  if (geodataLoaderId.value === 'standard') return '一次读入整个 GEO 文件，内存占用更高'
-  if (geodataLoaderId.value === 'memconservative') return '按需读取 GEO 文件，适合手机与路由器'
-  return '沿用配置；未设置时内核默认低内存模式'
+  if (geodataLoaderId.value === 'standard') return tr('一次读入整个 GEO 文件，内存占用更高')
+  if (geodataLoaderId.value === 'memconservative') return tr('按需读取 GEO 文件，适合手机与路由器')
+  return tr('沿用配置；未设置时内核默认低内存模式')
 })
 
 const geoUrlsDraft = reactive<GeoUrls>(defaultGeoUrls())
@@ -394,7 +498,7 @@ async function upgradeGeo(key?: string) {
       await loadGeo()
     }
     const label = key ? (shownGeoFiles.value.find((f) => f.key === key)?.label ?? key.toUpperCase()) : 'GEO'
-    store.toast(`${label} 数据库已更新`, 'success')
+    store.toast(tr('{0} 数据库已更新', { 0: label }), 'success')
   } catch (err) {
     lastFailedGeoKey.value = key
     geoError.value = err instanceof Error ? err.message : String(err)
@@ -423,8 +527,9 @@ const detailProxies = computed(() => {
     matchesTokens(`${row.name} ${row.node_type} ${protocolLabel(row.node_type)} ${row.tags.join(' ')}`, detailTokens.value),
   )
 })
-/** Rule lists can hold thousands of lines; the sheet renders a capped slice and says so. */
+/** Rule lists can hold thousands of lines; start at 400 rows and expand progressively via "Show more". */
 const RULE_PAGE = 400
+const detailLimit = ref(RULE_PAGE)
 /** The backend previews the first rows of a large set; searching it must ask for all of them. */
 const detailPartial = computed(() => {
   const data = detail.value?.data
@@ -433,6 +538,9 @@ const detailPartial = computed(() => {
 const detailSearch = shallowRef<{ query: string; data: ProviderDetail | null; error: string | null; pending: boolean } | null>(null)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 let searchVersion = 0
+watch(detailNeedle, () => {
+  detailLimit.value = RULE_PAGE
+})
 watch([detailNeedle, detailPartial], ([needle, partial]) => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = null
@@ -477,6 +585,7 @@ function ruleFormat(row: ProviderRow): string {
 async function openDetail(row: ProviderRow) {
   const version = ++detailVersion
   detailQuery.value = ''
+  detailLimit.value = RULE_PAGE
   detail.value = { row, data: null, error: null }
   try {
     const data = await store.backend.providerDetail(row.kind, row.name)
@@ -507,17 +616,18 @@ function consumeFocusProvider() {
     providers.value.find((row) => row.name.toLowerCase() === lower)
   store.focusProvider.value = null
   if (!target) {
-    store.toast(`未找到资源「${req.name}」`, 'info')
+    store.toast(tr('未找到资源「{0}」', { 0: req.name }), 'info')
     return
   }
   if (collapsed[target.kind]) collapsed[target.kind] = false
-  if (query.value && !matches(target)) query.value = ''
+  if (providerFilter.value !== 'all' && !matchesFilter(target)) providerFilter.value = 'all'
+  if (query.value && !matchesQuery(target)) query.value = ''
   void openDetail(target)
 }
 
 watch(() => store.focusProvider.value, () => consumeFocusProvider())
 
-const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? '检查通过' : '已更新')
+const successText = (row: ProviderRow) => (stateOf(row)?.action === 'healthcheck' ? tr('检查通过') : tr('已更新'))
 
 // A stopped kernel drops the rows instead of showing the previous session (R31),
 // while hot-reloads that keep kernel_running=true preserve the existing provider list.
@@ -527,8 +637,12 @@ watch(
     if (running && prevRunning && activeId === prevActiveId) return
     loadVersion++
     detailVersion++
+    batchEpoch++
+    batchState.proxy = { running: false, action: null, done: 0, total: 0 }
+    batchState.rule = { running: false, action: null, done: 0, total: 0 }
     detail.value = null
     providers.value = []
+    providerFilter.value = 'all'
     for (const key of Object.keys(progress)) delete progress[key]
     if (running) {
       void load()
@@ -545,6 +659,7 @@ onBeforeUnmount(() => {
   disposed = true
   loadVersion++
   detailVersion++
+  batchEpoch++
   if (store.focusProvider.value) store.focusProvider.value = null
 })
 
@@ -558,19 +673,10 @@ onMounted(() => {
   <div class="page resources">
     <header class="page-head">
       <div>
-        <h1>资源</h1>
-        <p class="muted small">配置引用的代理集与规则集</p>
+        <h1>{{ tr('资源') }}</h1>
+        <p class="muted small">{{ tr('配置引用的代理集与规则集') }}</p>
       </div>
       <div v-if="snap.kernel_running" class="head-actions">
-        <div v-if="showSearch && providers.length" class="search provider-search">
-          <Icon name="search" :size="16" />
-          <input v-model="query" type="search" placeholder="筛选代理集与规则集" data-page-search data-testid="provider-search" />
-          <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
-          <span v-if="needle" class="small muted mono">{{ sections.reduce((sum, section) => sum + section.rows.length, 0) }}</span>
-          <button v-if="query" type="button" class="icon-btn sm" aria-label="清空筛选" @click="query = ''">
-            <Icon name="x" :size="14" />
-          </button>
-        </div>
         <button
           type="button"
           class="btn ghost sm"
@@ -581,14 +687,46 @@ onMounted(() => {
         >
           <span v-if="loading" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="refresh" :size="15" />
-          {{ loading ? '刷新中' : '刷新' }}
+          {{ loading ? tr('刷新中') : tr('刷新') }}
         </button>
       </div>
     </header>
 
+    <div v-if="snap.kernel_running && providers.length" class="toolbar res-toolbar" data-testid="provider-toolbar">
+      <div class="search provider-search grow">
+        <Icon name="search" :size="16" />
+        <input v-model="query" type="search" :placeholder="tr('筛选代理集与规则集')" data-page-search data-testid="provider-search" />
+        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
+        <span class="small muted mono search-count" data-testid="provider-count">
+          {{ isFiltered ? `${visibleCount}/${providers.length}` : providers.length }}
+        </span>
+        <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空筛选')" @click="query = ''">
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+      <div class="toolbar-options">
+        <Segmented
+          v-model="providerFilter"
+          :options="PROVIDER_FILTER_OPTIONS"
+          size="sm"
+          :label="tr('资源筛选')"
+          data-testid="provider-filter"
+        />
+        <button
+          v-if="isFiltered"
+          type="button"
+          class="btn ghost sm"
+          data-testid="reset-provider-filters"
+          @click="resetFilters"
+        >
+          {{ tr('重置筛选') }}
+        </button>
+      </div>
+    </div>
+
     <Skeleton v-if="loading && !providers.length && snap.kernel_running" variant="card" :cards="2" />
 
-    <EmptyState v-if="!snap.kernel_running" variant="unavailable" icon="database" title="内核未运行" description="连接后可以查看并更新配置中的 proxy-providers 与 rule-providers。">
+    <EmptyState v-if="!snap.kernel_running" variant="unavailable" icon="database" :title="tr('内核未运行')" :description="tr('连接后可以查看并更新配置中的 proxy-providers 与 rule-providers。')">
       <template #action>
         <button
           type="button"
@@ -600,22 +738,27 @@ onMounted(() => {
         >
           <span v-if="store.connecting.value" class="spinner xs" aria-hidden="true" />
           <Icon v-else :name="store.hasProfiles.value ? 'power' : 'plus'" :size="14" />
-          {{ store.hasProfiles.value ? (store.connecting.value ? '连接中' : '立即连接') : '添加配置' }}
+          {{ store.hasProfiles.value ? (store.connecting.value ? tr('连接中') : tr('立即连接')) : tr('添加配置') }}
         </button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="loaded && error && !providers.length" variant="error" title="读取失败" :description="error">
+    <EmptyState v-else-if="loaded && error && !providers.length" variant="error" :title="tr('读取失败')" :description="error">
       <template #action>
-        <button type="button" class="btn ghost sm" data-testid="retry-providers" @click="load()">重试</button>
+        <button type="button" class="btn ghost sm" data-testid="retry-providers" @click="load()">{{ tr('重试') }}</button>
       </template>
     </EmptyState>
-    <EmptyState v-else-if="loaded && !providers.length && !loading" variant="no-data" title="这份配置没有使用外部资源" description="配置里的 proxy-providers 和 rule-providers 会显示在这里。">
+    <EmptyState v-else-if="loaded && !providers.length && !loading" variant="no-data" :title="tr('这份配置没有使用外部资源')" :description="tr('配置里的 proxy-providers 和 rule-providers 会显示在这里。')">
       <template #action>
-        <button type="button" class="btn ghost sm" @click="load()">刷新</button>
+        <button type="button" class="btn ghost sm" @click="load()">{{ tr('刷新') }}</button>
       </template>
     </EmptyState>
 
-    <p v-if="noMatch" class="empty-line muted" data-testid="provider-no-match">没有名称匹配「{{ query.trim() }}」的资源</p>
+    <div v-if="noMatch" class="empty-line muted" data-testid="provider-no-match">
+      <span v-if="needle">{{ tr('没有名称匹配「') }}{{ query.trim() }}{{ tr('」的资源') }}</span>
+      <span v-else-if="providerFilter === 'failed'">{{ tr('当前没有异常的外部资源') }}</span>
+      <span v-else>{{ tr('当前筛选条件下没有外部资源') }}</span>
+      <button type="button" class="btn ghost sm" @click="resetFilters">{{ tr('重置筛选') }}</button>
+    </div>
 
     <template v-for="section in sections" :key="section.kind">
       <section v-if="section.rows.length" class="card provider-card" :class="{ folded: !isOpen(section.kind) }" :data-section="section.kind">
@@ -624,36 +767,54 @@ onMounted(() => {
             type="button"
             class="provider-fold"
             :aria-expanded="isOpen(section.kind)"
-            :disabled="Boolean(needle)"
+            :disabled="isFiltered"
             :data-testid="`fold-${section.kind}`"
             @click="toggleSection(section.kind)"
           >
             <Icon name="chevron-right" :size="15" class="fold-chevron" />
             <h2>{{ section.title }}</h2>
-            <span class="count-pill">{{ needle ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
+            <span class="count-pill">{{ isFiltered ? `${section.rows.length}/${section.all.length}` : section.all.length }}</span>
             <span v-if="!isOpen(section.kind)" class="muted small ellipsis provider-fold-summary">{{ sectionSummary(section.all) }}</span>
           </button>
           <div class="card-head-actions">
             <button
-              v-if="!allRunning[section.kind] && failedRows(section.all).length > 0"
+              v-if="!batchState[section.kind].running && failedRows(section.all).length > 0"
               type="button"
               class="btn ghost sm danger-text"
+              :disabled="sectionBusy(section.kind)"
               :data-testid="`retry-failed-${section.kind}`"
-              @click="updateAll(section.all, section.kind, true)"
+              @click="retryFailed(section.all, section.kind)"
             >
-              <Icon name="refresh" :size="14" />重试失败 ({{ failedRows(section.all).length }})
+              <Icon name="refresh" :size="14" />{{ tr('重试失败 (') }}{{ failedRows(section.all).length }})
+            </button>
+            <button
+              v-if="section.kind === 'proxy'"
+              type="button"
+              class="btn ghost sm"
+              :disabled="sectionBusy('proxy')"
+              :aria-busy="(batchState.proxy.running && batchState.proxy.action === 'healthcheck') || undefined"
+              data-testid="healthcheck-all-proxy"
+              @click="runBatch(section.all, 'proxy', 'healthcheck')"
+            >
+              <span v-if="batchState.proxy.running && batchState.proxy.action === 'healthcheck'" class="spinner sm" aria-hidden="true" />
+              <Icon v-else name="zap" :size="15" />
+              {{ batchState.proxy.running && batchState.proxy.action === 'healthcheck'
+                ? tr('检查中 {0}/{1}', { 0: batchState.proxy.done, 1: batchState.proxy.total })
+                : tr('全部健康检查') }}
             </button>
             <button
               type="button"
               class="btn ghost sm"
-              :disabled="allRunning[section.kind]"
-              :aria-busy="allRunning[section.kind] || undefined"
+              :disabled="sectionBusy(section.kind)"
+              :aria-busy="(batchState[section.kind].running && batchState[section.kind].action === 'update') || undefined"
               :data-testid="`update-all-${section.kind}`"
-              @click="updateAll(section.all, section.kind)"
+              @click="runBatch(section.all, section.kind, 'update')"
             >
-              <span v-if="allRunning[section.kind]" class="spinner sm" aria-hidden="true" />
+              <span v-if="batchState[section.kind].running && batchState[section.kind].action === 'update'" class="spinner sm" aria-hidden="true" />
               <Icon v-else name="refresh" :size="15" />
-              {{ allRunning[section.kind] ? `更新中 ${allProgress[section.kind].done}/${allProgress[section.kind].total}` : '全部更新' }}
+              {{ batchState[section.kind].running && batchState[section.kind].action === 'update'
+                ? tr('更新中 {0}/{1}', { 0: batchState[section.kind].done, 1: batchState[section.kind].total })
+                : tr('全部更新') }}
             </button>
           </div>
         </header>
@@ -670,7 +831,7 @@ onMounted(() => {
             <button
               type="button"
               class="provider-open"
-              :aria-label="`查看 ${row.name} 的${row.kind === 'proxy' ? '节点' : '规则'}`"
+              :aria-label="tr('查看 {0} 的{1}', { 0: row.name, 1: row.kind === 'proxy' ? tr('节点') : tr('规则') })"
               :data-testid="`open-provider-${row.name}`"
               @click="openDetail(row)"
             />
@@ -685,16 +846,16 @@ onMounted(() => {
                   </template>
                 </strong>
                 <p class="muted small provider-meta">
-                  <span>{{ row.kind === 'proxy' ? `${row.count} 个节点` : `${row.count.toLocaleString()} 条规则` }}</span>
+                  <span>{{ row.kind === 'proxy' ? tr('{0} 个节点', { 0: row.count }) : tr('{0} 条规则', { 0: row.count.toLocaleString() }) }}</span>
                   <span v-if="row.behavior">{{ row.behavior }}</span>
-                  <span v-if="isInline(row)" data-provider-inline>内联 · 无需更新</span>
+                  <span v-if="isInline(row)" data-provider-inline>{{ tr('内联 · 无需更新') }}</span>
                   <span
                     v-else-if="stateOf(row)?.state === 'pending'"
                     class="provider-state-inline pending"
                     role="status"
                     data-provider-state="pending"
                   >
-                    {{ stateOf(row)?.action === 'healthcheck' ? '检查中' : '更新中' }}
+                    {{ stateOf(row)?.action === 'healthcheck' ? tr('检查中') : tr('更新中') }}
                   </span>
                   <span
                     v-else-if="stateOf(row)?.state === 'success'"
@@ -703,8 +864,8 @@ onMounted(() => {
                   >
                     <Icon name="check" :size="12" />{{ successText(row) }}
                   </span>
-                  <span v-else>{{ formatRelative(updatedMs(row)) }}更新</span>
-                  <span v-if="row.expire">{{ formatDate(row.expire) }} 到期</span>
+                  <span v-else>{{ formatRelative(updatedMs(row)) }}{{ tr('更新') }}</span>
+                  <span v-if="row.expire">{{ formatDate(row.expire) }} {{ tr('到期') }}</span>
                 </p>
               </div>
             </div>
@@ -714,8 +875,8 @@ onMounted(() => {
             </div>
             <p v-if="stateOf(row)?.state === 'error'" class="provider-note field-error small" role="alert" data-provider-state="error">
               <Icon name="alert" :size="13" />
-              {{ stateOf(row)?.action === 'healthcheck' ? '健康检查失败' : '更新失败' }}：{{ stateOf(row)?.reason }}
-              <button type="button" class="btn ghost sm" data-testid="retry-provider" @click="retry(row)">重试</button>
+              {{ stateOf(row)?.action === 'healthcheck' ? tr('健康检查失败') : tr('更新失败') }}：{{ stateOf(row)?.reason }}
+              <button type="button" class="btn ghost sm" :disabled="sectionBusy(row.kind)" data-testid="retry-provider" @click="retry(row)">{{ tr('重试') }}</button>
             </p>
           </div>
           <div class="provider-actions">
@@ -723,9 +884,9 @@ onMounted(() => {
               v-if="row.kind === 'proxy'"
               type="button"
               class="icon-btn"
-              :aria-label="`${row.name} 健康检查`"
-              :title="`${row.name} 健康检查`"
-              :disabled="fruitless(row)"
+              :aria-label="tr('{0} 健康检查', { 0: row.name })"
+              :title="tr('{0} 健康检查', { 0: row.name })"
+              :disabled="sectionBusy(row.kind)"
               @click="single(row, 'healthcheck')"
             >
               <span v-if="stateOf(row)?.state === 'pending' && stateOf(row)?.action === 'healthcheck'" class="spinner sm" />
@@ -734,9 +895,9 @@ onMounted(() => {
             <button
               type="button"
               class="icon-btn"
-              :aria-label="isInline(row) ? `${row.name} 无需更新` : `更新 ${row.name}`"
-              :title="isInline(row) ? '内联资源无需更新' : `更新 ${row.name}`"
-              :disabled="isInline(row) || fruitless(row)"
+              :aria-label="isInline(row) ? tr('{0} 无需更新', { 0: row.name }) : tr('更新 {0}', { 0: row.name })"
+              :title="isInline(row) ? tr('内联资源无需更新') : tr('更新 {0}', { 0: row.name })"
+              :disabled="isInline(row) || sectionBusy(row.kind)"
               @click="single(row, 'update')"
             >
               <span v-if="stateOf(row)?.state === 'pending' && stateOf(row)?.action === 'update'" class="spinner sm" />
@@ -755,14 +916,14 @@ onMounted(() => {
       <div class="geo-strip">
         <span class="geo-glyph" :class="{ warn: geoMissing > 0 }" aria-hidden="true"><Icon name="globe" :size="18" /></span>
         <div class="grow min0">
-          <strong>GEO 数据库</strong>
+          <strong>{{ tr('GEO 数据库') }}</strong>
           <p class="muted small ellipsis" data-testid="geo-summary">{{ geoSummary }}</p>
         </div>
         <button
           type="button"
           class="icon-btn"
-          title="GEO 设置"
-          aria-label="GEO 设置"
+          :title="tr('GEO 设置')"
+          :aria-label="tr('GEO 设置')"
           data-testid="open-geo-settings"
           @click="geoOpen = true"
         >
@@ -773,25 +934,24 @@ onMounted(() => {
           class="btn sm"
           :disabled="geoBusy"
           :aria-busy="geoBusy || undefined"
-          title="下载并更新全部 GEO 数据库"
+          :title="tr('下载并更新全部 GEO 数据库')"
           data-testid="upgrade-geo"
           @click="upgradeGeo()"
         >
           <span v-if="geoBusy" class="spinner sm" aria-hidden="true" />
           <Icon v-else name="download" :size="15" />
-          {{ geoBusy ? '更新中' : '更新' }}
+          {{ geoBusy ? tr('更新中') : tr('更新') }}
         </button>
       </div>
       <ul v-if="shownGeoFiles.length" class="geo-chips" data-testid="geo-files">
         <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }" :title="file.file">
-          <span class="geo-chip-dot" aria-hidden="true" />
           <strong>{{ file.label }}</strong>
-          <span class="muted">{{ file.exists ? formatBytes(file.size) : '未下载' }}</span>
+          <span class="muted">{{ file.exists ? formatBytes(file.size) : tr('未下载') }}</span>
         </li>
       </ul>
       <div v-if="geoError" class="geo-alert" role="alert" data-testid="geo-error">
         <Icon name="alert" :size="15" />
-        <span class="geo-alert-text small">{{ geoError }}</span>
+        <span class="geo-alert-text small">{{ tr(geoError) }}</span>
         <div class="geo-alert-actions">
           <button
             v-if="geoSettings.geo_source !== 'jsdelivr'"
@@ -800,40 +960,35 @@ onMounted(() => {
             :disabled="geoBusy"
             data-testid="geo-switch-jsdelivr"
             @click="switchJsdelivrAndUpgrade"
-          >
-            切换 jsDelivr 重试
-          </button>
+          > {{ tr('切换 jsDelivr 重试') }} </button>
           <button
             type="button"
             class="btn ghost sm"
             :disabled="geoBusy"
             data-testid="geo-retry"
             @click="upgradeGeo(lastFailedGeoKey)"
-          >
-            重试
-          </button>
+          > {{ tr('重试') }} </button>
         </div>
       </div>
     </section>
 
-    <Modal v-if="geoOpen" title="GEO 数据库" subtitle="GEOIP、GEOSITE 规则使用的地域与域名数据" @close="geoOpen = false">
+    <Modal :open="geoOpen" :title="tr('GEO 数据库')" :subtitle="tr('GEOIP、GEOSITE 规则使用的地域与域名数据')" @close="geoOpen = false">
       <div class="geo-sheet" data-testid="geo-settings">
         <ul class="geo-file-list" data-testid="geo-file-list">
           <li v-for="file in shownGeoFiles" :key="file.key" :class="{ missing: !file.exists }">
-            <span class="geo-chip-dot" aria-hidden="true" />
             <div class="grow min0">
               <strong>{{ file.label }}</strong>
               <span class="muted small mono">{{ file.file }}</span>
             </div>
             <span class="muted small geo-file-meta">
-              {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : '尚未下载' }}
+              {{ file.exists ? `${formatBytes(file.size)} · ${formatRelative(file.modified_ms)}` : tr('尚未下载') }}
             </span>
             <button
               type="button"
               class="icon-btn sm"
               :disabled="geoBusy"
-              :title="`更新 ${file.label}`"
-              :aria-label="`更新 ${file.label}`"
+              :title="tr('更新 {0}', { 0: file.label })"
+              :aria-label="tr('更新 {0}', { 0: file.label })"
               :data-testid="`upgrade-geo-${file.key}`"
               @click="upgradeGeo(file.key)"
             >
@@ -846,64 +1001,64 @@ onMounted(() => {
         <div class="geo-options">
           <div class="setting-row">
             <div class="grow">
-              <strong>自动更新</strong>
-              <p class="muted small">内核运行时在后台定期同步</p>
+              <strong>{{ tr('自动更新') }}</strong>
+              <p class="muted small">{{ tr('内核运行时在后台定期同步') }}</p>
             </div>
             <Toggle
               :model-value="geoSettings.geo_auto_update === true"
-              label="GEO 自动更新"
+              :label="tr('GEO 自动更新')"
               data-testid="geo-auto-update"
               @update:model-value="(on) => saveGeo({ geo_auto_update: on, geo_update_interval: on ? Number(geoInterval) : geoSettings.geo_update_interval })"
             />
           </div>
           <div v-if="geoSettings.geo_auto_update" class="setting-row">
-            <div class="grow"><strong>更新频率</strong></div>
+            <div class="grow"><strong>{{ tr('更新频率') }}</strong></div>
             <Segmented
               :model-value="geoInterval"
               :options="GEO_INTERVALS"
               size="sm"
-              label="更新频率"
+              :label="tr('更新频率')"
               @update:model-value="(id) => saveGeo({ geo_update_interval: Number(id) })"
             />
           </div>
           <div class="setting-row">
             <div class="grow">
-              <strong>下载源</strong>
-              <p class="muted small">{{ geoSettings.geo_source ? '下载慢或失败时可换用加速镜像' : '沿用配置中的 geox-url' }}</p>
+              <strong>{{ tr('下载源') }}</strong>
+              <p class="muted small">{{ geoSettings.geo_source ? tr('下载慢或失败时可换用加速镜像') : tr('沿用配置中的 geox-url') }}</p>
             </div>
             <Segmented
               :model-value="geoSettings.geo_source"
               :options="GEO_SOURCES"
               size="sm"
-              label="下载源"
+              :label="tr('下载源')"
               data-testid="geo-source"
               @update:model-value="(id) => saveGeo({ geo_source: id })"
             />
           </div>
           <div class="setting-row">
             <div class="grow">
-              <strong>GeoIP 格式</strong>
-              <p class="muted small">{{ geodataModeId === 'dat' ? '使用 GeoIP.dat' : geodataModeId === 'db' ? '使用 Country.mmdb' : '沿用配置中的 geodata-mode' }}</p>
+              <strong>{{ tr('GeoIP 格式') }}</strong>
+              <p class="muted small">{{ geodataModeId === 'dat' ? tr('使用 GeoIP.dat') : geodataModeId === 'db' ? tr('使用 Country.mmdb') : tr('沿用配置中的 geodata-mode') }}</p>
             </div>
             <Segmented
               :model-value="geodataModeId"
               :options="GEODATA_MODES"
               size="sm"
-              label="GeoIP 格式"
+              :label="tr('GeoIP 格式')"
               data-testid="geodata-mode"
               @update:model-value="(id) => saveGeo({ geodata_mode: id === '' ? null : id === 'dat' })"
             />
           </div>
           <div class="setting-row">
             <div class="grow">
-              <strong>加载方式</strong>
+              <strong>{{ tr('加载方式') }}</strong>
               <p class="muted small">{{ geodataLoaderHint }}</p>
             </div>
             <Segmented
               :model-value="geodataLoaderId"
               :options="GEODATA_LOADERS"
               size="sm"
-              label="GEO 加载方式"
+              :label="tr('GEO 加载方式')"
               data-testid="geodata-loader"
               @update:model-value="(id) => saveGeo({ geodata_loader: id === '' ? null : id })"
             />
@@ -913,10 +1068,10 @@ onMounted(() => {
         <details class="geo-advanced" data-testid="geo-urls-section" :open="hasCustomGeoUrls || undefined">
           <summary>
             <Icon name="chevron-right" :size="14" />
-            <span class="grow">自定义下载地址</span>
-            <span v-if="hasCustomGeoUrls" class="tag accent sm">已自定义</span>
+            <span class="grow">{{ tr('自定义下载地址') }}</span>
+            <span v-if="hasCustomGeoUrls" class="tag accent sm">{{ tr('已自定义') }}</span>
           </summary>
-          <p class="muted small">留空则使用上方下载源。</p>
+          <p class="muted small">{{ tr('留空则使用上方下载源。') }}</p>
           <div class="geo-url-list">
             <label v-for="item in GEO_URL_FIELDS" :key="item.key" class="geo-url-row" :for="`geo-url-${item.key}`">
               <span class="geo-url-label">{{ item.label }}</span>
@@ -927,7 +1082,7 @@ onMounted(() => {
                 class="input sm mono"
                 spellcheck="false"
                 :placeholder="geoUrlPlaceholder(item.key)"
-                :aria-label="`${item.label} 下载地址`"
+                :aria-label="tr('{0} 下载地址', { 0: item.label })"
                 :data-testid="`geo-url-${item.key}`"
                 @focus="geoUrlFocused = true"
                 @blur="geoUrlFocused = false; commitGeoUrls()"
@@ -942,9 +1097,7 @@ onMounted(() => {
               class="btn ghost sm"
               data-testid="reset-geo-urls"
               @click="resetGeoUrls"
-            >
-              恢复默认
-            </button>
+            > {{ tr('恢复默认') }} </button>
             <button
               v-if="geoUrlsDirty"
               type="button"
@@ -952,41 +1105,39 @@ onMounted(() => {
               data-testid="save-geo-urls"
               @mousedown.prevent
               @click="commitGeoUrls"
-            >
-              保存地址
-            </button>
+            > {{ tr('保存地址') }} </button>
           </div>
         </details>
       </div>
     </Modal>
 
     <Modal
-      v-if="detail"
+      :open="Boolean(detail)"
       wide
-      :title="detail.row.name"
-      :subtitle="detail.row.kind === 'proxy'
-        ? `代理集 · ${detail.data ? detail.data.total : detail.row.count} 个节点`
-        : `规则集 · ${(detail.data?.total || detail.row.count).toLocaleString()} 条规则${detail.row.behavior ? ` · ${detail.row.behavior}` : ''}${ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : ''}`"
+      :title="detail?.row.name ?? ''"
+      :subtitle="detail ? (detail.row.kind === 'proxy'
+        ? tr('代理集 · {0} 个节点', { 0: detail.data ? detail.data.total : detail.row.count })
+        : tr('规则集 · {0} 条规则{1}{2}', { 0: (detail.data?.total || detail.row.count).toLocaleString(), 1: detail.row.behavior ? ` · ${detail.row.behavior}` : '', 2: ruleFormat(detail.row) ? ` · ${ruleFormat(detail.row)}` : '' })) : ''"
       @close="closeProviderDetail"
     >
-      <div class="provider-detail" data-testid="provider-detail">
+      <div v-if="detail" class="provider-detail" data-testid="provider-detail">
         <div v-if="detail.data?.source && detail.data.source !== 'inline'" class="detail-source-row">
           <p class="muted small mono ellipsis detail-source grow" :title="detail.data.source">{{ detail.data.source }}</p>
           <button
             type="button"
             class="icon-btn sm"
-            title="复制来源地址"
-            aria-label="复制来源地址"
+            :title="tr('复制来源地址')"
+            :aria-label="tr('复制来源地址')"
             data-testid="copy-provider-source"
-            @click="store.copyText(detail.data.source, '已复制来源地址')"
+            @click="store.copyText(detail.data.source, tr('已复制来源地址'))"
           >
             <Icon name="copy" :size="13" />
           </button>
         </div>
         <div v-if="detail.data && (detail.data.proxies.length || detail.data.rules.length)" class="search">
           <Icon name="search" :size="16" />
-          <input v-model="detailQuery" type="search" :placeholder="detail.row.kind === 'proxy' ? '搜索节点、协议或 UDP' : '搜索规则'" />
-          <span v-if="detailNeedle && detailSearching" class="spinner xs" aria-label="正在搜索全部规则" />
+          <input v-model="detailQuery" type="search" :placeholder="detail.row.kind === 'proxy' ? tr('搜索节点、协议或 UDP') : tr('搜索规则')" />
+          <span v-if="detailNeedle && detailSearching" class="spinner xs" :aria-label="tr('正在搜索全部规则')" />
           <span v-else-if="detailNeedle" class="small muted mono" data-testid="provider-match-count">
             {{ (detail.row.kind === 'proxy' ? detailProxies.length : detailRuleCount).toLocaleString() }}
           </span>
@@ -994,19 +1145,19 @@ onMounted(() => {
             v-if="detailQuery"
             type="button"
             class="icon-btn sm"
-            aria-label="清空搜索"
+            :aria-label="tr('清空搜索')"
             data-testid="clear-provider-search"
             @click="detailQuery = ''"
           >
             <Icon name="x" :size="14" />
           </button>
         </div>
-        <p v-if="detail.error" class="field-error" role="alert">{{ detail.error }}</p>
-        <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> 正在读取…</div>
+        <p v-if="detail.error" class="field-error" role="alert">{{ tr(detail.error) }}</p>
+        <div v-else-if="!detail.data" class="detail-loading muted small"><span class="spinner xs" /> {{ tr('正在读取…') }}</div>
         <template v-else>
-          <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ detailNotice }}</p>
+          <p v-if="detailNotice" class="banner info small" data-testid="provider-notice"><Icon name="info" :size="15" />{{ tr(detailNotice) }}</p>
           <ul v-if="detail.row.kind === 'proxy'" class="detail-list">
-            <li v-for="proxy in detailProxies.slice(0, RULE_PAGE)" :key="proxy.name" class="detail-proxy">
+            <li v-for="proxy in detailProxies.slice(0, detailLimit)" :key="proxy.name" class="detail-proxy">
               <span class="grow min0">
                 <strong class="ellipsis">
                   <template v-for="(part, partIdx) in highlightDetail(proxy.name)" :key="partIdx">
@@ -1023,22 +1174,61 @@ onMounted(() => {
                 class="delay"
                 :class="delayTone(proxy.delay_ms, proxy.alive === false)"
               >{{ delayText(proxy.delay_ms, proxy.alive === false) }}</span>
+              <button
+                type="button"
+                class="icon-btn xs detail-copy-btn"
+                :title="tr('复制节点名')"
+                :aria-label="tr('复制节点名')"
+                data-testid="copy-detail-proxy"
+                @click="store.copyText(proxy.name, tr('已复制节点名'))"
+              >
+                <Icon name="copy" :size="13" />
+              </button>
             </li>
-            <li v-if="detailProxies.length > RULE_PAGE" class="muted small empty-line">还有 {{ detailProxies.length - RULE_PAGE }} 个节点，输入关键词缩小范围</li>
-            <li v-if="!detailProxies.length" class="muted small empty-line">{{ detailQuery ? '没有匹配的节点' : '这个代理集还没有节点' }}</li>
+            <li v-if="detailProxies.length > detailLimit" class="detail-more-row">
+              <button
+                type="button"
+                class="btn ghost sm"
+                data-testid="detail-show-more"
+                @click="detailLimit += RULE_PAGE"
+              >
+                {{ tr('显示更多（还有 {0} 个节点）', { 0: (detailProxies.length - detailLimit).toLocaleString() }) }}
+              </button>
+            </li>
+            <li v-if="!detailProxies.length" class="muted small empty-line">{{ detailQuery ? tr('没有匹配的节点') : tr('这个代理集还没有节点') }}</li>
           </ul>
           <ol v-else-if="detail.data.rules.length" class="detail-list detail-rules mono">
-            <li v-for="(rule, index) in detailRules.slice(0, RULE_PAGE)" :key="index">
+            <li v-for="(rule, index) in detailRules.slice(0, detailLimit)" :key="index">
               <span v-if="ruleParts(rule).type" class="rule-type">{{ ruleParts(rule).type }}</span>
-              <span class="ellipsis">
+              <span class="ellipsis grow">
                 <template v-for="(part, partIdx) in highlightDetail(ruleParts(rule).rest)" :key="partIdx">
                   <mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template>
                 </template>
               </span>
+              <button
+                type="button"
+                class="icon-btn xs detail-copy-btn"
+                :title="tr('复制规则')"
+                :aria-label="tr('复制规则')"
+                data-testid="copy-detail-rule"
+                @click="store.copyText(rule, tr('已复制规则'))"
+              >
+                <Icon name="copy" :size="13" />
+              </button>
             </li>
-            <li v-if="!detailRules.length" class="muted small empty-line">{{ detailSearching ? `正在搜索全部 ${detail.data.total.toLocaleString()} 条…` : '没有匹配的规则' }}</li>
-            <li v-else-if="detailRules.length > RULE_PAGE" class="muted small empty-line">
-              还有 {{ (detailRules.length - RULE_PAGE).toLocaleString() }} 条，输入关键词缩小范围
+            <li v-if="!detailRules.length" class="muted small empty-line">{{ detailSearching ? tr('正在搜索全部 {0} 条…', { 0: detail.data.total.toLocaleString() }) : tr('没有匹配的规则') }}</li>
+            <li v-else-if="detailRules.length > detailLimit" class="detail-more-row">
+              <button
+                type="button"
+                class="btn ghost sm"
+                data-testid="detail-show-more"
+                @click="detailLimit += RULE_PAGE"
+              >
+                {{ tr('显示更多（还有 {0} 条）', { 0: (detailRules.length - detailLimit).toLocaleString() }) }}
+              </button>
+            </li>
+            <li v-else-if="detailPartial && !detailNeedle" class="muted small empty-line" data-testid="detail-preview-cap">
+              {{ tr('共 {0} 条，当前已展开全部 {1} 条预览；输入关键词可搜索整份规则集', { 0: detail.data.total.toLocaleString(), 1: detailRules.length.toLocaleString() }) }}
             </li>
           </ol>
         </template>
@@ -1046,36 +1236,43 @@ onMounted(() => {
       <!-- The sheet's work action is primary; closing is the quiet way out. -->
       <template #footer>
         <button
-          v-if="store.connectionReturn.value"
+          v-if="store.connectionReturn.value?.targetPage === 'resources'"
           type="button"
           class="btn ghost"
           data-testid="provider-return-connection"
           @click="returnToConnection"
         >
-          <Icon name="chevron-left" :size="15" />返回连接
-        </button>
-        <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="closeProviderDetail">关闭</button>
+          <Icon name="chevron-left" :size="15" />{{ tr('返回连接') }} </button>
         <button
-          v-if="detail.row.kind === 'proxy'"
+          v-else-if="store.ruleReturn.value && store.ruleReturn.value.targetPage === 'resources'"
+          type="button"
+          class="btn ghost"
+          data-testid="provider-return-rule"
+          @click="returnToRule"
+        >
+          <Icon name="chevron-left" :size="15" />{{ tr('返回规则') }} </button>
+        <button type="button" class="btn ghost" data-testid="close-provider-detail" @click="closeProviderDetail">{{ tr('关闭') }}</button>
+        <button
+          v-if="detail && detail.row.kind === 'proxy'"
           type="button"
           class="btn primary"
-          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :disabled="!snap.kernel_running || sectionBusy(detail.row.kind)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="single(detail.row, 'healthcheck').then(() => detail && openDetail(detail.row))"
+          @click="runDetailAction('healthcheck')"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
-          <Icon v-else name="zap" :size="15" />{{ fruitless(detail.row) ? '检查中' : '健康检查' }}
+          <Icon v-else name="zap" :size="15" />{{ fruitless(detail.row) ? tr('检查中') : tr('健康检查') }}
         </button>
         <button
-          v-else-if="!isInline(detail.row)"
+          v-else-if="detail && !isInline(detail.row)"
           type="button"
           class="btn primary"
-          :disabled="!snap.kernel_running || fruitless(detail.row)"
+          :disabled="!snap.kernel_running || sectionBusy(detail.row.kind)"
           :aria-busy="fruitless(detail.row) || undefined"
-          @click="single(detail.row, 'update').then(() => detail && openDetail(detail.row))"
+          @click="runDetailAction('update')"
         >
           <span v-if="fruitless(detail.row)" class="spinner sm" aria-hidden="true" />
-          <Icon v-else name="refresh" :size="15" />{{ fruitless(detail.row) ? '更新中' : '更新规则集' }}
+          <Icon v-else name="refresh" :size="15" />{{ fruitless(detail.row) ? tr('更新中') : tr('更新规则集') }}
         </button>
       </template>
     </Modal>

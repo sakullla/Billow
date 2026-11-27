@@ -9,6 +9,7 @@ const win = vi.hoisted(() => ({
   toggleMaximize: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
   isMaximized: vi.fn(async () => false),
+  isDecorated: vi.fn(async () => false),
   onResized: vi.fn(async () => () => {}),
 }))
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => win }))
@@ -48,6 +49,14 @@ describe('desktop window chrome', () => {
     win.isMaximized.mockResolvedValueOnce(true)
     const wrapper = await mountApp('windows')
     expect(wrapper.find('[data-testid="window-maximize"]').attributes('aria-label')).toBe('还原')
+  })
+
+  it('suppresses custom Windows caption buttons when the OS window is already decorated (#3)', async () => {
+    win.isDecorated.mockResolvedValueOnce(true)
+    const wrapper = await mountApp('windows')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="titlebar"]').exists()).toBe(false)
+    expect(wrapper.find('.shell').classes()).not.toContain('chrome-windows')
   })
 
   it('keeps native traffic lights on macOS and leaves room for them', async () => {

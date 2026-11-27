@@ -16,8 +16,9 @@ if (['android', 'androideabi'].includes(process.env.TAURI_ENV_PLATFORM) || proce
   const cache = resolve(root, 'src-tauri/gen/android/.tauri/kernel-cache')
   const target = resolve(root, 'src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libmihomo.so')
   const stamp = resolve(cache, 'build.json')
-  const key = JSON.stringify(manifest)
   const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
+  const modePatch = (await readFile(resolve(root, 'tool/android-kernel-mode.patch'), 'utf8')).replaceAll('\r\n', '\n')
+  const key = JSON.stringify({ manifest, modePatch: sha(modePatch) })
   const previous = JSON.parse(await readFile(stamp, 'utf8').catch(() => '{}'))
   const existing = await readFile(target).catch(() => null)
   if (previous.key === key && existing && sha(existing) === previous.sha256) {
@@ -37,6 +38,10 @@ if (['android', 'androideabi'].includes(process.env.TAURI_ENV_PLATFORM) || proce
     const source = resolve(extraction, `mihomo-${manifest.commit}`)
     // Compile a fresh extraction, so leftover Go files cannot enter the build.
     execFileSync('tar', ['-xzf', archivePath, '-C', extraction], { stdio: 'inherit' })
+    // The extraction is inside Billow's checkout. Apply relative to the Mihomo source root.
+    execFileSync('git', ['apply', '--no-index', '-'], {
+      cwd: source, input: modePatch, env: { ...process.env, GIT_CEILING_DIRECTORIES: extraction },
+    })
     await mkdir(resolve(target, '..'), { recursive: true })
     execFileSync('go', ['build', '-mod=readonly', '-trimpath', '-tags', manifest.tags.join(','), '-ldflags',
       `-s -w -X github.com/metacubex/mihomo/constant.Version=${manifest.version}-billow`, '-o', target, '.'], {

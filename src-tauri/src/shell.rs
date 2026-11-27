@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -13,6 +14,8 @@ const MAX_EDGE: f64 = 10000.0;
 pub struct ShellState {
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_palette")]
+    pub palette: String,
     #[serde(default = "default_entry")]
     pub last_entry: String,
     #[serde(default = "default_width")]
@@ -23,6 +26,35 @@ pub struct ShellState {
     pub close_to_tray: bool,
     #[serde(default)]
     pub silent_start: bool,
+    /// Release the main webview when the window is closed to give its memory
+    /// back (R44). Only has an effect while `close_to_tray` is on, where the
+    /// window would otherwise stay hidden instead of closing; off by default.
+    #[serde(default)]
+    pub release_ui_on_close: bool,
+    /// UI language preference: `system`, `zh-CN` or `en` (R42).
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// WebDAV backup storage (R38). Plain text like the age identities; never
+    /// written to a backup file, so an imported file cannot repoint it.
+    #[serde(default)]
+    pub webdav_url: String,
+    #[serde(default)]
+    pub webdav_user: String,
+    #[serde(default)]
+    pub webdav_password: String,
+    /// Desktop global shortcut per action id (R39). Nothing is bound by default.
+    /// A same-platform backup carries it so a cleared restore brings it back; a
+    /// restore from the other platform keeps this machine's (see `ShellBackup`).
+    #[serde(default)]
+    pub hotkeys: BTreeMap<String, String>,
+    /// Query the exit IP automatically after connecting or switching (R40).
+    /// Off by default; the tray and background tasks never query.
+    #[serde(default)]
+    pub auto_exit_ip: bool,
+    /// Keep a daily traffic history per profile, group and node (R43). Off by
+    /// default; turning it off leaves the existing history in place.
+    #[serde(default)]
+    pub traffic_history: bool,
 }
 
 fn default_true() -> bool {
@@ -30,6 +62,14 @@ fn default_true() -> bool {
 }
 
 fn default_theme() -> String {
+    "system".to_string()
+}
+
+fn default_palette() -> String {
+    "teal".to_string()
+}
+
+fn default_language() -> String {
     "system".to_string()
 }
 
@@ -49,11 +89,98 @@ impl Default for ShellState {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            palette: default_palette(),
             last_entry: default_entry(),
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
             close_to_tray: true,
             silent_start: false,
+            release_ui_on_close: false,
+            language: default_language(),
+            webdav_url: String::new(),
+            webdav_user: String::new(),
+            webdav_password: String::new(),
+            hotkeys: BTreeMap::new(),
+            auto_exit_ip: false,
+            traffic_history: false,
+        }
+    }
+}
+
+/// The app settings a backup carries (R38). Window size, the last page and the
+/// WebDAV account are machine specific and stay out of the file; a restore keeps
+/// this machine's. Global shortcuts are written to the file so a cleared
+/// restore brings them back, but a file from the other platform keeps this
+/// machine's bindings (see `backup::merge_platform`, R39).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShellBackup {
+    pub theme: String,
+    pub palette: String,
+    pub close_to_tray: bool,
+    pub silent_start: bool,
+    /// Lightweight mode travels with "stay in tray" (R44).
+    pub release_ui_on_close: bool,
+    pub language: String,
+    /// Automatic exit IP queries are a behaviour preference, not a machine
+    /// detail, so they travel with the theme and language (R40).
+    pub auto_exit_ip: bool,
+    /// Desktop global shortcut per action id (R39). Per-machine values, kept
+    /// local when the backup came from the other platform.
+    pub hotkeys: BTreeMap<String, String>,
+    /// The traffic-recording switch, not its rows (R43). Only the switch is an
+    /// app setting; the history data stays out of every backup (R38).
+    pub traffic_history: bool,
+}
+
+impl Default for ShellBackup {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            palette: default_palette(),
+            close_to_tray: true,
+            silent_start: false,
+            release_ui_on_close: false,
+            language: default_language(),
+            auto_exit_ip: false,
+            hotkeys: BTreeMap::new(),
+            traffic_history: false,
+        }
+    }
+}
+
+impl ShellBackup {
+    pub fn of(state: &ShellState) -> Self {
+        Self {
+            theme: state.theme.clone(),
+            palette: state.palette.clone(),
+            close_to_tray: state.close_to_tray,
+            silent_start: state.silent_start,
+            release_ui_on_close: state.release_ui_on_close,
+            language: state.language.clone(),
+            auto_exit_ip: state.auto_exit_ip,
+            hotkeys: state.hotkeys.clone(),
+            traffic_history: state.traffic_history,
+        }
+    }
+
+    /// Apply these settings onto the current state. Everything a backup leaves
+    /// out is taken from `current`, so a restore never moves the window or
+    /// replaces the WebDAV account configured on this machine.
+    pub fn apply(&self, current: &ShellState) -> ShellState {
+        ShellState {
+            theme: resolve_theme(&self.theme).to_string(),
+            palette: resolve_palette(&self.palette).to_string(),
+            close_to_tray: self.close_to_tray,
+            silent_start: self.silent_start,
+            release_ui_on_close: self.release_ui_on_close,
+            language: resolve_language(&self.language).to_string(),
+            auto_exit_ip: self.auto_exit_ip,
+            // Same cleanup the stored state goes through, so the in-memory
+            // state matches what `write_shell_state` saves (R39).
+            hotkeys: crate::hotkeys::clean_bindings(&self.hotkeys),
+            traffic_history: self.traffic_history,
+            ..current.clone()
         }
     }
 }
@@ -65,10 +192,20 @@ pub fn resolve_entry(value: &str) -> &'static str {
         "profiles" => "profiles",
         "connections" => "connections",
         "rules" => "rules",
+        "resources" => "resources",
         "logs" => "logs",
         "settings" => "settings",
+        // Android only, but a released window or a restored page may ask for it.
+        "apps" => "apps",
         _ => "home",
     }
+}
+
+/// Closing the window frees the webview only when the window would otherwise
+/// stay in the tray (R44). With "stay in tray" off the option is hidden in the
+/// settings and must not change what closing does.
+pub fn releases_ui_on_close(state: &ShellState) -> bool {
+    state.close_to_tray && state.release_ui_on_close
 }
 
 pub fn resolve_theme(value: &str) -> &'static str {
@@ -76,6 +213,27 @@ pub fn resolve_theme(value: &str) -> &'static str {
         "system" => "system",
         "light" => "light",
         "dark" => "dark",
+        _ => "system",
+    }
+}
+
+pub fn resolve_palette(value: &str) -> &'static str {
+    match value {
+        "teal" => "teal",
+        "sapphire" => "sapphire",
+        "indigo" => "indigo",
+        "terracotta" => "terracotta",
+        "berry" => "berry",
+        "graphite" => "graphite",
+        _ => "teal",
+    }
+}
+
+/// Only two languages exist (R46): anything unknown follows the system again.
+pub fn resolve_language(value: &str) -> &'static str {
+    match value {
+        "zh-CN" => "zh-CN",
+        "en" => "en",
         _ => "system",
     }
 }
@@ -92,12 +250,24 @@ pub fn usable_window_size(width: f64, height: f64) -> Option<(f64, f64)> {
 
 pub fn normalize(mut state: ShellState) -> ShellState {
     state.theme = resolve_theme(&state.theme).to_string();
+    state.palette = resolve_palette(&state.palette).to_string();
     state.last_entry = resolve_entry(&state.last_entry).to_string();
+    state.language = resolve_language(&state.language).to_string();
+    state.webdav_url = clean_field(&state.webdav_url, 500, true);
+    state.webdav_user = clean_field(&state.webdav_user, 200, true);
+    // A password may legitimately hold spaces, so only control characters go.
+    state.webdav_password = clean_field(&state.webdav_password, 500, false);
+    state.hotkeys = crate::hotkeys::clean_bindings(&state.hotkeys);
     if usable_window_size(state.width, state.height).is_none() {
         state.width = DEFAULT_WIDTH;
         state.height = DEFAULT_HEIGHT;
     }
     state
+}
+
+fn clean_field(raw: &str, limit: usize, trim: bool) -> String {
+    let value: String = raw.chars().filter(|ch| !ch.is_control()).take(limit).collect();
+    if trim { value.trim().to_string() } else { value }
 }
 
 pub fn read_shell_state(path: &Path) -> ShellState {
@@ -142,11 +312,46 @@ mod tests {
         assert_eq!(resolve_entry("nodes"), "proxies");
         assert_eq!(resolve_entry("settings"), "settings");
         assert_eq!(resolve_entry("logs"), "logs");
+        // The tool pages keep their own page instead of falling back to home,
+        // so a released window can come back where it was (R44).
+        assert_eq!(resolve_entry("resources"), "resources");
+        assert_eq!(resolve_entry("apps"), "apps");
         assert_eq!(resolve_entry("diagnostics"), "home");
         assert_eq!(resolve_entry("theme"), "home");
         assert_eq!(resolve_theme("dark"), "dark");
         assert_eq!(resolve_theme("light"), "light");
         assert_eq!(resolve_theme("blue"), "system");
+        assert_eq!(resolve_language("zh-CN"), "zh-CN");
+        assert_eq!(resolve_language("en"), "en");
+        assert_eq!(resolve_language("zh-TW"), "system");
+        assert_eq!(resolve_language("en-US"), "system");
+    }
+
+    #[test]
+    fn an_older_state_without_a_language_follows_the_system() {
+        let state: ShellState = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(state.language, "system");
+        assert_eq!(state.last_entry, "home");
+        assert!(state.close_to_tray);
+        // Lightweight mode is off until the user turns it on (R44).
+        assert!(!state.release_ui_on_close);
+        // Automatic exit IP queries are off until the user turns them on (R40).
+        assert!(!state.auto_exit_ip);
+        // Traffic history is recorded only after the user opts in (R43).
+        assert!(!state.traffic_history);
+    }
+
+    #[test]
+    fn releasing_the_ui_needs_stay_in_tray() {
+        let mut state = ShellState { release_ui_on_close: true, ..ShellState::default() };
+        assert!(releases_ui_on_close(&state));
+        // Without "stay in tray" the option is hidden and does nothing: closing
+        // still ends the app instead of leaving the kernel running alone (R44).
+        state.close_to_tray = false;
+        assert!(!releases_ui_on_close(&state));
+        state.close_to_tray = true;
+        state.release_ui_on_close = false;
+        assert!(!releases_ui_on_close(&state));
     }
 
     #[test]
@@ -167,12 +372,14 @@ mod tests {
         let mut state = ShellState::default();
         state.theme = "nope".to_string();
         state.last_entry = "diagnostics".to_string();
+        state.language = "fr".to_string();
         state.width = 12.0;
         state.height = 12.0;
         write_shell_state(&path, &state).unwrap();
         let loaded = read_shell_state(&path);
         assert_eq!(loaded.theme, "system");
         assert_eq!(loaded.last_entry, "home");
+        assert_eq!(loaded.language, "system");
         assert_eq!(loaded.width, DEFAULT_WIDTH);
         assert_eq!(loaded.height, DEFAULT_HEIGHT);
         let _ = fs::remove_dir_all(dir);
@@ -183,16 +390,136 @@ mod tests {
         let (dir, path) = temporary_file("round");
         let state = ShellState {
             theme: "dark".to_string(),
+            palette: "indigo".to_string(),
             last_entry: "proxies".to_string(),
             width: 1024.0,
             height: 700.0,
             close_to_tray: false,
             silent_start: true,
+            release_ui_on_close: true,
+            language: "en".to_string(),
+            webdav_url: " https://dav.example.com/remote.php/dav/files/me ".to_string(),
+            webdav_user: "me".to_string(),
+            webdav_password: "p a s s".to_string(),
+            hotkeys: [("proxy".to_string(), "Ctrl+Alt+P".to_string())].into_iter().collect(),
+            auto_exit_ip: true,
+            traffic_history: true,
         };
         write_shell_state(&path, &state).unwrap();
-        assert_eq!(read_shell_state(&path), state);
+        let loaded = read_shell_state(&path);
+        assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.palette, "indigo");
+        assert_eq!(loaded.last_entry, "proxies");
+        assert_eq!(loaded.width, 1024.0);
+        assert_eq!(loaded.close_to_tray, false);
+        assert_eq!(loaded.silent_start, true);
+        assert!(loaded.release_ui_on_close);
+        assert!(loaded.auto_exit_ip);
+        assert!(loaded.traffic_history);
+        assert_eq!(loaded.language, "en");
+        assert_eq!(loaded.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
+        // Saved as typed, trimmed, with spaces inside the password kept.
+        assert_eq!(loaded.webdav_url, "https://dav.example.com/remote.php/dav/files/me");
+        assert_eq!(loaded.webdav_user, "me");
+        assert_eq!(loaded.webdav_password, "p a s s");
         assert_eq!(read_shell_state(Path::new("/missing/billow-shell-state.json")).last_entry, "home");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_backup_applies_app_settings_and_keeps_what_it_leaves_out() {
+        let current = ShellState {
+            width: 1280.0,
+            height: 800.0,
+            last_entry: "logs".to_string(),
+            // This machine has both switches off and one shortcut bound; the
+            // backup turns the switches on and binds another action.
+            release_ui_on_close: false,
+            auto_exit_ip: false,
+            hotkeys: [("tun".to_string(), "Ctrl+Alt+T".to_string())].into_iter().collect(),
+            webdav_url: "https://dav.example.com/billow/".to_string(),
+            webdav_user: "me".to_string(),
+            webdav_password: "secret".to_string(),
+            ..ShellState::default()
+        };
+        let backup: ShellBackup = serde_json::from_str(
+            r#"{"theme":"dark","close_to_tray":false,"silent_start":true,"release_ui_on_close":true,"language":"en","auto_exit_ip":true,"hotkeys":{"proxy":"Ctrl+Alt+P"},"traffic_history":true}"#,
+        )
+        .unwrap();
+        let restored = backup.apply(&current);
+        assert_eq!(restored.theme, "dark");
+        assert!(!restored.close_to_tray);
+        assert!(restored.silent_start);
+        assert_eq!(restored.language, "en");
+        // Every behaviour switch travels with the backup (R38, R40, R43, R44).
+        assert!(restored.release_ui_on_close);
+        assert!(restored.auto_exit_ip);
+        assert!(restored.traffic_history, "the recording switch is an app setting (R43)");
+        // The same-platform restore takes the file's bindings; only a file from
+        // the other platform keeps this machine's (R39, backup::merge_platform).
+        assert_eq!(restored.hotkeys, backup.hotkeys);
+        assert_eq!(restored.hotkeys.get("proxy").map(String::as_str), Some("Ctrl+Alt+P"));
+        // Excluded from every backup: window size, current page and WebDAV credentials.
+        assert_eq!(restored.width, 1280.0);
+        assert_eq!(restored.height, 800.0);
+        assert_eq!(restored.last_entry, "logs");
+        assert_eq!(restored.webdav_url, "https://dav.example.com/billow/");
+        assert_eq!(restored.webdav_password, "secret");
+
+        // Export -> clear -> import brings every switch and shortcut back.
+        let reimported = ShellBackup::of(&restored).apply(&ShellState::default());
+        assert!(reimported.release_ui_on_close);
+        assert!(reimported.auto_exit_ip);
+        assert!(reimported.traffic_history);
+        assert_eq!(reimported.hotkeys, backup.hotkeys);
+        assert_eq!(reimported.theme, "dark");
+
+        // Unknown values fall back like every other stored preference.
+        let odd: ShellBackup =
+            serde_json::from_str(r#"{"theme":"blue","language":"fr"}"#).unwrap();
+        assert_eq!(odd.apply(&current).theme, "system");
+        assert_eq!(odd.apply(&current).language, "system");
+        assert!(odd.close_to_tray, "an omitted flag keeps its default");
+        // A backup written before the switches and shortcuts existed brings
+        // none of them: recording stays off and the local bindings are gone
+        // instead of silently keeping another machine's.
+        let switched = ShellState {
+            release_ui_on_close: true,
+            auto_exit_ip: true,
+            traffic_history: true,
+            hotkeys: [("tun".to_string(), "Ctrl+Alt+T".to_string())].into_iter().collect(),
+            ..current.clone()
+        };
+        assert!(!odd.apply(&switched).release_ui_on_close);
+        assert!(!odd.apply(&switched).auto_exit_ip);
+        assert!(!odd.apply(&switched).traffic_history);
+        assert!(odd.apply(&switched).hotkeys.is_empty());
+        assert_eq!(ShellBackup::of(&current).theme, "system");
+    }
+
+    #[test]
+    fn export_clear_import_restores_shortcuts_and_the_recording_switch() {
+        let state = ShellState {
+            hotkeys: [
+                ("proxy".to_string(), "Ctrl+Alt+P".to_string()),
+                ("tun".to_string(), "Ctrl+Alt+T".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            traffic_history: true,
+            ..ShellState::default()
+        };
+        let text = serde_json::to_string(&ShellBackup::of(&state)).unwrap();
+        // The switch travels; the history rows (and their file) do not.
+        assert!(text.contains("\"traffic_history\":true"), "{text}");
+        assert!(!text.contains("traffic-history"), "{text}");
+        assert!(!text.contains("entries"), "{text}");
+
+        let restored = serde_json::from_str::<ShellBackup>(&text)
+            .unwrap()
+            .apply(&ShellState::default());
+        assert!(restored.traffic_history);
+        assert_eq!(restored.hotkeys, state.hotkeys);
     }
 
     #[test]
@@ -218,6 +545,55 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(permissions.contains(&"allow-shell-state"));
         assert!(permissions.contains(&"allow-set-theme"));
+        assert!(permissions.contains(&"allow-set-palette"));
+        assert!(permissions.contains(&"allow-set-language"));
         assert!(permissions.contains(&"allow-set-last-entry"));
+        // Exit IP lookup and its opt-in (R40) must stay reachable from the window.
+        assert!(permissions.contains(&"allow-exit-ip"));
+        assert!(permissions.contains(&"allow-set-exit-ip-auto"));
+        // Traffic history and its switch (R43) are reachable from the window too.
+        assert!(permissions.contains(&"allow-traffic-history"));
+        assert!(permissions.contains(&"allow-set-traffic-history"));
+        assert!(permissions.contains(&"allow-clear-traffic-history"));
+        // Each capability entry also needs its permission definition, or the
+        // command silently drops out of the window.
+        assert!(include_str!("../permissions/app.toml").contains("identifier = \"allow-exit-ip\""));
+        assert!(
+            include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-palette\"")
+        );
+        assert!(
+            include_str!("../permissions/shell.toml").contains("identifier = \"allow-set-exit-ip-auto\"")
+        );
+        assert!(
+            include_str!("../permissions/traffic.toml").contains("identifier = \"allow-traffic-history\"")
+        );
+    }
+
+    #[test]
+    fn resolve_palette_accepts_known_palettes_and_falls_back_to_teal() {
+        for known in ["teal", "sapphire", "indigo", "terracotta", "berry", "graphite"] {
+            assert_eq!(resolve_palette(known), known);
+        }
+        assert_eq!(resolve_palette(""), "teal");
+        assert_eq!(resolve_palette("neon"), "teal");
+
+        // Older backups without `palette` default cleanly to `teal`.
+        let legacy: ShellBackup = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(legacy.palette, "teal");
+        assert_eq!(legacy.apply(&ShellState::default()).palette, "teal");
+
+        // Known palettes survive export/import; unknown values fall back to `teal`.
+        let state = ShellState {
+            palette: "indigo".to_string(),
+            ..ShellState::default()
+        };
+        let encoded = serde_json::to_string(&ShellBackup::of(&state)).unwrap();
+        let restored = serde_json::from_str::<ShellBackup>(&encoded)
+            .unwrap()
+            .apply(&ShellState::default());
+        assert_eq!(restored.palette, "indigo");
+
+        let invalid: ShellBackup = serde_json::from_str(r#"{"palette":"rainbow"}"#).unwrap();
+        assert_eq!(invalid.apply(&state).palette, "teal");
     }
 }

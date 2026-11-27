@@ -9,6 +9,21 @@ description = "Enables the set_theme command without any pre-configured scope."
 commands.allow = ["set_theme"]
 
 [[permission]]
+identifier = "allow-set-palette"
+description = "Enables the set_palette command without any pre-configured scope."
+commands.allow = ["set_palette"]
+
+[[permission]]
+identifier = "allow-set-language"
+description = "Enables the set_language command without any pre-configured scope."
+commands.allow = ["set_language"]
+
+[[permission]]
 identifier = "allow-set-last-entry"
 description = "Enables the set_last_entry command without any pre-configured scope."
 commands.allow = ["set_last_entry"]
+
+[[permission]]
+identifier = "allow-set-exit-ip-auto"
+description = "Enables the set_exit_ip_auto command without any pre-configured scope."
+commands.allow = ["set_exit_ip_auto"]

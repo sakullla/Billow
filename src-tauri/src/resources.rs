@@ -185,33 +185,48 @@ impl RuleFileStamp {
     }
 }
 
+/// Maximum rule-provider file size read into the app process for preview or static matching.
+pub const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Retain at most one compact decoded set, not millions of allocated Strings.
 /// Serializing cache misses also prevents overlapping searches from multiplying
 /// the decompressor/decoder's peak memory. Query results are never cached.
 #[derive(Default)]
 struct MrsCache {
-    entry: Option<(RuleFileStamp, Arc<str>)>,
+    entry: Option<(RuleFileStamp, &'static str, Arc<str>)>,
 }
 
 impl MrsCache {
-    fn decode(&mut self, body: &[u8], stamp: Option<RuleFileStamp>) -> Result<Arc<str>, String> {
-        if let Some((previous, text)) = &self.entry {
-            if stamp.as_ref() == Some(previous) { return Ok(Arc::clone(text)); }
+    fn decode_with_behavior(
+        &mut self,
+        body: &[u8],
+        stamp: Option<RuleFileStamp>,
+    ) -> Result<(&'static str, Arc<str>), String> {
+        if let Some((previous, behavior, text)) = &self.entry {
+            if stamp.as_ref() == Some(previous) {
+                return Ok((*behavior, Arc::clone(text)));
+            }
         }
         self.entry = None;
-        let rules = crate::mrs::decode(body)?.rules;
+        let decoded = crate::mrs::decode(body)?;
+        let behavior = decoded.behavior;
+        let rules = decoded.rules;
         let mut text = String::with_capacity(rules.iter().map(|line| line.len() + 1).sum());
         for rule in rules {
             text.push_str(&rule);
             text.push('\n');
         }
         let text: Arc<str> = Arc::from(text);
-        if text.len() <= 8 * 1024 * 1024 {
+        if text.len() <= MAX_PREVIEW_BYTES as usize {
             if let Some(stamp) = stamp {
-                self.entry = Some((stamp, Arc::clone(&text)));
+                self.entry = Some((stamp, behavior, Arc::clone(&text)));
             }
         }
-        Ok(text)
+        Ok((behavior, text))
+    }
+
+    fn decode(&mut self, body: &[u8], stamp: Option<RuleFileStamp>) -> Result<Arc<str>, String> {
+        self.decode_with_behavior(body, stamp).map(|(_, text)| text)
     }
 }
 
@@ -220,26 +235,39 @@ fn mrs_cache() -> &'static Mutex<MrsCache> {
     CACHE.get_or_init(|| Mutex::new(MrsCache::default()))
 }
 
-/// Streams `payload:` into a preview, so a large YAML set never becomes a full tree.
-struct PayloadSeed(RulePreview);
+trait RuleSink {
+    fn push(&mut self, line: &str);
+    fn done(&self) -> bool {
+        false
+    }
+}
 
-impl<'de> serde::de::DeserializeSeed<'de> for PayloadSeed {
-    type Value = RulePreview;
+impl RuleSink for RulePreview {
+    fn push(&mut self, line: &str) {
+        RulePreview::push(self, line);
+    }
+}
+
+/// Streams `payload:` into a sink, so a large YAML set never becomes a full tree.
+struct PayloadSeed<S>(S);
+
+impl<'de, S: RuleSink> serde::de::DeserializeSeed<'de> for PayloadSeed<S> {
+    type Value = S;
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        struct MapVisitor(RulePreview);
-        impl<'de> serde::de::Visitor<'de> for MapVisitor {
-            type Value = RulePreview;
+        struct MapVisitor<S>(S);
+        impl<'de, S: RuleSink> serde::de::Visitor<'de> for MapVisitor<S> {
+            type Value = S;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a rule provider document with a payload")
             }
             fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                let mut preview = Some(self.0);
+                let mut sink = Some(self.0);
                 let mut found = None;
                 while let Some(key) = map.next_key::<String>()? {
-                    match (key.as_str(), preview.take()) {
+                    match (key.as_str(), sink.take()) {
                         ("payload", Some(current)) => found = Some(map.next_value_seed(SeqSeed(current))?),
                         (_, current) => {
-                            preview = current;
+                            sink = current;
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
                     }
@@ -251,42 +279,72 @@ impl<'de> serde::de::DeserializeSeed<'de> for PayloadSeed {
     }
 }
 
-struct SeqSeed(RulePreview);
+struct SeqSeed<S>(S);
 
-impl<'de> serde::de::DeserializeSeed<'de> for SeqSeed {
-    type Value = RulePreview;
+impl<'de, S: RuleSink> serde::de::DeserializeSeed<'de> for SeqSeed<S> {
+    type Value = S;
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        struct SeqVisitor(RulePreview);
-        impl<'de> serde::de::Visitor<'de> for SeqVisitor {
-            type Value = RulePreview;
+        struct SeqVisitor<S>(S);
+        impl<'de, S: RuleSink> serde::de::Visitor<'de> for SeqVisitor<S> {
+            type Value = S;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a rule payload sequence")
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut preview = self.0;
-                while let Some(value) = seq.next_element::<Value>()? {
-                    if let Some(line) = value.as_str() { preview.push(line); }
+                let mut sink = self.0;
+                while !sink.done() {
+                    let Some(value) = seq.next_element::<Value>()? else {
+                        break;
+                    };
+                    if let Some(line) = value.as_str() {
+                        sink.push(line);
+                    }
                 }
-                Ok(preview)
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(sink)
             }
         }
         deserializer.deserialize_seq(SeqVisitor(self.0))
     }
 }
 
-fn parse_rules(body: &str, format: &str, query: &str) -> RulePreview {
+fn scan_rules_into<S: RuleSink>(body: &str, format: &str, mut sink: S, fallback: impl FnOnce() -> S) -> S {
     use serde::de::DeserializeSeed;
     if format.eq_ignore_ascii_case("yaml") || body.trim_start().starts_with("payload:") {
-        if let Ok(preview) = PayloadSeed(RulePreview::new(query)).deserialize(serde_yaml::Deserializer::from_str(body)) {
-            return preview;
+        if let Ok(done) = PayloadSeed(sink).deserialize(serde_yaml::Deserializer::from_str(body)) {
+            return done;
         }
+        sink = fallback();
     }
-    let mut preview = RulePreview::new(query);
     for line in body.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") || line == "payload:" { continue; }
-        preview.push(line.trim_start_matches("- ").trim_matches(|c| c == '\'' || c == '"'));
+        if sink.done() {
+            break;
+        }
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") || line == "payload:" {
+            continue;
+        }
+        sink.push(line.trim_start_matches("- ").trim_matches(|c| c == '\'' || c == '"'));
     }
-    preview
+    sink
+}
+
+fn parse_rules(body: &str, format: &str, query: &str) -> RulePreview {
+    scan_rules_into(body, format, RulePreview::new(query), || RulePreview::new(query))
+}
+
+fn resolve_provider_path(entry: &Value, kind: &str, home: Option<&Path>) -> Option<PathBuf> {
+    match (get_str(entry, "path"), get_str(entry, "url")) {
+        (Some(path), _) if !path.is_empty() => {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Some(path)
+            } else {
+                home.map(|home| home.join(path))
+            }
+        }
+        (_, Some(url)) if kind == "http" => home.map(|home| home.join("rules").join(md5_hex(url))),
+        _ => None,
+    }
 }
 
 /// Locate a rule provider's content from the effective config (`config_yaml`).
@@ -310,17 +368,9 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>, query: &s
         }
         preview
     } else {
-        let path = match (get_str(entry, "path"), get_str(entry, "url")) {
-            (Some(path), _) if !path.is_empty() => {
-                let path = PathBuf::from(path);
-                if path.is_absolute() { Some(path) } else { home.map(|home| home.join(path)) }
-            }
-            (_, Some(url)) if kind == "http" => home.map(|home| home.join("rules").join(md5_hex(url))),
-            _ => None,
-        };
+        let path = resolve_provider_path(entry, &kind, home);
         detail.source = get_str(entry, "url").map(str::to_string).or_else(|| path.as_ref().map(|path| path.display().to_string()));
         // A preview must never allocate an unbounded provider file in the app process.
-        const MAX_PREVIEW_BYTES: u64 = 8 * 1024 * 1024;
         let body = path.as_ref().and_then(|path| {
             let file = fs::File::open(path).ok()?;
             let stamp = file.metadata().ok().and_then(|metadata| RuleFileStamp::new(path, &metadata));
@@ -367,6 +417,254 @@ pub fn rule_detail(config_yaml: &str, name: &str, home: Option<&Path>, query: &s
     }
     detail.rules = rules.rows;
     detail
+}
+
+/// Outcome of statically scanning one `RULE-SET` provider against a parsed target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleProviderMatch {
+    /// Confirmed match against a specific sub-rule inside the provider.
+    Matched(String),
+    /// Scanned the whole provider and confirmed no rule matches.
+    NotMatched,
+    /// Cannot statically rule out a match in this provider.
+    Uncertain {
+        reason: String,
+        needs_dns: bool,
+    },
+}
+
+struct RuleProviderMatcher<'a> {
+    behavior: &'a str,
+    target: &'a diagnostics::ParsedRuleTarget,
+    modifiers: diagnostics::RuleModifiers,
+    matched: Option<String>,
+    uncertain: Option<(String, bool)>,
+}
+
+impl<'a> RuleProviderMatcher<'a> {
+    fn new(
+        behavior: &'a str,
+        target: &'a diagnostics::ParsedRuleTarget,
+        modifiers: diagnostics::RuleModifiers,
+    ) -> Self {
+        Self {
+            behavior,
+            target,
+            modifiers,
+            matched: None,
+            uncertain: None,
+        }
+    }
+
+    fn finish(self) -> RuleProviderMatch {
+        if let Some(sub_rule) = self.matched {
+            RuleProviderMatch::Matched(sub_rule)
+        } else if let Some((reason, needs_dns)) = self.uncertain {
+            RuleProviderMatch::Uncertain { reason, needs_dns }
+        } else {
+            RuleProviderMatch::NotMatched
+        }
+    }
+}
+
+impl RuleSink for RuleProviderMatcher<'_> {
+    fn done(&self) -> bool {
+        self.matched.is_some()
+    }
+
+    fn push(&mut self, line: &str) {
+        if self.matched.is_some() {
+            return;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        match self.behavior {
+            "domain" => {
+                if line.contains(',') {
+                    if let Some((kind, payload, sub_mods)) =
+                        diagnostics::parse_classical_sub_rule(line, self.modifiers)
+                    {
+                        match diagnostics::evaluate_explicit_rule(&kind, &payload, sub_mods, self.target) {
+                            diagnostics::RuleEval::Matched(_) => self.matched = Some(line.to_string()),
+                            diagnostics::RuleEval::Uncertain { reason, needs_dns, .. } => {
+                                if self.uncertain.is_none() {
+                                    self.uncertain = Some((reason, needs_dns));
+                                }
+                            }
+                            diagnostics::RuleEval::NotMatched => {}
+                        }
+                    }
+                } else if let Some(host) = self.target.host.as_deref() {
+                    if diagnostics::match_domain_pattern(host, line) {
+                        self.matched = Some(line.to_string());
+                    }
+                }
+            }
+            "ipcidr" => {
+                if let Some(ip) = self.target.ip {
+                    if diagnostics::ip_in_cidr(ip, line) {
+                        self.matched = Some(line.to_string());
+                    }
+                }
+            }
+            _ => {
+                if let Some((kind, payload, sub_mods)) =
+                    diagnostics::parse_classical_sub_rule(line, self.modifiers)
+                {
+                    match diagnostics::evaluate_explicit_rule(&kind, &payload, sub_mods, self.target) {
+                        diagnostics::RuleEval::Matched(_) => self.matched = Some(line.to_string()),
+                        diagnostics::RuleEval::Uncertain { reason, needs_dns, .. } => {
+                            if self.uncertain.is_none() {
+                                self.uncertain = Some((reason, needs_dns));
+                            }
+                        }
+                        diagnostics::RuleEval::NotMatched => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Evaluates a single `RULE-SET` provider from `config_yaml` against `input`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn match_rule_provider(
+    config_yaml: &str,
+    name: &str,
+    home: Option<&Path>,
+    input: &diagnostics::RuleMatchInput,
+    modifiers: diagnostics::RuleModifiers,
+) -> Result<RuleProviderMatch, String> {
+    let target = diagnostics::parse_rule_target(input)?;
+    let mut config: Value = serde_yaml::from_str(config_yaml).unwrap_or(Value::Null);
+    let _ = config.apply_merge();
+    Ok(match_rule_provider_in_config(&config, name, home, &target, modifiers))
+}
+
+pub(crate) fn match_rule_provider_in_config(
+    config: &Value,
+    name: &str,
+    home: Option<&Path>,
+    target: &diagnostics::ParsedRuleTarget,
+    modifiers: diagnostics::RuleModifiers,
+) -> RuleProviderMatch {
+    let Some(entry) = get(config, "rule-providers").and_then(|providers| get(providers, name)) else {
+        return RuleProviderMatch::Uncertain {
+            reason: format!("当前配置里没有找到规则集 {name} 的定义"),
+            needs_dns: false,
+        };
+    };
+    let kind = get_str(entry, "type").unwrap_or("").to_ascii_lowercase();
+    let format = get_str(entry, "format").unwrap_or("yaml").to_ascii_lowercase();
+    let explicit_behavior = get_str(entry, "behavior").map(|b| b.to_ascii_lowercase());
+    let initial_behavior = explicit_behavior.as_deref().unwrap_or("classical");
+
+    // Fast paths before touching disk.
+    if initial_behavior == "domain" && target.host.is_none() {
+        return RuleProviderMatch::NotMatched;
+    }
+    if initial_behavior == "ipcidr" {
+        if modifiers.src {
+            return RuleProviderMatch::Uncertain {
+                reason: format!("规则集 {name} 带 src 修饰符，需结合实际来源 IP 判断"),
+                needs_dns: false,
+            };
+        }
+        if target.ip.is_none() {
+            if modifiers.no_resolve {
+                return RuleProviderMatch::NotMatched;
+            }
+            return RuleProviderMatch::Uncertain {
+                reason: format!("规则集 {name} 为 IP 规则集且未设置 no-resolve，域名需先解析 DNS 才能判定"),
+                needs_dns: true,
+            };
+        }
+    }
+
+    if kind == "inline" {
+        let mut matcher = RuleProviderMatcher::new(initial_behavior, target, modifiers);
+        if let Some(list) = get(entry, "payload").and_then(Value::as_sequence) {
+            for line in list.iter().filter_map(Value::as_str) {
+                if matcher.done() {
+                    break;
+                }
+                matcher.push(line);
+            }
+        }
+        return matcher.finish();
+    }
+
+    let path = resolve_provider_path(entry, &kind, home);
+    let body = path.as_ref().and_then(|path| {
+        let file = fs::File::open(path).ok()?;
+        let stamp = file.metadata().ok().and_then(|metadata| RuleFileStamp::new(path, &metadata));
+        let mut body = Vec::new();
+        file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut body).ok()?;
+        Some((body, stamp))
+    });
+    let Some((body, stamp)) = body else {
+        return RuleProviderMatch::Uncertain {
+            reason: format!("规则集 {name} 尚未下载或无法读取本地缓存，请先在外部资源页更新"),
+            needs_dns: false,
+        };
+    };
+    if body.len() as u64 > MAX_PREVIEW_BYTES {
+        return RuleProviderMatch::Uncertain {
+            reason: format!("规则集 {name} 体积超过 8 MiB，已跳过静态穿透"),
+            needs_dns: false,
+        };
+    }
+
+    let binary = format == "mrs"
+        || path.as_ref().is_some_and(|path| path.extension().is_some_and(|ext| ext == "mrs"))
+        || body.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+
+    if binary {
+        let decoded = mrs_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .decode_with_behavior(&body, stamp);
+        match decoded {
+            Ok((mrs_behavior, text)) => {
+                let effective_behavior = explicit_behavior.as_deref().unwrap_or(mrs_behavior);
+                if effective_behavior == "domain" && target.host.is_none() {
+                    return RuleProviderMatch::NotMatched;
+                }
+                if effective_behavior == "ipcidr" && target.ip.is_none() {
+                    if modifiers.no_resolve {
+                        return RuleProviderMatch::NotMatched;
+                    }
+                    return RuleProviderMatch::Uncertain {
+                        reason: format!("规则集 {name} 为 IP 规则集且未设置 no-resolve，域名需先解析 DNS 才能判定"),
+                        needs_dns: true,
+                    };
+                }
+                let mut matcher = RuleProviderMatcher::new(effective_behavior, target, modifiers);
+                for line in text.lines() {
+                    if matcher.done() {
+                        break;
+                    }
+                    matcher.push(line);
+                }
+                matcher.finish()
+            }
+            Err(reason) => RuleProviderMatch::Uncertain {
+                reason: format!("规则集 {name} 解码失败：{reason}"),
+                needs_dns: false,
+            },
+        }
+    } else {
+        let text = String::from_utf8_lossy(&body);
+        let matcher = scan_rules_into(
+            &text,
+            &format,
+            RuleProviderMatcher::new(initial_behavior, target, modifiers),
+            || RuleProviderMatcher::new(initial_behavior, target, modifiers),
+        );
+        matcher.finish()
+    }
 }
 
 /// GEO databases Mihomo may load, in the order users recognise them.
@@ -837,6 +1135,59 @@ rule-providers:
         assert_eq!(files[3].size, Some(48));
 
         let _ = server.join();
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn match_rule_provider_handles_mrs_domain_wildcards_ipcidr_no_resolve_and_merge_keys() {
+        let home = temp_home("match-provider");
+        fs::write(home.join("domain.mrs"), include_bytes!("../testdata/domain.mrs")).unwrap();
+        fs::write(home.join("ipcidr.mrs"), include_bytes!("../testdata/ipcidr.mrs")).unwrap();
+        let config = r#"
+base_mrs: &base_mrs
+  type: file
+  format: mrs
+rule-providers:
+  dom:
+    <<: *base_mrs
+    path: ./domain.mrs
+    behavior: domain
+  ip:
+    <<: *base_mrs
+    path: ./ipcidr.mrs
+    behavior: ipcidr
+"#;
+        let mods = diagnostics::RuleModifiers::default();
+        let no_resolve = diagnostics::RuleModifiers { no_resolve: true, src: false };
+
+        // `*.wild.io` matches single subdomain, not multi-level or apex.
+        assert_eq!(
+            match_rule_provider(config, "dom", Some(&home), &diagnostics::RuleMatchInput { target: "a.wild.io".into(), ..Default::default() }, mods).unwrap(),
+            RuleProviderMatch::Matched("*.wild.io".to_string())
+        );
+        assert_eq!(
+            match_rule_provider(config, "dom", Some(&home), &diagnostics::RuleMatchInput { target: "a.b.wild.io".into(), ..Default::default() }, mods).unwrap(),
+            RuleProviderMatch::NotMatched
+        );
+        // `.only-sub.net` matches subdomain only, not apex.
+        assert_eq!(
+            match_rule_provider(config, "dom", Some(&home), &diagnostics::RuleMatchInput { target: "only-sub.net".into(), ..Default::default() }, mods).unwrap(),
+            RuleProviderMatch::NotMatched
+        );
+        assert_eq!(
+            match_rule_provider(config, "dom", Some(&home), &diagnostics::RuleMatchInput { target: "x.y.only-sub.net".into(), ..Default::default() }, mods).unwrap(),
+            RuleProviderMatch::Matched(".only-sub.net".to_string())
+        );
+        // `ip` provider with pure domain: no-resolve => NotMatched; without no-resolve => Uncertain(needs_dns: true).
+        assert_eq!(
+            match_rule_provider(config, "ip", Some(&home), &diagnostics::RuleMatchInput { target: "example.com".into(), ..Default::default() }, no_resolve).unwrap(),
+            RuleProviderMatch::NotMatched
+        );
+        match match_rule_provider(config, "ip", Some(&home), &diagnostics::RuleMatchInput { target: "example.com".into(), ..Default::default() }, mods).unwrap() {
+            RuleProviderMatch::Uncertain { needs_dns, .. } => assert!(needs_dns),
+            other => panic!("expected Uncertain with needs_dns, got {other:?}"),
+        }
+
         let _ = fs::remove_dir_all(home);
     }
 }

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { locale } from './i18n'
 import {
   autoTypeLabel,
   canPickNode,
+  compareText,
   daysLeft,
   delayText,
   delayTone,
+  effectiveGroupDelay,
   formatBytes,
+  formatDate,
+  formatNumber,
   formatRelative,
   formatSpeed,
   formatSpeedCompact,
@@ -13,6 +18,7 @@ import {
   hostOf,
   isInfoNode,
   listedGroups,
+  parseSubscriptionInfo,
   resolveChain,
   protocolLabel,
   splitNodePrefix,
@@ -38,12 +44,29 @@ describe('node and group labels', () => {
 describe('format', () => {
   it('formats byte sizes with sensible precision', () => {
     expect(formatBytes(0)).toBe('0 B')
-    expect(formatBytes(1023)).toBe('1023 B')
+    expect(formatBytes(1023)).toBe('1,023 B')
     expect(formatBytes(1536)).toBe('1.50 KB')
     expect(formatBytes(15 * 1024 * 1024)).toBe('15.0 MB')
     expect(formatBytes(200 * 1024 ** 3)).toBe('200 GB')
     expect(formatBytes(null)).toBe('—')
     expect(formatSpeed(2048)).toBe('2.00 KB/s')
+  })
+
+  it('formats numbers, dates and collation in the selected language', () => {
+    const before = locale.value
+    try {
+      const noon = new Date(2026, 5, 15, 12, 0, 0).getTime() / 1000
+      locale.value = 'zh-CN'
+      expect(formatNumber(1234)).toBe('1,234')
+      expect(formatDate(noon)).toContain('2026')
+      expect(compareText('a', 'b')).toBeLessThan(0)
+      locale.value = 'en'
+      expect(formatNumber(1234)).toBe('1,234')
+      expect(formatDate(noon)).toContain('2026')
+      expect(compareText('node10', 'node2')).toBeGreaterThan(0)
+    } finally {
+      locale.value = before
+    }
   })
 
   it('keeps compact sidebar speeds within six characters', () => {
@@ -148,5 +171,97 @@ describe('format', () => {
     expect(canPickNode({ kind: 'auto', pinnable: true })).toBe(true)
     expect(canPickNode({ kind: 'auto', pinnable: false })).toBe(false)
     expect(canPickNode({ kind: 'auto' })).toBe(false)
+  })
+})
+
+describe('parseSubscriptionInfo', () => {
+  it('reads an airport quota pair, expiry and reset countdown', () => {
+    const info = parseSubscriptionInfo(['Traffic Reset: 12 Days Left', 'Expire Date: 2027/05/04', '16.47 GB | 500 GB'])
+    expect(info.usage).toMatchObject({ used: '16.47 GB', total: '500 GB' })
+    expect(info.usage!.percent).toBeCloseTo(3.294, 2)
+    expect(info.expire).toMatchObject({ value: '2027/05/04', source: 'Expire Date: 2027/05/04' })
+    expect(info.resetDays).toMatchObject({ value: 12 })
+    expect(info.others).toEqual([])
+  })
+
+  it('converts mixed units and clamps the percentage', () => {
+    expect(parseSubscriptionInfo(['512 MB / 1 GB']).usage!.percent).toBeCloseTo(50, 5)
+    expect(parseSubscriptionInfo(['2 TB | 1 TB']).usage!.percent).toBe(100)
+    expect(parseSubscriptionInfo(['1 GiB / 4 GiB']).usage).toMatchObject({ used: '1 GiB', total: '4 GiB', percent: 25 })
+  })
+
+  it('reads Chinese labels and combines separate used / total lines', () => {
+    const info = parseSubscriptionInfo(['剩余流量：120 GB', '套餐到期：2026-12-31', '距离下次重置剩余：5 天', '已用流量：30 GB', '总流量：200 GB'])
+    expect(info.remaining).toMatchObject({ value: '120 GB' })
+    expect(info.expire).toMatchObject({ value: '2026-12-31' })
+    expect(info.resetDays).toMatchObject({ value: 5 })
+    expect(info.usage).toMatchObject({ used: '30 GB', total: '200 GB', percent: 15 })
+    expect(info.others).toEqual([])
+  })
+
+  it('never turns a reset date, a combined line or a partial match into a wrong value', () => {
+    const lines = [
+      '流量重置日：每月 1 日',
+      '重置时间：2026年12月1日',
+      '每月 15 日重置',
+      '剩余流量：120 GB 到期：2026-12-31',
+      '距离到期还有 30 天',
+      'Expire: 永久',
+    ]
+    const info = parseSubscriptionInfo(lines)
+    expect(info.resetDays).toBeNull()
+    expect(info.expire).toBeNull()
+    expect(info.remaining).toBeNull()
+    expect(info.others).toEqual(lines)
+  })
+
+  it('reads grouped thousands and the common countdown shapes', () => {
+    expect(parseSubscriptionInfo(['剩余流量：1,024 GB']).remaining).toMatchObject({ value: '1,024 GB' })
+    expect(parseSubscriptionInfo(['1,024 GB | 2,048 GB']).usage).toMatchObject({ used: '1,024 GB', percent: 50 })
+    expect(parseSubscriptionInfo(['16.47GB|500GB']).usage).toMatchObject({ used: '16.47 GB', total: '500 GB' })
+    expect(parseSubscriptionInfo(['Traffic Reset：17 Days Left']).resetDays).toMatchObject({ value: 17 })
+    expect(parseSubscriptionInfo(['Resets in 3 days']).resetDays).toMatchObject({ value: 3 })
+    expect(parseSubscriptionInfo(['重置剩余：9 天']).resetDays).toMatchObject({ value: 9 })
+    expect(parseSubscriptionInfo(['到期时间：2026-12-31 23:59:59']).expire).toMatchObject({ value: '2026-12-31 23:59:59' })
+  })
+
+  it('keeps anything it cannot read verbatim', () => {
+    const info = parseSubscriptionInfo(['官网：example.com', '已用流量：30 GB', 'Days Left: 30'])
+    expect(info.usage).toBeNull()
+    expect(info.others).toEqual(['官网：example.com', 'Days Left: 30', '已用流量：30 GB'])
+  })
+
+  it('suppresses fake timeout delay state when a group currently points to a subscription info node', () => {
+    const infoGroup = {
+      name: 'klm',
+      group_type: 'select',
+      kind: 'manual' as const,
+      now: '【KLM】 Traffic Reset: 10 Days Left',
+      sort: 'default',
+      icon: null,
+      nodes: [
+        {
+          name: '【KLM】 Traffic Reset: 10 Days Left',
+          node_type: 'ss',
+          tags: [],
+          delay_ms: null,
+          failed: true,
+          selected: true,
+        },
+        {
+          name: '【KLM】 HK 01',
+          node_type: 'ss',
+          tags: ['UDP'],
+          delay_ms: 88,
+          failed: false,
+          selected: false,
+        },
+      ],
+    }
+    expect(effectiveGroupDelay(infoGroup, [infoGroup])).toEqual({
+      delay: null,
+      failed: false,
+      target: '',
+    })
   })
 })

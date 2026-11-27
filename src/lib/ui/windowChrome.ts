@@ -55,3 +55,10 @@ export async function watchMaximized(handler: (maximized: boolean) => void): Pro
   await report()
   return win.onResized(() => void report()).catch(() => () => {})
 }
+
+/** True only when the native OS window frame/caption bar is currently active (#3). */
+export async function isWindowDecorated(): Promise<boolean> {
+  const win = await appWindow()
+  if (!win || typeof win.isDecorated !== 'function') return false
+  return win.isDecorated().catch(() => false)
+}

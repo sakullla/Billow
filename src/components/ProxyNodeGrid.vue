@@ -9,7 +9,8 @@ const columns = ref(1)
 const top = ref(0)
 const viewport = ref(600)
 const gap = computed(() => props.compact ? (props.dense ? 7 : 0) : props.list ? 0 : props.dense ? 6 : 9)
-const height = computed(() => props.compact ? (props.dense ? 56 : 76) : props.list ? 46 : props.dense ? 42 : 68)
+// Phone list rows hold one name line plus the meta line (56px); 双列 keeps its two-line names.
+const height = computed(() => props.compact ? 56 : props.list ? 46 : props.dense ? 42 : 68)
 const stride = computed(() => height.value + gap.value)
 // Small groups retain their natural wrapping and keyboard order.
 const virtual = computed(() => props.nodes.length > 80)

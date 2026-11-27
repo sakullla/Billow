@@ -112,3 +112,43 @@ commands.allow = ["set_connection_query"]
 identifier = "allow-set-log-filter"
 description = "Enables the set_log_filter command without any pre-configured scope."
 commands.allow = ["set_log_filter"]
+
+[[permission]]
+identifier = "allow-preview-custom-nodes-import"
+description = "Enables the preview_custom_nodes_import command without any pre-configured scope."
+commands.allow = ["preview_custom_nodes_import"]
+
+[[permission]]
+identifier = "allow-import-custom-nodes"
+description = "Enables the import_custom_nodes command without any pre-configured scope."
+commands.allow = ["import_custom_nodes"]
+
+[[permission]]
+identifier = "allow-save-custom-node"
+description = "Enables the save_custom_node command without any pre-configured scope."
+commands.allow = ["save_custom_node"]
+
+[[permission]]
+identifier = "allow-delete-custom-node"
+description = "Enables the delete_custom_node command without any pre-configured scope."
+commands.allow = ["delete_custom_node"]
+
+[[permission]]
+identifier = "allow-set-custom-node-enabled"
+description = "Enables the set_custom_node_enabled command without any pre-configured scope."
+commands.allow = ["set_custom_node_enabled"]
+
+[[permission]]
+identifier = "allow-set-custom-nodes-overlay"
+description = "Enables the set_custom_nodes_overlay command without any pre-configured scope."
+commands.allow = ["set_custom_nodes_overlay"]
+
+[[permission]]
+identifier = "allow-save-landing-rules"
+description = "Enables the save_landing_rules command without any pre-configured scope."
+commands.allow = ["save_landing_rules"]
+
+[[permission]]
+identifier = "allow-use-custom-profile"
+description = "Enables the use_custom_profile command without any pre-configured scope."
+commands.allow = ["use_custom_profile"]

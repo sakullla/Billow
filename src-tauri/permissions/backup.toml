@@ -1,0 +1,39 @@
+[[permission]]
+identifier = "allow-export-backup"
+description = "Enables the export_backup command without any pre-configured scope."
+commands.allow = ["export_backup"]
+
+[[permission]]
+identifier = "allow-restore-backup-text"
+description = "Enables the restore_backup_text command without any pre-configured scope."
+commands.allow = ["restore_backup_text"]
+
+[[permission]]
+identifier = "allow-webdav-settings"
+description = "Enables the webdav_settings command without any pre-configured scope."
+commands.allow = ["webdav_settings"]
+
+[[permission]]
+identifier = "allow-set-webdav-settings"
+description = "Enables the set_webdav_settings command without any pre-configured scope."
+commands.allow = ["set_webdav_settings"]
+
+[[permission]]
+identifier = "allow-test-webdav"
+description = "Enables the test_webdav command without any pre-configured scope."
+commands.allow = ["test_webdav"]
+
+[[permission]]
+identifier = "allow-upload-backup"
+description = "Enables the upload_backup command without any pre-configured scope."
+commands.allow = ["upload_backup"]
+
+[[permission]]
+identifier = "allow-list-remote-backups"
+description = "Enables the list_remote_backups command without any pre-configured scope."
+commands.allow = ["list_remote_backups"]
+
+[[permission]]
+identifier = "allow-restore-remote-backup"
+description = "Enables the restore_remote_backup command without any pre-configured scope."
+commands.allow = ["restore_remote_backup"]

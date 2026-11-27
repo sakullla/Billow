@@ -1,4 +1,5 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import Menu, { type MenuItem } from '../components/Menu.vue'
@@ -11,8 +12,8 @@ const store = useStore()
 const snap = computed(() => store.snapshot.value)
 
 const MODES: { id: AppMode; label: string }[] = [
-  { id: 'exclude', label: '绕过选中应用' },
-  { id: 'include', label: '仅代理选中应用' },
+  { id: 'exclude', get label() { return tr('绕过选中应用') } },
+  { id: 'include', get label() { return tr('仅代理选中应用') } },
 ]
 
 // ── Drafts: each mode keeps its own list; edits commit in one batch ──
@@ -129,11 +130,11 @@ const systemCount = computed(() => snap.value.installed.filter((app) => app.syst
 // ── Bulk actions ──
 const menuOpen = ref(false)
 const menuItems = computed<MenuItem[]>(() => [
-  { id: 'all', label: needle.value ? '全选搜索结果' : '全选', icon: 'check', disabled: !visible.value.length },
-  { id: 'invert', label: '反选', icon: 'refresh', disabled: !visible.value.length },
-  { id: 'clear', label: '清空选择', icon: 'x', disabled: !selected.value.size },
-  { id: 'import', label: '从剪贴板导入', icon: 'clipboard' },
-  { id: 'export', label: '复制包名列表', icon: 'copy', disabled: !selected.value.size },
+  { id: 'all', label: needle.value ? tr('全选搜索结果') : tr('全选'), icon: 'check', disabled: !visible.value.length },
+  { id: 'invert', get label() { return tr('反选') }, icon: 'refresh', disabled: !visible.value.length },
+  { id: 'clear', get label() { return tr('清空选择') }, icon: 'x', disabled: !selected.value.size },
+  { id: 'import', get label() { return tr('从剪贴板导入') }, icon: 'clipboard' },
+  { id: 'export', get label() { return tr('复制包名列表') }, icon: 'copy', disabled: !selected.value.size },
 ])
 
 async function onMenu(item: MenuItem) {
@@ -145,9 +146,9 @@ async function onMenu(item: MenuItem) {
   else if (item.id === 'export') {
     try {
       await navigator.clipboard.writeText([...selected.value].join('\n'))
-      store.toast(`已复制 ${selected.value.size} 个包名`, 'success')
+      store.toast(tr('已复制 {0} 个包名', { 0: selected.value.size }), 'success')
     } catch {
-      store.toast('无法写入剪贴板', 'error')
+      store.toast(tr('无法写入剪贴板'), 'error')
     }
     return
   } else if (item.id === 'import') {
@@ -156,13 +157,13 @@ async function onMenu(item: MenuItem) {
       // One package per line, or comma/space separated; anything that is not a package name is ignored.
       const names = text.split(/[\s,;]+/).filter((name) => /^[a-zA-Z][\w]*(\.[\w]+)+$/.test(name))
       if (!names.length) {
-        store.toast('剪贴板里没有应用包名', 'error')
+        store.toast(tr('剪贴板里没有应用包名'), 'error')
         return
       }
       names.forEach((name) => next.add(name))
-      store.toast(`已导入 ${names.length} 个应用`, 'success')
+      store.toast(tr('已导入 {0} 个应用', { 0: names.length }), 'success')
     } catch {
-      store.toast('无法读取剪贴板', 'error')
+      store.toast(tr('无法读取剪贴板'), 'error')
       return
     }
   }
@@ -174,13 +175,13 @@ async function onMenu(item: MenuItem) {
 // ── Summary ──
 const summary = computed(() => {
   const count = selected.value.size
-  if (mode.value === 'include') return count ? `只有 ${count} 个应用经过 VPN` : '还没有选择应用，目前所有应用都经过 VPN'
-  return count ? `${count} 个应用绕过 VPN，其余都经过 VPN` : '所有应用都经过 VPN'
+  if (mode.value === 'include') return count ? tr('只有 {0} 个应用经过 VPN', { 0: count }) : tr('还没有选择应用，目前所有应用都经过 VPN')
+  return count ? tr('{0} 个应用绕过 VPN，其余都经过 VPN', { 0: count }) : tr('所有应用都经过 VPN')
 })
 const hint = computed(() =>
   mode.value === 'include'
-    ? '适合只想让少数应用（如浏览器、Telegram）走代理'
-    : '适合银行、支付、游戏等需要直连的应用',
+    ? tr('适合只想让少数应用（如浏览器、Telegram）走代理')
+    : tr('适合银行、支付、游戏等需要直连的应用'),
 )
 
 // ── Icons: native bridge, loaded lazily as rows scroll into view ──
@@ -266,26 +267,26 @@ watch(
   <div class="page apps">
     <header class="page-head">
       <div>
-        <h1>应用访问控制</h1>
+        <h1>{{ tr('应用访问控制') }}</h1>
         <p class="muted small" aria-live="polite" data-testid="apps-summary">{{ summary }}</p>
       </div>
       <span v-if="saving !== 'idle'" class="muted small apps-saving" aria-live="polite" data-testid="apps-saving">
         <span v-if="saving === 'pending'" class="spinner xs" aria-hidden="true" />
         <Icon v-else name="check" :size="13" />
-        {{ saving === 'pending' ? (snap.vpn ? '正在应用' : '正在保存') : '已保存' }}
+        {{ saving === 'pending' ? (snap.vpn ? tr('正在应用') : tr('正在保存')) : tr('已保存') }}
       </span>
     </header>
 
     <section class="card apps-mode">
-      <Segmented :model-value="mode" :options="MODES" label="访问控制模式" data-testid="apps-mode" @update:model-value="setMode" />
-      <p class="muted small">{{ hint }}{{ snap.vpn ? '；修改后 VPN 会短暂重连' : '' }}</p>
+      <Segmented :model-value="mode" :options="MODES" :label="tr('访问控制模式')" data-testid="apps-mode" @update:model-value="setMode" />
+      <p class="muted small">{{ hint }}{{ snap.vpn ? tr('；修改后 VPN 会短暂重连') : '' }}</p>
     </section>
 
     <div class="toolbar apps-toolbar">
       <div class="search grow">
         <Icon name="search" :size="16" />
-        <input v-model="query" type="search" placeholder="搜索应用或包名" data-page-search data-testid="apps-search" />
-        <button v-if="query" type="button" class="icon-btn sm" aria-label="清空搜索" @click="query = ''"><Icon name="x" :size="14" /></button>
+        <input v-model="query" type="search" :placeholder="tr('搜索应用或包名')" data-page-search data-testid="apps-search" />
+        <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空搜索')" @click="query = ''"><Icon name="x" :size="14" /></button>
       </div>
       <button
         v-if="systemCount"
@@ -295,25 +296,23 @@ watch(
         :aria-pressed="showSystem"
         data-testid="apps-system"
         @click="showSystem = !showSystem"
-      >
-        系统应用
-      </button>
+      > {{ tr('系统应用') }} </button>
       <div class="menu-anchor">
-        <button type="button" class="icon-btn options-btn" aria-label="批量操作" aria-haspopup="menu" :aria-expanded="menuOpen" data-testid="apps-menu" @click="menuOpen = !menuOpen">
+        <button type="button" class="icon-btn options-btn" :aria-label="tr('批量操作')" aria-haspopup="menu" :aria-expanded="menuOpen" data-testid="apps-menu" @click="menuOpen = !menuOpen">
           <Icon name="more" />
         </button>
-        <Menu v-if="menuOpen" :items="menuItems" label="批量操作" @select="onMenu" @close="menuOpen = false" />
+        <Menu v-if="menuOpen" :items="menuItems" :label="tr('批量操作')" @select="onMenu" @close="menuOpen = false" />
       </div>
     </div>
 
     <div v-if="!snap.installed.length" class="empty">
       <Icon name="apps" :size="40" :stroke="1.4" />
-      <h3>没有读取到已安装的应用</h3>
-      <p class="muted">请在系统设置中允许 Billow 读取应用列表，然后重新打开此页。</p>
+      <h3>{{ tr('没有读取到已安装的应用') }}</h3>
+      <p class="muted">{{ tr('请在系统设置中允许 Billow 读取应用列表，然后重新打开此页。') }}</p>
     </div>
     <div v-else-if="!visible.length" class="empty small">
-      <h3>没有匹配的应用</h3>
-      <button v-if="!showSystem && systemCount" type="button" class="btn ghost" @click="showSystem = true">包含系统应用</button>
+      <h3>{{ tr('没有匹配的应用') }}</h3>
+      <button v-if="!showSystem && systemCount" type="button" class="btn ghost" @click="showSystem = true">{{ tr('包含系统应用') }}</button>
     </div>
 
     <ul v-else ref="listElement" class="card list-card app-list" data-testid="app-list">
@@ -331,7 +330,7 @@ watch(
           <img v-if="icons[app.package_name]" class="app-icon" :src="icons[app.package_name]" alt="" />
           <span v-else class="app-icon letter" :style="{ '--hue': avatarHue(app.name) }" aria-hidden="true">{{ app.name.slice(0, 1).toUpperCase() }}</span>
           <span class="app-text">
-            <strong class="ellipsis">{{ app.name }}<span v-if="app.system" class="tag sm">系统</span></strong>
+            <strong class="ellipsis">{{ app.name }}<span v-if="app.system" class="tag sm">{{ tr('系统') }}</span></strong>
             <span class="muted small mono ellipsis">{{ app.package_name }}</span>
           </span>
           <span class="check-box" aria-hidden="true"><Icon v-if="selected.has(app.package_name)" name="check" :size="14" :stroke="2.6" /></span>

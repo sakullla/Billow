@@ -75,6 +75,9 @@ describe('UI/UX polish', () => {
 
     await card().trigger('click')
     await flushPromises()
+    expect(document.body.querySelector('[data-testid="home-node-picker"]')).not.toBeNull()
+    document.body.querySelector<HTMLElement>('[data-testid="node-picker-open-proxies"]')?.click()
+    await flushPromises()
     expect(store.page.value).toBe('proxies')
   })
 
@@ -219,10 +222,18 @@ describe('UI/UX polish', () => {
 
     const card = wrapper.find('[data-group-card="节点选择"]')
     const line = card.find('[data-testid="group-info"]')
+    // Quota reads as a usage bar with figures; reset and leftover become quiet chips (UI/UX R6).
+    const usage = line.find('[data-testid="group-quota-usage"]')
+    expect(usage.find('.group-quota-figure').text()).toBe('4.49 GB / 500 GB')
+    expect(usage.find('.group-quota-pct').text()).toBe('0.9%')
+    expect(usage.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('1')
     expect(line.findAll('.group-info-item').map((item) => item.text())).toEqual([
-      'Traffic Reset：17 Days Left',
-      '4.49 GB | 500 GB',
+      '剩余 120 GB',
+      '17 天后重置',
+    ])
+    expect(line.findAll('.group-info-item').map((item) => item.attributes('title'))).toEqual([
       '剩余流量：120 GB',
+      'Traffic Reset：17 Days Left',
     ])
     for (const name of info) expect(card.find(`[data-node="${name}"]`).exists()).toBe(false)
 
@@ -481,8 +492,10 @@ describe('UI/UX polish', () => {
       await body().findAll('.modal button').find((button) => button.text() === '保存')!.trigger('click')
       await settle(300)
       expect(storeOf(wrapper).snapshot.value.profiles[0]!.user_agent).toBe('')
-      await openPage(wrapper, 'settings')
+      storeOf(wrapper).openSettings('behavior')
+      await flushPromises()
       const global = wrapper.find('[data-testid="global-subscription-user-agent"]')
+      await global.trigger('focus')
       await global.setValue('global-client/3')
       await global.trigger('blur')
       await settle(300)
@@ -764,20 +777,23 @@ describe('UI/UX polish', () => {
       await body().find('[data-testid="cancel-editor"]').trigger('click')
       await flushPromises()
 
-      // Settings: Ctrl+S commits dirty proxy changes and clear-bypass empties the list.
+      // Settings editors: Ctrl+S saves the open dialog; clear-bypass empties the list.
       store.openSettings('proxy')
       await flushPromises()
-      await wrapper.find('[data-testid="add-default-bypass"]').trigger('click')
-      expect(wrapper.findAll('[data-testid="bypass-list"] li').length).toBeGreaterThan(0)
-      await wrapper.find('[data-testid="clear-bypass"]').trigger('click')
-      expect(wrapper.find('[data-testid="bypass-list"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="open-bypass"]').trigger('click')
+      await flushPromises()
+      await body().find('[data-testid="add-default-bypass"]').trigger('click')
+      expect(body().findAll('[data-testid="bypass-list"] li').length).toBeGreaterThan(0)
+      await body().find('[data-testid="clear-bypass"]').trigger('click')
+      expect(body().find('[data-testid="bypass-list"]').exists()).toBe(false)
 
-      await wrapper.find('[data-testid="proxy-host-input"]').setValue('127.0.0.2')
-      expect(wrapper.find('[data-testid="save-proxy"]').exists()).toBe(true)
+      await body().find('[data-testid="bypass-add-input"]').setValue('*.corp.internal')
+      await body().find('[data-testid="bypass-add-btn"]').trigger('click')
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true }))
       await settle(400)
       expect(saveSpy).toHaveBeenCalled()
-      expect(store.snapshot.value.settings.system_proxy.host).toBe('127.0.0.2')
+      expect(store.snapshot.value.settings.system_proxy.bypass).toEqual(['*.corp.internal'])
+      expect(body().find('[data-testid="save-bypass"]').exists()).toBe(false)
     })
 
     it('resolves nested group latency on Home & Proxies and uses full-width mobile group rows', async () => {
@@ -1099,8 +1115,11 @@ describe('UI/UX polish', () => {
       expect(matchedNodes).toHaveLength(1)
       expect(matchedNodes[0]!.findAll('.node-name mark').map((m) => m.text())).toEqual(['香港', 'IPLC'])
 
-      // Right-click on a node card copies its full name.
+      // Right-click on a node card opens ContextMenu and copies its full name via the copy item.
       await matchedNodes[0]!.trigger('contextmenu')
+      await flushPromises()
+      expect(body().find('[data-testid="context-menu"]').exists()).toBe(true)
+      await body().find('[data-testid="context-menu"] [data-menu-item="copy"]').trigger('click')
       await flushPromises()
       expect(writeText).toHaveBeenLastCalledWith(DEMO_LONG_NAMES[0])
       await wrapper.find('[data-testid="clear-search"]').trigger('click')
@@ -1513,6 +1532,247 @@ describe('UI/UX polish', () => {
       await settle(200)
       expect(body().find('[data-testid="uwp-dirty-count"]').exists()).toBe(false)
       expect(body().find('[data-uwp-family="Microsoft.WindowsTerminal_8wekyb3d8bbwe"]').attributes('aria-pressed')).toBe('true')
+    })
+
+    it('supports collapsible filter/group drawer with persisted preference and drag/wheel scroll on proxy group pills', async () => {
+      const { wrapper } = await mountApp()
+      await openPage(wrapper, 'proxies')
+
+      // Default desktop toolbar stays a single uncluttered row with the drawer collapsed
+      expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+
+      const toggleBtn = wrapper.find('[data-testid="toggle-proxy-filters"]')
+      expect(toggleBtn.exists()).toBe(true)
+      expect(toggleBtn.attributes('aria-expanded')).toBe('false')
+
+      await toggleBtn.trigger('click')
+      await flushPromises()
+      expect(toggleBtn.attributes('aria-expanded')).toBe('true')
+      expect(localStorage.getItem('billow:proxy-filters-open')).toBe('true')
+
+      const bar = wrapper.find('[data-testid="group-jump-bar"]')
+      expect(bar.exists()).toBe(true)
+      const el = bar.element as HTMLElement
+      Object.defineProperty(el, 'scrollWidth', { value: 900, configurable: true })
+      Object.defineProperty(el, 'clientWidth', { value: 300, configurable: true })
+      el.scrollLeft = 40
+
+      // Left-mouse drag left scrolls right
+      el.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: 200, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('mousemove', { clientX: 120, bubbles: true }))
+      expect(el.scrollLeft).toBe(120)
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: 120, bubbles: true }))
+
+      // Synthetic click right after drag is suppressed
+      const pill = bar.findAll('button.group-pill')[2]!
+      const clickEv = new MouseEvent('click', { bubbles: true, cancelable: true })
+      pill.element.dispatchEvent(clickEv)
+      expect(clickEv.defaultPrevented).toBe(true)
+
+      // Vertical wheel translates to horizontal scroll
+      const wheelEv = new WheelEvent('wheel', { deltaY: 60, bubbles: true, cancelable: true })
+      el.dispatchEvent(wheelEv)
+      expect(wheelEv.defaultPrevented).toBe(true)
+      expect(el.scrollLeft).toBe(180)
+
+      // Explicit close button inside the drawer collapses both rows cleanly
+      await wrapper.find('[data-testid="close-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="group-jump-bar"]').exists()).toBe(false)
+      expect(localStorage.getItem('billow:proxy-filters-open')).toBe('false')
+    })
+
+    it('R3: expands quick filter chips on demand, shows inline removable active pill when collapsed, and resets in one click', async () => {
+      const { wrapper } = await mountApp()
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
+
+      const filterBar = wrapper.find('[data-testid="proxy-quick-filters"]')
+      expect(filterBar.exists()).toBe(true)
+      const chips = filterBar.findAll('[data-testid^="quick-filter-"]')
+      expect(chips.length).toBeGreaterThanOrEqual(2)
+
+      // UDP and protocol chips come from real nodes in the demo catalog.
+      const udpChip = wrapper.find('[data-testid="quick-filter-tag:udp"]')
+      expect(udpChip.exists()).toBe(true)
+      expect(udpChip.attributes('aria-pressed')).toBe('false')
+
+      await udpChip.trigger('click')
+      await flushPromises()
+      expect(udpChip.attributes('aria-pressed')).toBe('true')
+      expect(wrapper.find('[data-testid="clear-proxy-quick-filters"]').exists()).toBe(true)
+      const matchedNodes = wrapper.findAll('.node[data-node]')
+      expect(matchedNodes.length).toBeGreaterThan(0)
+
+      // Collapsing the drawer while a filter is active surfaces a removable inline pill in the single-row toolbar.
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="proxy-quick-filters"]').exists()).toBe(false)
+      const inlinePill = wrapper.find('[data-testid="active-quick-filter-pill"]')
+      expect(inlinePill.exists()).toBe(true)
+      expect(inlinePill.text()).toContain('UDP')
+
+      // Combining quick tag with an unmatched search shows empty state with one-click reset.
+      await wrapper.find('[data-testid="node-search"]').setValue('nonexistent-xyz-node')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="reset-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="no-match"]').exists()).toBe(false)
+      expect((wrapper.find('[data-testid="node-search"]').element as HTMLInputElement).value).toBe('')
+      expect(wrapper.find('[data-testid="active-quick-filter-pill"]').exists()).toBe(false)
+
+      await wrapper.find('[data-testid="toggle-proxy-filters"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="quick-filter-tag:udp"]').attributes('aria-pressed')).toBe('false')
+      expect(wrapper.find('[data-testid="clear-proxy-quick-filters"]').exists()).toBe(false)
+    })
+
+    it('R4: hands off node links from the global add dialog to ProfilesView custom node import modal', async () => {
+      const { wrapper } = await mountApp()
+      const store = storeOf(wrapper)
+      expect(store.page.value).toBe('home')
+
+      // Open the global add-profile dialog and paste a node share link.
+      store.adding.value = true
+      await flushPromises()
+      const urlInput = body().find('.modal input[inputmode="url"]')
+      expect(urlInput.exists()).toBe(true)
+      const sampleUri = 'vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls#HK-Test'
+      await urlInput.setValue(sampleUri)
+      await flushPromises()
+
+      expect(body().find('[data-testid="add-node-detected"]').exists()).toBe(true)
+      const handoffBtn = body().find('[data-testid="add-to-custom-nodes"]')
+      expect(handoffBtn.exists()).toBe(true)
+      await body().find('.modal form').trigger('submit')
+      await settle(250)
+
+      expect(store.page.value).toBe('profiles')
+      expect(store.customNodeImportRequest.value).toBeNull()
+      const importTextarea = body().find('.custom-import-textarea')
+      expect(importTextarea.exists()).toBe(true)
+      expect((importTextarea.element as HTMLTextAreaElement).value).toBe(sampleUri)
+    })
+
+    it('R4: shows batch refresh progress and dismissible summary banner with inline retry on ProfilesView', async () => {
+      const { wrapper, backend } = await mountApp()
+      const store = storeOf(wrapper)
+      await openPage(wrapper, 'profiles')
+
+      // Add a second subscription so batch refresh updates multiple items.
+      const addTask = store.addSubscription('https://sub.example.org/second.yaml')
+      await settle(1500)
+      await addTask
+      const subs = store.snapshot.value.profiles.filter((item) => item.kind === 'subscription')
+      expect(subs.length).toBeGreaterThanOrEqual(2)
+      const failId = subs[1]!.id
+
+      let shouldFail = true
+      const origRefresh = backend.refresh.bind(backend)
+      const refreshSpy = vi.spyOn(backend, 'refresh').mockImplementation(async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        if (id === failId && shouldFail) throw new Error('模拟订阅超时')
+        return origRefresh(id)
+      })
+
+      await wrapper.find('[data-testid="update-all-profiles"]').trigger('click')
+      await flushPromises()
+      // Progress banner and bar appear while running.
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="profiles-refresh-progress"]').exists()).toBe(true)
+
+      await settle(1500)
+      // Completed with 1 failure: summary banner shows inline retry and dismiss buttons.
+      const banner = wrapper.find('[data-testid="profiles-refresh-banner"]')
+      expect(banner.exists()).toBe(true)
+      expect(banner.classes()).toContain('warn')
+      expect(banner.text()).toContain('1 个订阅失败')
+      const retryBtn = wrapper.find('[data-testid="refresh-banner-retry"]')
+      expect(retryBtn.exists()).toBe(true)
+
+      // Inline retry retries only the failed subscription and updates banner to success.
+      shouldFail = false
+      refreshSpy.mockClear()
+      await retryBtn.trigger('click')
+      await settle(1500)
+      expect(refreshSpy).toHaveBeenCalledTimes(1)
+      expect(refreshSpy).toHaveBeenCalledWith(failId)
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').classes()).toContain('ok')
+      expect(wrapper.find('[data-testid="refresh-banner-retry"]').exists()).toBe(false)
+
+      // Dismissing hides the summary banner cleanly.
+      await wrapper.find('[data-testid="refresh-banner-dismiss"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="profiles-refresh-banner"]').exists()).toBe(false)
+    })
+
+    it('keeps desktop proxy toolbar compact on default 960px window, aligns right-edge group chevron, and avoids duplicate group counts', async () => {
+      const { wrapper } = await mountApp({}, 960)
+      const store = storeOf(wrapper)
+      await connect(wrapper)
+      await openPage(wrapper, 'proxies')
+
+      // Search match count renders inline inside .search on desktop so typing never wraps toolbar controls.
+      await wrapper.find('[data-testid="node-search"]').setValue('新加坡')
+      await flushPromises()
+      expect(wrapper.find('.proxies-toolbar .search [data-testid="match-count"]').text()).toBe('匹配 7 个节点')
+      await wrapper.find('[data-testid="clear-search"]').trigger('click')
+      await flushPromises()
+
+      // Quick actions (locate + toggle-all) live in a unified desktop capsule.
+      const quickPair = wrapper.find('.proxies-toolbar .toolbar-quick-pair')
+      expect(quickPair.exists()).toBe(true)
+      expect(quickPair.find('[data-testid="locate-active-node"]').exists()).toBe(true)
+      expect(quickPair.find('[data-testid="toggle-all"]').exists()).toBe(true)
+
+      // Group header places .group-chevron at the far right after group-test, and clicking it toggles expansion.
+      const mediaHead = wrapper.find('[data-group-card="流媒体"] .group-head')
+      const children = [...mediaHead.element.children]
+      const testIdx = children.findIndex((el) => el.getAttribute('data-testid') === 'test-group-流媒体')
+      const chevronIdx = children.findIndex((el) => el.classList.contains('group-chevron'))
+      expect(testIdx).toBeGreaterThan(0)
+      expect(chevronIdx).toBeGreaterThan(testIdx)
+
+      const wasOpen = wrapper.find('[data-group-card="流媒体"]').classes().includes('open')
+      await mediaHead.find('.group-chevron').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-group-card="流媒体"]').classes().includes('open')).toBe(!wasOpen)
+
+      // When every entry in a pure server group has been tested, the redundant total badge hides in favor of 可用 X/Y.
+      const pureGroupName = '纯节点组'
+      store.snapshot.value = {
+        ...store.snapshot.value,
+        node_catalog: [
+          {
+            name: pureGroupName,
+            kind: 'manual',
+            group_type: 'Selector',
+            sort: 'default',
+            pinnable: false,
+            hidden: false,
+            icon: null,
+            now: '香港 A',
+            fixed: null,
+            nodes: [
+              { name: '香港 A', node_type: 'Shadowsocks', selected: true, delay_ms: 48, failed: false, dialer_proxy: null, tags: ['UDP'] },
+              { name: '香港 B', node_type: 'Shadowsocks', selected: false, delay_ms: null, failed: true, dialer_proxy: null, tags: [] },
+            ],
+          },
+          ...store.snapshot.value.node_catalog,
+        ],
+      }
+      await flushPromises()
+
+      const pureCard = wrapper.find(`[data-group-card="${pureGroupName}"]`)
+      expect(pureCard.find('.group-count').exists()).toBe(false)
+      expect(pureCard.find('.group-health').text()).toBe('可用 1/2')
     })
   })
 })

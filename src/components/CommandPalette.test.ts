@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { getShortcut, shortcutKeyLabel } from '../lib/ui/shortcuts'
 import CommandPalette from './CommandPalette.vue'
@@ -37,6 +37,8 @@ function search(value: string) {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  localStorage.removeItem('billow:palette-recent')
+  vi.restoreAllMocks()
 })
 
 describe('CommandPalette', () => {
@@ -313,5 +315,94 @@ describe('CommandPalette', () => {
     pin?.click()
     expect(offline.wrapper.emitted('select-node')).toBeUndefined()
     offline.wrapper.unmount()
+  })
+
+  it('shows quick access and persisted recent commands on empty query with live disabled reasons', async () => {
+    const profiles = [
+      {
+        id: 'p1',
+        name: '星河云',
+        kind: 'subscription' as const,
+        source: 'https://example.com',
+        current: true,
+        failure: null,
+        override_text: '',
+        override_error: null,
+        used: null,
+        total: null,
+        expire: null,
+        last_success_ms: null,
+        interval_hours: 0,
+        updated_ms: null,
+        proxy_count: 10,
+        age_recipients: [],
+        user_agent: '',
+      },
+    ]
+    const nodeCatalog = [
+      {
+        name: '节点选择',
+        kind: 'manual' as const,
+        now: '香港 01',
+        sort: 'default' as const,
+        group_type: 'select',
+        icon: null,
+        nodes: [{ name: '香港 01', delay_ms: 42, failed: false, selected: true, node_type: 'vless', tags: [] }],
+      },
+    ]
+
+    const first = mountPalette({ connected: true, profiles, nodeCatalog })
+    await settle()
+    // Empty query shows current profile and primary manual group under 快捷访问.
+    expect(option('profile:p1')?.textContent).toContain('星河云')
+    expect(option('group:节点选择')?.textContent).toContain('香港 01')
+
+    option('action:test-all')?.click()
+    expect(first.wrapper.emitted('action')).toEqual([['test-all']])
+    first.wrapper.unmount()
+
+    // Reopen while disconnected: recent entry reflects live disabled state & reason.
+    const second = mountPalette({ connected: false, profiles, nodeCatalog })
+    await settle()
+    const recentTestAll = option('recent:action:test-all')
+    expect(recentTestAll).not.toBeNull()
+    expect(recentTestAll?.getAttribute('aria-disabled')).toBe('true')
+    expect(recentTestAll?.textContent).toContain('连接后可测速')
+    second.wrapper.unmount()
+
+    // Destructive actions injected into storage are still excluded.
+    localStorage.setItem(
+      'billow:palette-recent',
+      JSON.stringify([
+        { kind: 'action', id: 'remove' },
+        { kind: 'page', id: 'logs' },
+      ]),
+    )
+    const third = mountPalette({ connected: false, profiles, nodeCatalog })
+    await settle()
+    expect(option('recent:action:remove')).toBeNull()
+    expect(option('recent:page:logs')).not.toBeNull()
+    third.wrapper.unmount()
+  })
+
+  it('degrades gracefully when localStorage is corrupted or throws', async () => {
+    localStorage.setItem('billow:palette-recent', '{bad-json')
+    const corrupted = mountPalette()
+    await settle()
+    expect(option('page:home')).not.toBeNull()
+    corrupted.wrapper.unmount()
+
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage blocked')
+    })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage blocked')
+    })
+    const blocked = mountPalette()
+    await settle()
+    option('page:logs')?.click()
+    await settle()
+    expect(option('recent:page:logs')).not.toBeNull()
+    blocked.wrapper.unmount()
   })
 })

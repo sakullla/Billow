@@ -1,6 +1,8 @@
-<script setup lang="ts">
+<script setup lang="ts">import { tr } from '../lib/i18n'
+
 import { computed, ref, useId } from 'vue'
 import { formatSpeed } from '../lib/format'
+import Icon from './Icon.vue'
 
 /** `collecting` hides the curves until the session has enough samples to show a trend (R2). */
 const props = defineProps<{ up: number[]; down: number[]; height?: number; collecting?: boolean }>()
@@ -126,7 +128,7 @@ const inspected = computed(() => {
     upY,
     downVal,
     upVal,
-    when: secsAgo === 0 ? '当前' : `${secsAgo} 秒前`,
+    when: secsAgo === 0 ? tr('当前') : tr('{0} 秒前', { 0: secsAgo }),
   }
 })
 
@@ -148,27 +150,29 @@ function onPointerLeave() {
 // The chart is the summary of the last minute, so the accessible name carries the numbers.
 const label = computed(() =>
   props.collecting
-    ? '正在采集流量数据'
-    : `最近一分钟流量，峰值 ${formatSpeed(highest.value)}，当前下载 ${formatSpeed(last(props.down))}，上传 ${formatSpeed(last(props.up))}`,
+    ? tr('正在采集流量数据')
+    : tr('最近一分钟流量，峰值 {0}，当前下载 {1}，上传 {2}', { 0: formatSpeed(highest.value), 1: formatSpeed(last(props.down)), 2: formatSpeed(last(props.up)) }),
 )
 </script>
 
 <template>
   <div class="chart-wrap">
     <!-- One header row: the legend, swapped for the hovered sample's readout, so nothing ever stacks. -->
-    <div class="chart-head" aria-hidden="true">
-      <div v-if="inspected" class="chart-readout mono" data-testid="chart-tooltip">
+    <div class="chart-head">
+      <div v-if="inspected" class="chart-readout mono" aria-hidden="true" data-testid="chart-tooltip">
         <span class="muted">{{ inspected.when }}</span>
         <span class="down">↓ {{ formatSpeed(inspected.downVal) }}</span>
         <span class="up">↑ {{ formatSpeed(inspected.upVal) }}</span>
       </div>
       <!-- Same order as the rate cards above: download first (R2). -->
-      <div v-else class="legend" data-testid="chart-legend">
-        <span class="legend-item down">下载</span>
-        <span class="legend-item up">上传</span>
+      <div v-else class="legend" aria-hidden="true" data-testid="chart-legend">
+        <span class="legend-item down"><Icon name="down" :size="12" />{{ tr('下载') }}</span>
+        <span class="legend-item up"><Icon name="up" :size="12" />{{ tr('上传') }}</span>
       </div>
-      <span v-if="!collecting && highest > 0" class="chart-peak" title="最近一分钟内的最高速率（下载或上传）" data-testid="chart-peak">
-        峰值 {{ formatSpeed(highest) }}
+      <span class="chart-head-end">
+        <span v-if="!collecting && highest > 0" class="chart-peak" aria-hidden="true" :title="tr('最近一分钟内的最高速率（下载或上传）')" data-testid="chart-peak"> {{ tr('峰值') }} {{ formatSpeed(highest) }}
+        </span>
+        <slot name="head-end" />
       </span>
     </div>
     <div
@@ -206,9 +210,7 @@ const label = computed(() =>
           vector-effect="non-scaling-stroke"
         />
       </svg>
-      <p v-if="collecting" class="chart-collecting small" role="status" data-testid="chart-collecting">
-        <span class="chart-collecting-dot" aria-hidden="true" />正在采集流量…
-      </p>
+      <p v-if="collecting" class="chart-collecting small" role="status" data-testid="chart-collecting">{{ tr('正在采集流量…') }}</p>
       <template v-if="inspected && !collecting">
         <span class="chart-dot down" :style="{ left: `${inspected.xPct}%`, top: `${inspected.downY}px` }" aria-hidden="true" />
         <span class="chart-dot up" :style="{ left: `${inspected.xPct}%`, top: `${inspected.upY}px` }" aria-hidden="true" />

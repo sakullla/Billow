@@ -97,6 +97,18 @@ describe('proxy grid windowing', () => {
   })
 })
 
+describe('phone row height', () => {
+  it('windows phone list rows at the one-line row height', async () => {
+    const { wrapper } = setup(120)
+    await wrapper.setProps({ compact: true })
+    await nextTick()
+    expect((wrapper.element as HTMLElement).style.getPropertyValue('--node-height')).toBe('56px')
+    await wrapper.setProps({ dense: true })
+    await nextTick()
+    expect((wrapper.element as HTMLElement).style.getPropertyValue('--node-height')).toBe('56px')
+  })
+})
+
 describe('off-screen grids', () => {
   it('waits as a placeholder below the viewport and renders once it scrolls near', async () => {
     let notify: ((entries: { isIntersecting: boolean }[]) => void) | null = null

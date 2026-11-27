@@ -47,6 +47,7 @@ import {
 import { tags } from '@lezer/highlight'
 import { complete, type KnownNames } from './complete'
 import { RULE_TYPES } from './schema'
+import { tr } from '../i18n'
 import { completeConfigAccess, SCRIPT_SNIPPETS, type OverrideLanguage } from './script'
 
 export interface YamlEditorOptions {
@@ -127,12 +128,12 @@ function treeErrors(view: EditorView, message: string): Diagnostic[] {
   return diagnostics.slice(0, 50)
 }
 
-const yamlLinter = linter((view) => treeErrors(view, 'YAML 语法有误'), { delay: 400 })
+const yamlLinter = linter((view) => treeErrors(view, tr('YAML 语法有误')), { delay: 400 })
 
 /** Syntax check only; runtime errors come from the backend preview. */
 const scriptLinter = linter(
   (view) => {
-    const located = treeErrors(view, '脚本语法有误')
+    const located = treeErrors(view, tr('脚本语法有误'))
     if (located.length) return located.slice(0, 1)
     const code = view.state.doc.toString()
     if (!code.trim()) return []
@@ -144,15 +145,17 @@ const scriptLinter = linter(
       const message = error instanceof Error ? error.message : String(error)
       const lineNo = Number((error as { line?: number }).line)
       const line = view.state.doc.line(Number.isInteger(lineNo) && lineNo >= 1 && lineNo <= view.state.doc.lines ? lineNo : view.state.doc.lines)
-      return [{ from: line.from, to: Math.min(view.state.doc.length, Math.max(line.to, line.from + 1)), severity: 'error', message: `脚本语法有误：${message}` }]
+      return [{ from: line.from, to: Math.min(view.state.doc.length, Math.max(line.to, line.from + 1)), severity: 'error', message: `${tr('脚本语法有误')}：${message}` }]
     }
   },
   { delay: 500 },
 )
 
-const scriptSnippets: Completion[] = SCRIPT_SNIPPETS.map((item) =>
-  snippetCompletion(item.snippet, { label: item.label, detail: item.detail, type: 'text' }),
-)
+function scriptSnippets(): Completion[] {
+  return SCRIPT_SNIPPETS.map((item) =>
+    snippetCompletion(item.snippet, { label: item.label, detail: tr(item.detail), type: 'text' }),
+  )
+}
 
 function scriptSource(context: CompletionContext): CmCompletionResult | null {
   const line = context.state.doc.lineAt(context.pos)
@@ -167,7 +170,7 @@ function scriptSource(context: CompletionContext): CmCompletionResult | null {
   }
   const word = context.matchBefore(/[\w.$]+/)
   if (!word && !context.explicit) return null
-  return { from: word?.from ?? context.pos, options: scriptSnippets, validFor: /^[\w.$ ]*$/ }
+  return { from: word?.from ?? context.pos, options: scriptSnippets(), validFor: /^[\w.$ ]*$/ }
 }
 
 const languageExtensions = (language: OverrideLanguage) =>

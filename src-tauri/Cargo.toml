@@ -1,6 +1,6 @@
 [package]
 name = "billow"
-version = "0.1.33"
+version = "0.1.63"
 description = "Billow"
 license = "GPL-3.0-only"
 edition = "2024"
@@ -22,7 +22,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1"
 serde_yaml = "0.9"
+quick-xml = "0.42"
 sha2 = "0.10"
+sys-locale = "0.3"
 tempfile = "3"
 md-5 = "0.10"
 tauri = { version = "2.12.5", features = ["tray-icon", "image-png"] }
@@ -38,12 +40,18 @@ rquickjs = { version = "0.14", default-features = false, features = ["std"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Desktop global shortcuts (R39) and the notification a failed shortcut sends.
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+# One running Billow; a second launch shows it and forwards its deep link (R44).
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # rquickjs ships no prebuilt Android bindings; generate them with the NDK sysroot.
 rquickjs = { version = "0.14", default-features = false, features = ["std", "bindgen"] }
 jni = "0.21"
 ndk-context = "0.1"
+libc = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # rquickjs 0.14 ships no iOS bindings either. The host target (T7) must compile

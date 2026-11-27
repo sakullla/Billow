@@ -1,34 +1,60 @@
 import {
   normalizeConfigOverview,
+  normalizeCustomNodesImportResult,
   normalizeDnsQueryResult,
   normalizeEngines,
+  normalizeExitIp,
   normalizeKernel,
+  normalizePalette,
+  normalizeParseNodesResult,
+  normalizeRuleMatchResult,
   normalizeRuleRow,
   normalizeSnapshot,
+  normalizeTrafficHistory,
+  HOTKEY_ACTIONS,
   type AppInfo,
   type ConfigOverview,
+  type CustomNodesImportResult,
+  type DialerTarget,
   type DnsQueryResult,
   type DnsQueryType,
   type EnginesState,
   type IosEngineState,
   type IosPrepareResult,
   type IosVpnStatus,
+  type ExitIpInfo,
+  type HotkeyAction,
+  type HotkeyBinding,
+  type HotkeySettings,
+  type LandingRule,
   type OverridePreview,
+  type PalettePreference,
+  type ParseNodesResult,
   type KernelChannel,
   type KernelEngine,
   type KernelSettings,
   type KernelStatus,
+  type LanguagePreference,
   type Mode,
   type ProvidersResult,
   type AppMode,
   type ProviderDetail,
   type GeoFile,
+  type RemoteBackup,
+  type RuleMatchInput,
+  type RuleMatchResult,
   type RulesResult,
+  type SaveCustomNodeInput,
   type ShellState,
   type Snapshot,
   type ThemePreference,
+  type TrafficHistoryView,
+  type TrafficRange,
   type UwpApp,
+  type WebdavSettings,
+  type WebdavTestResult,
 } from './types'
+import { normalizeLanguage, normalizeLocale, t } from './i18n'
 import { createDemoBackend } from './demo'
 
 /** Rule rows plus the runtime-disabled keys; the keys are never persisted. */
@@ -50,10 +76,17 @@ export interface Backend {
   readonly live: boolean
   shell(): Promise<ShellState>
   setTheme(theme: ThemePreference): Promise<void>
+  setPalette(palette: PalettePreference): Promise<void>
+  /** Store the language preference and return the effective locale (R42). */
+  setLanguage(language: LanguagePreference): Promise<ShellState>
   setEntry(entry: string): Promise<void>
   appInfo(): Promise<AppInfo>
   setAutostart(enabled: boolean): Promise<AppInfo>
-  setAppBehavior(closeToTray: boolean, silentStart: boolean): Promise<AppInfo>
+  setAppBehavior(closeToTray: boolean, silentStart: boolean, releaseUiOnClose: boolean): Promise<AppInfo>
+  /** Desktop global shortcuts and whether this platform supports them (R39). */
+  hotkeySettings(): Promise<HotkeySettings>
+  /** Bind one action; an empty combo clears it. A rejection names the conflict. */
+  setHotkey(action: HotkeyAction, combo: string): Promise<HotkeySettings>
 
   kernel(): Promise<KernelStatus>
   setChannel(channel: KernelChannel): Promise<KernelStatus>
@@ -107,6 +140,23 @@ export interface Backend {
   /** Apply an unsaved 覆写 to the profile: merged YAML plus script `console` output. Rejects with the reason. */
   previewOverride(id: string, text: string): Promise<OverridePreview>
 
+  /** Preview URI/Base64/YAML custom-node input without persisting. */
+  previewCustomNodesImport(raw: string): Promise<ParseNodesResult>
+  /** Import one or more custom nodes with an optional default dialer target. */
+  importCustomNodes(raw: string, dialer?: DialerTarget | null): Promise<CustomNodesImportResult>
+  /** Create or update one custom node (simple SOCKS5/HTTP form or raw YAML snippet). */
+  saveCustomNode(input: SaveCustomNodeInput): Promise<Snapshot>
+  /** Remove a custom node by id. */
+  deleteCustomNode(id: string): Promise<Snapshot>
+  /** Enable or disable a custom node without removing it. */
+  setCustomNodeEnabled(id: string, enabled: boolean): Promise<Snapshot>
+  /** Toggle subscription overlay injection on or off (R4). */
+  setCustomNodesOverlay(enabled: boolean): Promise<Snapshot>
+  /** Replace landing routing rules and master rule toggle (R6). */
+  saveLandingRules(rulesEnabled: boolean, rules: LandingRule[]): Promise<Snapshot>
+  /** Activate managed zero-YAML pure custom-node profile (R5). */
+  useCustomProfile(): Promise<Snapshot>
+
   connect(): Promise<Snapshot>
   disconnect(): Promise<Snapshot>
   setSystemProxy(enabled: boolean): Promise<Snapshot>
@@ -131,8 +181,20 @@ export interface Backend {
   closeConnections(ids: string[] | null): Promise<Snapshot>
   /** Resolve `name` through the kernel's live DNS config (R31); failures come back in `error`. */
   dnsQuery(name: string, qtype: DnsQueryType): Promise<DnsQueryResult>
+  /** Query the exit IP through the local mixed port (R40); rejects with the reason. */
+  exitIp(): Promise<ExitIpInfo>
+  /** Turn the optional automatic exit IP query on or off (R40); off by default. */
+  setExitIpAuto(enabled: boolean): Promise<AppInfo>
+  /** Aggregated traffic history for a range (R43); the switch and rows come back together. */
+  trafficHistory(range: TrafficRange, from?: string | null, to?: string | null): Promise<TrafficHistoryView>
+  /** Turn traffic recording on or off (R43); off keeps the existing rows. */
+  setTrafficRecording(enabled: boolean): Promise<AppInfo>
+  /** Delete every recorded row; recording may continue afterwards. */
+  clearTrafficHistory(): Promise<void>
   rules(): Promise<RulesSnapshot>
   setRuleDisabled(key: string, disabled: boolean): Promise<RulesSnapshot>
+  /** Read-only static rule match evaluation against live rules and cached rule-sets. */
+  matchRule(input: RuleMatchInput): Promise<RuleMatchResult>
   providers(): Promise<ProvidersResult>
   providerAction(kind: 'proxy' | 'rule', name: string, action: 'update' | 'healthcheck'): Promise<void>
   upgradeGeo(key?: string): Promise<GeoFile[]>
@@ -158,6 +220,19 @@ export interface Backend {
   saveSettings(settings: KernelSettings): Promise<Snapshot>
   syncTray(): Promise<void>
 
+  /** Write a versioned backup file and return its full path (R38). */
+  exportBackup(): Promise<string>
+  /** Replace the whole state from backup text; rejects with the reason (R38). */
+  restoreBackup(text: string): Promise<Snapshot>
+  webdavSettings(): Promise<WebdavSettings>
+  setWebdav(url: string, username: string, password: string): Promise<WebdavSettings>
+  /** Test the WebDAV folder; only a success marks it usable. */
+  testWebdav(): Promise<WebdavTestResult>
+  /** Upload the current state by hand; returns the remote file name. */
+  uploadBackup(): Promise<string>
+  listRemoteBackups(): Promise<RemoteBackup[]>
+  restoreRemoteBackup(name: string): Promise<Snapshot>
+
   onChange(handler: (snapshot: Snapshot) => void): Promise<() => void>
   /** Desktop tray asks the window to open a page or the add-profile dialog. */
   onTrayNavigate?(handler: (target: string) => void): Promise<() => void>
@@ -180,6 +255,52 @@ export function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
+export function normalizeWebdav(raw: unknown): WebdavSettings {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    url: typeof value.url === 'string' ? value.url : '',
+    username: typeof value.username === 'string' ? value.username : '',
+    password: typeof value.password === 'string' ? value.password : '',
+    available: Boolean(value.available),
+  }
+}
+
+export function normalizeRemoteBackup(raw: unknown): RemoteBackup {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    name: typeof value.name === 'string' ? value.name : '',
+    device: typeof value.device === 'string' ? value.device : '',
+    modified: typeof value.modified === 'string' ? value.modified : null,
+    size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : null,
+  }
+}
+
+function isHotkeyAction(value: unknown): value is HotkeyAction {
+  return typeof value === 'string' && (HOTKEY_ACTIONS as readonly string[]).includes(value)
+}
+
+export function normalizeHotkeys(raw: unknown): HotkeySettings {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const rawBindings = Array.isArray(value.bindings) ? value.bindings : []
+  const bindings: HotkeyBinding[] = []
+  for (const entry of rawBindings) {
+    const item = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {}
+    if (!isHotkeyAction(item.action) || typeof item.combo !== 'string' || !item.combo) continue
+    bindings.push({
+      action: item.action,
+      combo: item.combo,
+      active: Boolean(item.active),
+      error: typeof item.error === 'string' ? item.error : null,
+    })
+  }
+  return {
+    available: Boolean(value.available),
+    reason: typeof value.reason === 'string' ? value.reason : null,
+    platform: typeof value.platform === 'string' ? value.platform : '',
+    bindings,
+  }
+}
+
 function createTauriBackend(): Backend {
   const call = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -199,24 +320,44 @@ function createTauriBackend(): Backend {
         : [],
     }
   }
+  const shellInfo = (raw: {
+    theme?: unknown
+    palette?: unknown
+    last_entry?: unknown
+    language?: unknown
+    locale?: unknown
+  }): ShellState => ({
+    theme: raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system',
+    palette: normalizePalette(raw.palette),
+    last_entry: typeof raw.last_entry === 'string' ? raw.last_entry : 'home',
+    language: normalizeLanguage(raw.language),
+    locale: normalizeLocale(raw.locale),
+  })
 
   return {
     live: true,
     async shell() {
-      const raw = await call<{ theme: string; last_entry: string }>('shell_state')
-      const theme = raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : 'system'
-      return { theme, last_entry: raw.last_entry }
+      return shellInfo(await call<Record<string, unknown>>('shell_state'))
     },
     async setTheme(theme) {
       await call('set_theme', { theme })
+    },
+    async setPalette(palette) {
+      await call('set_palette', { palette })
+    },
+    async setLanguage(language) {
+      return shellInfo(await call<Record<string, unknown>>('set_language', { language }))
     },
     async setEntry(entry) {
       await call('set_last_entry', { entry })
     },
     appInfo: () => call<AppInfo>('app_info'),
     setAutostart: (enabled) => call<AppInfo>('set_autostart', { enabled }),
-    setAppBehavior: (closeToTray, silentStart) =>
-      call<AppInfo>('set_app_behavior', { closeToTray, silentStart }),
+    setAppBehavior: (closeToTray, silentStart, releaseUiOnClose) =>
+      call<AppInfo>('set_app_behavior', { closeToTray, silentStart, releaseUiOnClose }),
+    hotkeySettings: async () => normalizeHotkeys(await call<unknown>('hotkey_settings')),
+    setHotkey: async (action, combo) =>
+      normalizeHotkeys(await call<unknown>('set_hotkey', { action, combo })),
 
     kernel: () => kern('kernel_state'),
     setChannel: (channel) => kern('set_kernel_channel', { channel }),
@@ -289,6 +430,19 @@ function createTauriBackend(): Backend {
     saveOverride: (id, text) => snap('save_profile_override', { id, text }),
     previewOverride: (id, text) => call<OverridePreview>('preview_profile_override', { id, text }),
 
+    previewCustomNodesImport: async (raw) =>
+      normalizeParseNodesResult(await call<unknown>('preview_custom_nodes_import', { raw })),
+    importCustomNodes: async (raw, dialer) =>
+      normalizeCustomNodesImportResult(
+        await call<unknown>('import_custom_nodes', { raw, dialer: dialer ?? null }),
+      ),
+    saveCustomNode: (input) => snap('save_custom_node', { input }),
+    deleteCustomNode: (id) => snap('delete_custom_node', { id }),
+    setCustomNodeEnabled: (id, enabled) => snap('set_custom_node_enabled', { id, enabled }),
+    setCustomNodesOverlay: (enabled) => snap('set_custom_nodes_overlay', { enabled }),
+    saveLandingRules: (rulesEnabled, rules) => snap('save_landing_rules', { rulesEnabled, rules }),
+    useCustomProfile: () => snap('use_custom_profile'),
+
     connect: () => snap('connect_session'),
     disconnect: () => snap('disconnect_session'),
     setSystemProxy: (enabled) => snap('set_system_proxy', { enabled }),
@@ -311,9 +465,31 @@ function createTauriBackend(): Backend {
     closeConnection: (id) => snap('close_connection', { id }),
     closeConnections: (ids) => snap('close_connections', { ids }),
     dnsQuery: async (name, qtype) => normalizeDnsQueryResult(await call<unknown>('dns_query', { name, qtype })),
+    exitIp: async () => {
+      const result = normalizeExitIp(await call<unknown>('exit_ip'))
+      if (!result) throw new Error(t('exitIp.badResponse'))
+      return result
+    },
+    setExitIpAuto: (enabled) => call<AppInfo>('set_exit_ip_auto', { enabled }),
+    trafficHistory: async (range, from, to) =>
+      normalizeTrafficHistory(
+        await call<unknown>('traffic_history', { range, from: from ?? null, to: to ?? null }),
+      ),
+    setTrafficRecording: (enabled) => call<AppInfo>('set_traffic_history', { enabled }),
+    clearTrafficHistory: () => call<void>('clear_traffic_history'),
     rules: () => rules('kernel_rules'),
     setRuleDisabled: (key, disabled) =>
       rules('set_rule_disabled', { command: { key, disabled } }),
+    matchRule: async (input) =>
+      normalizeRuleMatchResult(
+        await call<unknown>('match_rule', {
+          input: {
+            target: input.target,
+            dst_port: input.dst_port ?? null,
+            process: input.process ?? null,
+          },
+        }),
+      ),
     providers: async () => {
       const raw = await call<ProvidersResult>('kernel_providers')
       return { providers: Array.isArray(raw.providers) ? raw.providers : [], error: raw.error ?? null }
@@ -335,6 +511,25 @@ function createTauriBackend(): Backend {
     async syncTray() {
       await call('sync_tray').catch(() => undefined)
     },
+
+    exportBackup: () => call<string>('export_backup'),
+    restoreBackup: (text) => snap('restore_backup_text', { text }),
+    webdavSettings: async () => normalizeWebdav(await call<unknown>('webdav_settings')),
+    setWebdav: async (url, username, password) =>
+      normalizeWebdav(await call<unknown>('set_webdav_settings', { url, username, password })),
+    testWebdav: async () => {
+      const raw = await call<{ available?: unknown; error?: unknown }>('test_webdav')
+      return {
+        available: Boolean(raw?.available),
+        error: typeof raw?.error === 'string' ? raw.error : null,
+      }
+    },
+    uploadBackup: () => call<string>('upload_backup'),
+    listRemoteBackups: async () => {
+      const raw = await call<unknown>('list_remote_backups')
+      return Array.isArray(raw) ? raw.map(normalizeRemoteBackup) : []
+    },
+    restoreRemoteBackup: (name) => snap('restore_remote_backup', { name }),
 
     async onChange(handler) {
       const { listen } = await import('@tauri-apps/api/event')
@@ -360,6 +555,7 @@ function demoOptionsFromUrl() {
     manyProviders: flags.includes('many'),
     longNames: flags.includes('long'),
     big: flags.includes('big'),
+    latin: flags.includes('latin'),
   }
 }
 
