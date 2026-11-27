@@ -2497,7 +2497,9 @@ describe('App', () => {
       await appendOne(index)
       expect(gap()).toBe(0)
       expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(false)
-      expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+      expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+      expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+      expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
     }
     expect(wrapper.findAll('.log-line').at(-1)!.text()).toContain('cap-new-2')
 
@@ -2595,7 +2597,9 @@ describe('App', () => {
     logs = [...logs, { level: 'info', message: 'tail', time_ms: 2000 }]
     await storeOf(wrapper).refresh()
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(51)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('51 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(51)
     expect((wrapper.find('[data-testid="log-scroll"]').element as HTMLElement).scrollTop).toBe(1200)
     expect(wrapper.find('[data-testid="log-jump"]').exists()).toBe(true)
   })
@@ -2612,16 +2616,23 @@ describe('App', () => {
     const wrapper = await mountWith(demo)
     await openPage(wrapper, 'logs')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
     expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
 
     await wrapper.find('.toolbar [data-value="warning"]').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(100)
+    expect(wrapper.find('[data-testid="log-match-count"]').text()).toBe('100/1000')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
+    expect(wrapper.findAll('.log-line').every((row) => row.classes().includes('warning'))).toBe(true)
 
     await wrapper.find('.toolbar [data-value="all"]').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(1000)
+    expect(wrapper.find('[data-testid="log-match-count"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('1000 条')
+    expect(wrapper.findAll('.log-line').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('.log-line').length).toBeLessThan(100)
   })
 
   it('keeps log row keys stable when the capped buffer trims from the front', async () => {
@@ -2645,16 +2656,18 @@ describe('App', () => {
       '4000|info|repeat#1',
     ])
 
-    const target = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    const target = wrapper.find('[data-log-key="2000|info|row-1000#0"]')
     expect(target.exists()).toBe(true)
+    expect(target.attributes('data-log-index')).toBe('1000')
     const element = target.element
 
     logs.splice(0, 10)
     await storeOf(wrapper).refresh()
     await flushPromises()
-    expect(wrapper.findAll('.log-line')).toHaveLength(997)
-    const moved = wrapper.find('[data-log-key="1900|info|row-900#0"]')
+    expect(wrapper.find('[data-testid="log-count"]').text()).toBe('997 条')
+    const moved = wrapper.find('[data-log-key="2000|info|row-1000#0"]')
     expect(moved.exists()).toBe(true)
+    expect(moved.attributes('data-log-index')).toBe('990')
     // The surviving row keeps its DOM node even though its index shifted by ten.
     expect(moved.element).toBe(element)
   })

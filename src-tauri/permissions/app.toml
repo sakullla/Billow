@@ -207,3 +207,8 @@ commands.allow = ["restart_kernel"]
 identifier = "allow-kernel-gc"
 description = "Enables the kernel_gc command without any pre-configured scope."
 commands.allow = ["kernel_gc"]
+
+[[permission]]
+identifier = "allow-match-rule"
+description = "Enables the match_rule command without any pre-configured scope."
+commands.allow = ["match_rule"]

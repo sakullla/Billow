@@ -73,6 +73,7 @@
     "allow-dns-query",
     "allow-exit-ip",
     "allow-kernel-rules",
+    "allow-match-rule",
     "allow-set-rule-disabled",
     "allow-clear-logs",
     "allow-export-logs",
