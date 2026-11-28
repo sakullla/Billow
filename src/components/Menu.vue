@@ -40,6 +40,25 @@ function cleanupListeners() {
   releaseLayer = null
 }
 
+/**
+ * Visible vertical band for the menu: the viewport intersected with every
+ * ancestor that clips overflow (scrolling lists, cards). Flipping against the
+ * viewport alone let row menus open into — and get cut off by — a scroll box.
+ */
+function visibleBand(el: HTMLElement): { top: number; bottom: number } {
+  let top = 0
+  let bottom = window.innerHeight || 768
+  for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY
+    if (overflow === 'visible') continue
+    const rect = node.getBoundingClientRect()
+    if (rect.height <= 0) continue
+    top = Math.max(top, rect.top)
+    bottom = Math.min(bottom, rect.bottom)
+  }
+  return { top, bottom }
+}
+
 function activateMenu() {
   if (!mounted || !props.open) return
   active.value = 0
@@ -60,9 +79,11 @@ function activateMenu() {
     if (el && typeof window !== 'undefined') {
       const rect = el.getBoundingClientRect()
       const anchorRect = (trigger ?? anchorEl)?.getBoundingClientRect()
-      const vh = window.innerHeight || 768
-      if (rect.height > 0 && rect.bottom > vh - 10 && anchorRect && anchorRect.top > rect.height + 16) {
-        above.value = true
+      const band = visibleBand(el)
+      if (rect.height > 0 && rect.bottom > band.bottom - 8 && anchorRect) {
+        const roomAbove = anchorRect.top - band.top
+        const roomBelow = band.bottom - anchorRect.bottom
+        if (roomAbove > rect.height + 12 || roomAbove > roomBelow) above.value = true
       }
     }
     focusItem(active.value)

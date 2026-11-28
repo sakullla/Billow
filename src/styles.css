@@ -10470,6 +10470,7 @@ details.cfg-section[open] .cfg-fold-icon {
 }
 .conn-filter-drawer .drawer-row-label {
   flex: none;
+  min-width: 36px;
   font-size: var(--text-xs);
   font-weight: 580;
   color: var(--text-3);
@@ -10496,25 +10497,49 @@ details.cfg-section[open] .cfg-fold-icon {
   border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
 }
+/* One labelled row per facet; the reset action parks in the top-right corner. */
 .conn-quick-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px 12px;
 }
 .conn-quick-group {
-  display: inline-flex;
+  grid-column: 1;
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
-.conn-quick-chip {
-  max-width: 190px;
-  gap: 5px;
+.chip-btn.conn-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 240px;
+  min-width: 0;
+  padding: 0 11px;
+  font-size: var(--text-xs);
+}
+.compact .chip-btn.conn-quick-chip {
+  height: 32px;
+  max-width: 100%;
+}
+.conn-quick-chip .conn-quick-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-quick-chip .proxy-quick-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 .conn-quick-reset {
-  margin-left: auto;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
 }
 .conn-card-rule {
   display: flex;

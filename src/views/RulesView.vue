@@ -610,7 +610,6 @@ onBeforeUnmount(() => {
       </div>
       <div class="head-actions">
         <button
-          v-if="!rules.length"
           type="button"
           class="btn ghost sm rule-matcher-toggle"
           :class="{ active: matcherOpen }"
@@ -702,20 +701,6 @@ onBeforeUnmount(() => {
       > {{ tr('已禁用') }} {{ disabledCount }}
       </button>
       <Segmented v-if="hasHits" v-model="sort" :options="SORTS" size="sm" :label="tr('排序')" />
-      <button
-        type="button"
-        class="btn ghost sm rule-matcher-toggle"
-        :class="{ active: matcherOpen }"
-        :disabled="!snap.kernel_running"
-        :aria-expanded="matcherOpen"
-        aria-controls="rule-matcher-panel"
-        :title="!snap.kernel_running ? tr('内核未运行，连接后可测试规则匹配') : tr('测试域名或 IP 会命中哪条规则')"
-        data-testid="rule-match-toggle"
-        @click="toggleMatcher()"
-      >
-        <Icon name="locate" :size="14" />
-        {{ tr('匹配测试') }}
-      </button>
       <button v-if="isFiltered" type="button" class="btn ghost sm" data-testid="reset-rule-toolbar" @click="resetFilters"> {{ tr('重置') }} </button>
     </div>
 
@@ -826,8 +811,9 @@ onBeforeUnmount(() => {
       </form>
 
       <div v-if="matchResult" class="rule-matcher-result" aria-live="polite" data-testid="rule-match-result">
-        <p class="muted small mono rule-matcher-summary" data-testid="rule-match-summary">
-          {{ matchResult.normalized_host || matchResult.normalized_ip || matchTarget.trim() }}<template v-if="matchResult.effective_port != null">:{{ matchResult.effective_port }}</template><template v-if="matchResult.effective_process"> · {{ matchResult.effective_process }}</template>
+        <p class="muted small rule-matcher-summary" data-testid="rule-match-summary">
+          <span class="rule-matcher-summary-label">{{ tr('匹配结果') }}</span>
+          <span class="mono ellipsis">{{ matchResult.normalized_host || matchResult.normalized_ip || matchTarget.trim() }}<template v-if="matchResult.effective_port != null">:{{ matchResult.effective_port }}</template><template v-if="matchResult.effective_process"> · {{ matchResult.effective_process }}</template></span>
         </p>
 
         <div v-if="matchResult.matched" class="rule-matcher-hit" data-testid="rule-match-hit">
@@ -1303,7 +1289,17 @@ onBeforeUnmount(() => {
 }
 
 .rule-matcher-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   margin: 0;
+}
+
+.rule-matcher-summary-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--text-2);
 }
 
 .rule-matcher-hit {

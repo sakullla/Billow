@@ -103,4 +103,33 @@ describe('Menu', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
     wrapper.unmount()
   })
+
+  it('opens upward when a clipping scroll container would cut it off below', async () => {
+    const rect = (top: number, height: number) =>
+      ({ top, bottom: top + height, height, left: 0, right: 200, width: 200, x: 0, y: top, toJSON() {} }) as DOMRect
+    const scroller = document.createElement('div')
+    scroller.style.overflowY = 'auto'
+    scroller.getBoundingClientRect = () => rect(100, 400)
+    const anchor = document.createElement('div')
+    anchor.className = 'menu-anchor'
+    const trigger = document.createElement('button')
+    trigger.getBoundingClientRect = () => rect(470, 24)
+    anchor.appendChild(trigger)
+    scroller.appendChild(anchor)
+    document.body.appendChild(scroller)
+    trigger.focus()
+    const original = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return this.getAttribute('role') === 'menu' ? rect(498, 180) : original.call(this)
+    }
+    try {
+      const wrapper = mount(Menu, { attachTo: anchor, props: { items, label: '行操作' } })
+      await settle()
+      // The viewport (768px) has room below, but the scroller ends at 500px.
+      expect(document.body.querySelector('[role="menu"]')?.classList.contains('above')).toBe(true)
+      wrapper.unmount()
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = original
+    }
+  })
 })

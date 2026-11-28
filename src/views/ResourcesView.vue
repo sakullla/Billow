@@ -396,6 +396,17 @@ const geoSummary = computed(() => {
   parts.push(geoSettings.value.geo_auto_update ? tr('自动更新') : tr('手动更新'))
   return parts.join(' · ')
 })
+/**
+ * GEO data is not a provider: it belongs to the unfiltered view, shows under
+ * 异常 only when it needs attention, and survives a search only if the query names it.
+ */
+const showGeoCard = computed(() => {
+  if (providerFilter.value === 'proxy' || providerFilter.value === 'rule') return false
+  if (providerFilter.value === 'failed' && geoMissing.value === 0 && !geoError.value) return false
+  if (!queryTokens.value.length) return true
+  const haystack = ['geo', tr('GEO 数据库'), ...geoFiles.value.flatMap((file) => [file.label, file.file])].join(' ')
+  return matchesTokens(haystack, queryTokens.value)
+})
 const geoInterval = computed(() => String(geoSettings.value.geo_update_interval ?? 24))
 const geodataModeId = computed(() => {
   const mode = geoSettings.value.geodata_mode
@@ -912,7 +923,7 @@ onMounted(() => {
 
 
     <!-- GEO data is plumbing: one quiet strip with a single action; everything else lives behind 设置. -->
-    <section class="card geo-card" data-testid="geo-card">
+    <section v-if="showGeoCard" class="card geo-card" data-testid="geo-card">
       <div class="geo-strip">
         <span class="geo-glyph" :class="{ warn: geoMissing > 0 }" aria-hidden="true"><Icon name="globe" :size="18" /></span>
         <div class="grow min0">

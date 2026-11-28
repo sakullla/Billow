@@ -1796,6 +1796,7 @@ export const UI_EN: Record<string, string> = {
   '测试域名或 IP 会命中哪条规则': 'Test which rule matches a domain or IP',
   '匹配测试': 'Rule tester',
   '规则匹配测试': 'Rule match tester',
+  '匹配结果': 'Result',
   '静态按顺序评估当前生效规则与本地已缓存规则集，不发起网络请求': 'Statically evaluates active rules and locally cached rule sets in order without network requests',
   '收起匹配测试': 'Close rule tester',
   '目标域名或 IP': 'Target domain or IP',

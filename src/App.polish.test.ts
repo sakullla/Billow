@@ -997,7 +997,8 @@ describe('UI/UX polish', () => {
       await settle(1100)
 
       const hostCol = () => wrapper.find('.conn-table colgroup col').attributes('style') ?? ''
-      expect(hostCol()).toContain('214px')
+      // Untouched columns stay fluid so narrow windows never scroll sideways.
+      expect(hostCol()).not.toContain('px')
 
       const resizer = wrapper.find('[data-testid="col-resize-host"]')
       resizer.element.dispatchEvent(new MouseEvent('pointerdown', { clientX: 200, bubbles: true }))
@@ -1010,10 +1011,10 @@ describe('UI/UX polish', () => {
       expect(hostCol()).toContain('354px')
       expect(JSON.parse(localStorage.getItem('billow:cols:connections') ?? '{}').host).toBe(354)
 
-      // Double-click resets the column back to its default width.
+      // Double-click resets the column back to its default (fluid) layout.
       await resizer.trigger('dblclick')
       await flushPromises()
-      expect(hostCol()).toContain('214px')
+      expect(hostCol()).not.toContain('px')
 
       // Rules table columns also resize and persist cleanly.
       await openPage(wrapper, 'rules')

@@ -77,7 +77,29 @@ const connCols = useColumnResize('connections', [
   { id: 'download', defaultWidth: 74, minWidth: 60, maxWidth: 180 },
   { id: 'upload', defaultWidth: 74, minWidth: 60, maxWidth: 180 },
   { id: 'time', defaultWidth: 64, minWidth: 54, maxWidth: 180 },
-])
+], {
+  measure: () => {
+    const head = tableScroll.value
+    if (!head) return {}
+    return Object.fromEntries(
+      ['host', 'process', 'rule', 'chain', 'speed', 'download', 'upload', 'time'].map((id) => [
+        id,
+        head.querySelector(`[data-testid="col-resize-${id}"]`)?.parentElement?.getBoundingClientRect().width ?? 0,
+      ]),
+    )
+  },
+})
+
+/**
+ * Until the user drags a divider, host/rule/chain share the room left by the
+ * fixed numeric columns, so narrow windows never scroll sideways.
+ */
+const connColStyle = (id: 'host' | 'rule' | 'chain') => {
+  if (connCols.customized.value) return { width: `${connCols.widths[id]}px` }
+  if (id === 'rule') return { width: '19%' }
+  if (id === 'chain') return { width: '27%' }
+  return undefined
+}
 
 const connTableStyle = computed(() => {
   if (!connCols.customized.value) return undefined
@@ -1272,6 +1294,7 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
           role="group"
           :aria-label="tr('协议与状态')"
         >
+          <span class="drawer-row-label" aria-hidden="true">{{ tr('类型') }}</span>
           <button
             v-if="protocolCounts.tcp > 0 || protocolFilter === 'tcp'"
             type="button"
@@ -1325,9 +1348,10 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             :class="{ active: quickProcess === item.name }"
             :aria-pressed="quickProcess === item.name"
             :data-testid="`conn-filter-process-${item.name}`"
+            :title="`${item.name} · ${item.count}`"
             @click="quickProcess = quickProcess === item.name ? null : item.name"
           >
-            <span class="ellipsis">{{ item.name }}</span>
+            <span class="conn-quick-label">{{ item.name }}</span>
             <span class="proxy-quick-count mono">{{ item.count }}</span>
           </button>
         </div>
@@ -1347,9 +1371,10 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
             :class="{ active: quickHost === item.name }"
             :aria-pressed="quickHost === item.name"
             :data-testid="`conn-filter-host-${item.name}`"
+            :title="`${item.name} · ${item.count}`"
             @click="quickHost = quickHost === item.name ? null : item.name"
           >
-            <span class="ellipsis">{{ item.name }}</span>
+            <span class="conn-quick-label">{{ item.name }}</span>
             <span class="proxy-quick-count mono">{{ item.count }}</span>
           </button>
         </div>
@@ -1443,10 +1468,10 @@ function speedDisplay(row: ConnectionRow): { text: string; idle: boolean; upOnly
     <div v-else-if="!compact" ref="tableScroll" class="card table-card conn-table" :class="{ paused: paused && tab === 'active' }" data-testid="connection-scroll" @scroll="table.onScroll">
       <table class="table virtual resizable-table" :class="{ 'custom-cols': connCols.customized.value }" :style="connTableStyle">
         <colgroup>
-          <col :style="{ width: `${connCols.widths.host}px` }" />
+          <col :style="connColStyle('host')" />
           <col class="col-process" :style="{ width: `${connCols.widths.process}px` }" />
-          <col :style="{ width: `${connCols.widths.rule}px` }" />
-          <col :style="{ width: `${connCols.widths.chain}px` }" />
+          <col :style="connColStyle('rule')" />
+          <col :style="connColStyle('chain')" />
           <col :style="{ width: `${connCols.widths.speed}px` }" />
           <col class="col-down" :style="{ width: `${connCols.widths.download}px` }" />
           <col class="col-up" :style="{ width: `${connCols.widths.upload}px` }" />

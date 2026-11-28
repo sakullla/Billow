@@ -18,7 +18,20 @@ function clampWidth(value: number, spec: ColumnSpec): number {
  * Draggable column width state persisted per table (`billow:cols:<key>`).
  * Dragging a divider resizes that column smoothly; double-clicking resets it.
  */
-export function useColumnResize(storageKey: string, specs: readonly ColumnSpec[]) {
+export interface ColumnResizeOptions {
+  /**
+   * Rendered widths (px) of the columns as currently laid out. Tables whose
+   * default layout is fluid use this to seed the first drag so the other
+   * columns do not jump back to their nominal pixel defaults.
+   */
+  measure?: () => Partial<Record<string, number>>
+}
+
+export function useColumnResize(
+  storageKey: string,
+  specs: readonly ColumnSpec[],
+  options: ColumnResizeOptions = {},
+) {
   const byId = new Map(specs.map((spec) => [spec.id, spec]))
   const widths = reactive<Record<string, number>>(
     Object.fromEntries(specs.map((spec) => [spec.id, spec.defaultWidth])),
@@ -63,6 +76,14 @@ export function useColumnResize(storageKey: string, specs: readonly ColumnSpec[]
     event.preventDefault()
     event.stopPropagation()
     stopDrag()
+
+    if (!customized.value && options.measure) {
+      const rendered = options.measure()
+      for (const other of specs) {
+        const value = rendered[other.id]
+        if (typeof value === 'number' && value > 0) widths[other.id] = clampWidth(value, other)
+      }
+    }
 
     const startX = event.clientX
     const startWidth = widths[id] ?? spec.defaultWidth

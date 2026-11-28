@@ -1687,7 +1687,9 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-:global(.compact) .proxy-active-filter-pill {
+/* The whole selector stays inside the global wrapper: Vue drops anything after
+   it, which once turned this into a page-wide `.compact` pill radius. */
+:global(.compact .proxy-active-filter-pill) {
   height: 30px;
   border-radius: var(--radius-pill);
 }

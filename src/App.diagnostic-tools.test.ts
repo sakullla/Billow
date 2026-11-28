@@ -406,7 +406,19 @@ describe('Diagnostic tools polish (R1–R5)', () => {
       await settle(40)
       expect(wrapper.find('[data-section="proxy"]').exists()).toBe(false)
       expect(wrapper.find('[data-section="rule"]').exists()).toBe(true)
+      // GEO data is not a rule set, so a category filter hides it.
+      expect(wrapper.find('[data-testid="geo-card"]').exists()).toBe(false)
       await wrapper.find('[data-testid="reset-provider-filters"]').trigger('click')
+      await settle(40)
+      expect(wrapper.find('[data-testid="geo-card"]').exists()).toBe(true)
+      // A search that names GEO data keeps the card; unrelated searches hide it.
+      await wrapper.find('[data-testid="provider-search"]').setValue('geosite')
+      await settle(40)
+      expect(wrapper.find('[data-testid="geo-card"]').exists()).toBe(true)
+      await wrapper.find('[data-testid="provider-search"]').setValue('zzz-no-such-provider')
+      await settle(40)
+      expect(wrapper.find('[data-testid="geo-card"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="provider-search"]').setValue('')
       await settle(40)
 
       // Proxy batch healthcheck with one injected failure -> retry failed reruns healthcheck.
