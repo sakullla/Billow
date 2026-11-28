@@ -88,15 +88,22 @@ onBeforeUnmount(() => {
 // ── LAN sharing (R23): where to point other devices, and who may connect.
 const lanOn = computed(() => effective('allow_lan'))
 const lanAddress = ref<string | null>(null)
+const lanRefreshing = ref(false)
+async function refreshLanAddress() {
+  if (lanRefreshing.value) return
+  lanRefreshing.value = true
+  try {
+    lanAddress.value = await store.backend.lanAddress()
+  } catch {
+    lanAddress.value = null
+  } finally {
+    lanRefreshing.value = false
+  }
+}
 watch(
   lanOn,
   (on) => {
-    if (on && lanAddress.value == null) {
-      void store.backend
-        .lanAddress()
-        .then((address) => (lanAddress.value = address))
-        .catch(() => (lanAddress.value = null))
-    }
+    if (on) void refreshLanAddress()
   },
   { immediate: true },
 )
@@ -404,10 +411,34 @@ void props
               @click="copyLanAddress"
             >{{ lanAddress }}:{{ lanPort }}<Icon name="copy" :size="12" /></button>
             <span v-else>{{ tr('本机局域网 IP 与端口') }} {{ lanPort }}</span>
+            <button
+              type="button"
+              class="copy-chip lan-refresh"
+              :disabled="lanRefreshing"
+              :title="tr('刷新局域网地址')"
+              :aria-label="tr('刷新局域网地址')"
+              data-testid="lan-refresh"
+              @click="refreshLanAddress"
+            ><Icon name="refresh" :size="12" />{{ tr('刷新地址') }}</button>
             <span v-for="extra in lanExtraPorts" :key="extra.label" class="copy-chip static mono" data-testid="lan-extra-address">
               {{ extra.label }} {{ lanAddress ?? tr('本机局域网 IP') }}:{{ extra.port }}
             </span>
           </span>
+          <details class="lan-guide" data-testid="lan-guide">
+            <summary class="lan-guide-summary">
+              <Icon name="info" :size="13" />
+              <span>{{ tr('使用步骤（含手机热点共享）') }}</span>
+              <Icon name="chevron-down" :size="13" class="lan-guide-chevron" />
+            </summary>
+            <ol class="lan-guide-steps">
+              <li>{{ tr('保持 Billow 已连接，并开启上方“局域网连接”。') }}</li>
+              <li>{{ tr('让其他设备连上同一 Wi-Fi，或连接本机开启的个人热点（开启热点后可点“刷新地址”重新获取热点 IP）。') }}</li>
+              <li>{{ tr('在其他设备的 Wi-Fi / 网络代理设置中选择“手动代理（HTTP / SOCKS5）”，服务器填 {0}，端口填 {1}；若开启了访问认证，一并填写用户名和密码。', { 0: lanAddress ?? tr('上方局域网 IP'), 1: lanPort }) }}</li>
+            </ol>
+            <p class="lan-guide-note">
+              {{ tr('关于手机热点自动走代理：受 Android 系统限制，未 Root 设备开启的热点流量默认绕过系统 VPN，无法自动透明代理；连入热点的设备需按上述步骤填写代理地址。') }}
+            </p>
+          </details>
         </div>
       </div>
       <SettingsRow

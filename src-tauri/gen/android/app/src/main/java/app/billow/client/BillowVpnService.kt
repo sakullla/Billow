@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -32,6 +33,19 @@ class BillowVpnService : VpnService() {
     private var networkCallback: DefaultNetworkCallback? = null
     private var idleReceiver: BroadcastReceiver? = null
 
+    private fun enterForeground(status: BillowStatus.Status) {
+        val notif = notification(status)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(
+                BillowStatus.VPN_NOTIFICATION,
+                notif,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED,
+            )
+        } else {
+            startForeground(BillowStatus.VPN_NOTIFICATION, notif)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         // The background toggle and the revoke path need this instance to update
@@ -42,21 +56,38 @@ class BillowVpnService : VpnService() {
             val starting = if (current.state == BillowStatus.DISCONNECTED) {
                 current.copy(state = BillowStatus.CONNECTING)
             } else current
-            startForeground(BillowStatus.VPN_NOTIFICATION, notification(starting))
+            enterForeground(starting)
             BillowStatus.service = this
         }
     }
 
     override fun onDestroy() {
-        closeTunnel()
+        val hadActiveTunnel = closeTunnel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (BillowStatus.service === this) BillowStatus.service = null
+        if (hadActiveTunnel) {
+            BillowVpnBridge.reportServiceDestroyed()
+        }
         super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val packages = intent?.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
-        val only = intent?.getBooleanExtra(EXTRA_ONLY, false) ?: false
+        synchronized(BillowStatus::class.java) {
+            val current = BillowStatus.current(this)
+            val active = if (current.state == BillowStatus.DISCONNECTED) {
+                current.copy(state = BillowStatus.CONNECTING)
+            } else current
+            enterForeground(active)
+            BillowStatus.service = this
+        }
+        // System restarts or Always-on VPN probes carry no Billow extras; never
+        // clobber a live tunnel or open an orphan TUN without the core.
+        if (intent == null || intent.action == VpnService.SERVICE_INTERFACE) {
+            if (tunnel == null) stopSelf()
+            return START_NOT_STICKY
+        }
+        val packages = intent.getStringArrayListExtra(EXTRA_EXCLUDED) ?: arrayListOf()
+        val only = intent.getBooleanExtra(EXTRA_ONLY, false)
         val fd = establishTun(packages, only)
         if (fd == null) {
             BillowVpnBridge.reportFd(-1)
@@ -68,8 +99,9 @@ class BillowVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        // The permission is gone: Rust disconnects, so the app, the tile, the
-        // widget and the notification all leave 已连接 together (R41).
+        // The permission is gone: close the tunnel first so onDestroy does not
+        // misclassify a revoke as an unexpected system teardown (R41).
+        closeTunnel()
         BillowVpnBridge.reportConsent(false)
         BillowVpnBridge.reportRevoked()
         stopSelf()
@@ -110,12 +142,13 @@ class BillowVpnService : VpnService() {
     }
 
     @Synchronized
-    fun closeTunnel() {
+    fun closeTunnel(): Boolean {
         unregisterNetworkMonitors()
-        val opened = tunnel ?: return
+        val opened = tunnel ?: return false
         opened.close()
         tunnel = null
         BillowVpnBridge.reportFd(-1)
+        return true
     }
 
     @Synchronized
@@ -352,6 +385,15 @@ class BillowVpnBridge {
             nativeRevoked()
         }
 
+        /** System destroyed the VPN service while its tunnel was still open. */
+        @JvmStatic
+        fun reportServiceDestroyed() {
+            try {
+                nativeServiceDestroyed()
+            } catch (_: Throwable) {
+            }
+        }
+
         /** A route change invalidates upstream sockets. A DNS-only change preserves them. */
         @JvmStatic
         fun reportNetworkChanged(routeChanged: Boolean) {
@@ -390,6 +432,9 @@ class BillowVpnBridge {
 
         @JvmStatic
         private external fun nativeRevoked()
+
+        @JvmStatic
+        private external fun nativeServiceDestroyed()
 
         @JvmStatic
         private external fun nativeNetworkChanged(routeChanged: Int)

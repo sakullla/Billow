@@ -2132,7 +2132,13 @@ pub enum AndroidRecovery { Check, Dns, Route }
 pub fn controller_responds(endpoint: &ControllerEndpoint) -> bool {
     if !loopback(&endpoint.host) || endpoint.port == 0 { return false; }
     let url = format!("http://{}:{}/version", endpoint.host, endpoint.port);
-    let agent = controller_agent(Duration::from_millis(1500));
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(1000))
+        .timeout_read(Duration::from_millis(2500))
+        .timeout_write(Duration::from_millis(1000))
+        .redirects(0)
+        .try_proxy_from_env(false)
+        .build();
     authorize(agent.get(&url), endpoint).call().is_ok()
 }
 

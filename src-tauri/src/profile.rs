@@ -1845,7 +1845,7 @@ impl ProcessRuntime {
                 command.env("GOGC", "50");
             }
             if std::env::var_os("GOMEMLIMIT").is_none() {
-                command.env("GOMEMLIMIT", "96MiB");
+                command.env("GOMEMLIMIT", "160MiB");
             }
         }
         command.arg("-d").arg(&self.home_dir);
@@ -2911,8 +2911,8 @@ impl ProfileBook {
     }
 
     /// Handles an unexpected kernel process exit observed at runtime: attempts at most
-    /// one silent restart for a desktop proxy session, otherwise releases OS traffic
-    /// takeover so user networking is never blackholed and surfaces a calm explanation.
+    /// one silent restart for a desktop proxy or Android VPN session, otherwise releases
+    /// OS traffic takeover so user networking is never blackholed and logs the failure.
     pub fn recover_crashed_kernel(
         &mut self,
         kernel: &mut dyn KernelLaunch,
@@ -2936,11 +2936,15 @@ impl ProfileBook {
             self.crash_recoveries = 0;
         }
         self.last_crash_ms = Some(now);
-        let can_silent_restart = self.crash_recoveries == 0
+        let can_silent_restart_desktop = self.crash_recoveries == 0
             && !self.startup_guard_active
             && self.platform == ClientPlatform::Desktop
             && !self.takeover.tun;
-        if can_silent_restart {
+        let can_silent_restart_android = self.crash_recoveries == 0
+            && !self.startup_guard_active
+            && self.platform == ClientPlatform::Android
+            && self.takeover.vpn;
+        if can_silent_restart_desktop {
             self.crash_recoveries = 1;
             if self.reload(kernel, false, None).is_ok() && kernel.running() {
                 self.kernel_running = true;
@@ -2949,6 +2953,19 @@ impl ProfileBook {
                 let text = crate::i18n::tr_args(crate::i18n::Key::KernelRecovered, &[("status", &exit_status)]);
                 self.append_logs(vec![diagnostics::failure_log(&text)]);
                 return Some(self.publish(kernel));
+            }
+        } else if can_silent_restart_android {
+            self.crash_recoveries = 1;
+            let model = self.link_model();
+            if let Ok(fd) = vpn.establish(&model.app_filter()) {
+                if self.reload(kernel, true, Some(fd)).is_ok() && kernel.running() {
+                    self.kernel_running = true;
+                    self.takeover.vpn = true;
+                    self.connected = true;
+                    let text = crate::i18n::tr_args(crate::i18n::Key::KernelRecovered, &[("status", &exit_status)]);
+                    self.append_logs(vec![diagnostics::failure_log(&text)]);
+                    return Some(self.publish(kernel));
+                }
             }
         }
         let repeated = self.crash_recoveries >= 1;
@@ -2959,7 +2976,13 @@ impl ProfileBook {
             .rev()
             .find(|line| line.level == "error")
             .map(|line| friendly_listen_error(&line.message));
-        let base = if repeated {
+        let base = if self.platform == ClientPlatform::Android {
+            if repeated {
+                crate::i18n::tr_args(crate::i18n::Key::AndroidKernelCrashedRepeated, &[("status", &exit_status)])
+            } else {
+                crate::i18n::tr_args(crate::i18n::Key::AndroidKernelCrashed, &[("status", &exit_status)])
+            }
+        } else if repeated {
             crate::i18n::tr_args(crate::i18n::Key::KernelCrashedRepeated, &[("status", &exit_status)])
         } else {
             crate::i18n::tr_args(crate::i18n::Key::KernelCrashed, &[("status", &exit_status)])
@@ -2970,11 +2993,17 @@ impl ProfileBook {
             }
             _ => crate::i18n::tr_args(crate::i18n::Key::KernelCrashedSuffix, &[("base", &base)]),
         };
+        self.append_logs(vec![diagnostics::failure_log(&message)]);
         let mut model = self.link_model();
         takeover::fail_kernel(&mut model, proxy, tun, vpn, message);
         self.apply_model(model);
         self.remember_current_failure();
         Some(self.publish(kernel))
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn record_failure_log(&mut self, message: &str) {
+        self.append_logs(vec![diagnostics::failure_log(message)]);
     }
 
     /// 重启内核 (R35): stops the process and respawns it with the current effective
@@ -6104,8 +6133,17 @@ impl ProfileBook {
         nodes::set_probe(&self.settings.test_url, self.settings.test_timeout_ms_or_default());
         self.recompute_effective();
         self.persist();
-        if self.platform != ClientPlatform::Desktop || !kernel.running() {
+        if !kernel.running() {
             return self.publish(kernel);
+        }
+        if self.platform == ClientPlatform::Android {
+            if !restart || !self.connected || !self.takeover.vpn {
+                return self.publish(kernel);
+            }
+            self.force_launch = true;
+            let snapshot = self.restart_android(kernel, vpn);
+            self.force_launch = false;
+            return snapshot;
         }
         if !restart {
             if proxy_changed && self.takeover.system_proxy {
@@ -11839,6 +11877,100 @@ proxy-groups:
         assert!(!tripped.system_proxy);
         assert!(proxy.http.is_none(), "system proxy must be cleared on repeated crash");
         assert!(tripped.failure.as_deref().unwrap_or_default().contains("连续异常退出"));
+        assert!(
+            tripped.logs.iter().any(|line| line.level == "error" && line.message.contains("连续异常退出")),
+            "circuit breaker failure must also be written to the logs view"
+        );
+    }
+
+    #[test]
+    fn android_runtime_crash_recovers_once_then_trips_circuit_breaker_and_logs_error() {
+        struct AndroidCrashKernel {
+            alive: bool,
+            exit: Option<String>,
+            starts: usize,
+            last_yaml: String,
+        }
+        impl KernelLaunch for AndroidCrashKernel {
+            fn start_or_reload(&mut self, yaml: &str) -> Result<(), String> {
+                self.starts += 1;
+                self.last_yaml = yaml.to_string();
+                self.alive = true;
+                Ok(())
+            }
+            fn running(&mut self) -> bool {
+                self.alive
+            }
+            fn take_exit_detail(&mut self) -> Option<String> {
+                self.exit.take()
+            }
+        }
+
+        let dir = temp_dir("android-crash-breaker");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", &config(7890));
+        let mut kernel = AndroidCrashKernel { alive: false, exit: None, starts: 0, last_yaml: String::new() };
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        let connected = book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected && connected.vpn && vpn.open);
+
+        // First unexpected exit on Android: silently re-establishes VPN and respawns once.
+        let establishes_before = vpn.establish_calls;
+        kernel.alive = false;
+        kernel.exit = Some("signal: 9".to_string());
+        let healed = book
+            .recover_crashed_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("first Android crash should self-heal");
+        assert!(healed.connected && healed.vpn && healed.kernel_running);
+        assert_eq!(vpn.establish_calls, establishes_before + 1);
+        assert!(healed.logs.iter().any(|line| line.message.contains("已自动恢复运行")));
+
+        // Second crash within 60s window: stops restarting, closes VPN, and logs error.
+        let starts_before = kernel.starts;
+        kernel.alive = false;
+        kernel.exit = Some("signal: 9".to_string());
+        let tripped = book
+            .recover_crashed_kernel(&mut kernel, &mut proxy, &mut tun, &mut vpn)
+            .expect("second Android crash trips circuit breaker");
+        assert_eq!(kernel.starts, starts_before);
+        assert!(!tripped.connected && !tripped.vpn && !vpn.open);
+        assert!(tripped.failure.as_deref().unwrap_or_default().contains("断开 VPN"));
+        assert!(
+            tripped.logs.iter().any(|line| line.level == "error" && line.message.contains("断开 VPN")),
+            "Android crash teardown must be recorded in logs"
+        );
+    }
+
+    #[test]
+    fn android_save_settings_restarts_vpn_kernel_when_allow_lan_changes_while_connected() {
+        let dir = temp_dir("android-save-allow-lan");
+        let mut book = ProfileBook::open(&dir.0);
+        book.set_platform(ClientPlatform::Android);
+        book.add_local("a.yaml", "mixed-port: 7890\nallow-lan: false\nmode: rule\n");
+        let mut kernel = RestartKernel::default();
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn { grant: true, ..MemoryVpn::default() };
+        book.enable("p1", &RejectSource, &mut kernel);
+        assert!(book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn).vpn);
+
+        let launches_before = kernel.launches.len();
+        let establishes_before = vpn.establish_calls;
+        let mut next = book.snapshot().settings;
+        next.allow_lan = Some(true);
+        let saved = book.save_settings(next, &mut kernel, &mut proxy, &mut tun, &mut vpn);
+        assert!(saved.connected && saved.vpn && vpn.open);
+        assert_eq!(vpn.establish_calls, establishes_before + 1);
+        assert_eq!(kernel.launches.len(), launches_before + 1);
+        let (yaml, forced) = kernel.launches.last().unwrap();
+        assert!(*forced);
+        let parsed: Value = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed.get("allow-lan").and_then(Value::as_bool), Some(true));
+        assert_eq!(parsed["tun"].get("enable").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

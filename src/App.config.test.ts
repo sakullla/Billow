@@ -159,6 +159,29 @@ describe('LAN sharing', () => {
     await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
     await settle(400)
     expect(wrapper.find('[data-testid="lan-address"]').text()).toBe('192.168.1.23:7890')
+    expect(wrapper.find('[data-testid="lan-refresh"]').exists()).toBe(true)
+    const guide = wrapper.find('[data-testid="lan-guide"]')
+    expect(guide.exists()).toBe(true)
+    expect(guide.text()).toContain('使用步骤（含手机热点共享）')
+    expect(guide.text()).toContain('192.168.1.23')
+    expect(guide.text()).toContain('7890')
+    expect(guide.text()).toContain('未 Root 设备')
+  })
+
+  it('R23: refreshing LAN address picks up newly enabled hotspot IP', async () => {
+    const { wrapper, backend } = await mountApp()
+    let currentIp = '192.168.1.23'
+    backend.lanAddress = async () => currentIp
+    await openPane(wrapper, 'network')
+    await rowWith(wrapper, '局域网连接').find('[role="switch"]').trigger('click')
+    await settle(400)
+    expect(wrapper.find('[data-testid="lan-address"]').text()).toBe('192.168.1.23:7890')
+
+    currentIp = '192.168.43.1'
+    await wrapper.find('[data-testid="lan-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="lan-address"]').text()).toBe('192.168.43.1:7890')
+    expect(wrapper.find('[data-testid="lan-guide"]').text()).toContain('192.168.43.1')
   })
 
   it('R23: saves a user and an allow-list, and refuses half-filled or unreadable input', async () => {

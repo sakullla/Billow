@@ -648,6 +648,8 @@ fn profile_snapshot(app: &AppHandle) -> ProfileSnapshot {
     } = &mut *session;
     if !runtime.running() {
         if let Some(recovered) = book.recover_crashed_kernel(runtime, proxy, tun, vpn) {
+            drop(session);
+            publish_android(app);
             return recovered;
         }
     }
@@ -1114,18 +1116,129 @@ fn config_overview(app: AppHandle) -> Result<profile::ConfigOverview, String> {
     with_profile(&app, |session| session.book.config_overview())
 }
 
-/// This machine's address on the local network, for LAN clients to point at.
-/// Only a private IPv4 is reported: under TUN or another VPN the route probe
-/// can return a tunnel address, and a wrong hint is worse than none.
-#[tauri::command(async)]
-fn lan_address() -> Option<String> {
+fn is_billow_tun_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, d] = ip.octets();
+    a == 172 && b == 19 && c == 0 && d <= 3
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn is_ignored_lan_iface(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "lo"
+        || lower.starts_with("tun")
+        || lower.starts_with("utun")
+        || lower.starts_with("tap")
+        || lower.starts_with("wg")
+        || lower.starts_with("ppp")
+        || lower.starts_with("tailscale")
+        || lower.starts_with("zt")
+        || lower.starts_with("mihomo")
+        || lower.starts_with("meta")
+        || lower.starts_with("rmnet")
+        || lower.starts_with("v4-rmnet")
+        || lower.starts_with("ccmni")
+        || lower.starts_with("pdp")
+        || lower.starts_with("wwan")
+        || lower.starts_with("clat")
+        || lower.starts_with("dummy")
+        || lower.starts_with("docker")
+        || lower.starts_with("br-")
+        || lower.starts_with("veth")
+        || lower.starts_with("virbr")
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn lan_iface_priority(name: &str) -> u8 {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("ap")
+        || lower.starts_with("swlan")
+        || lower.starts_with("softap")
+        || lower.starts_with("rndis")
+        || lower.starts_with("p2p-")
+        || lower == "wlan1"
+        || lower == "wlan2"
+    {
+        return 0;
+    }
+    if lower.starts_with("wlan")
+        || lower.starts_with("wl")
+        || lower.starts_with("en")
+        || lower.starts_with("eth")
+        || lower.starts_with("usb")
+    {
+        return 1;
+    }
+    2
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn lan_ip_priority(ip: std::net::Ipv4Addr) -> u8 {
+    match ip.octets()[0] {
+        192 => 0,
+        10 => 1,
+        _ => 2,
+    }
+}
+
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn pick_lan_address(candidates: &[(String, std::net::Ipv4Addr)]) -> Option<String> {
+    candidates
+        .iter()
+        .filter(|(name, ip)| ip.is_private() && !is_billow_tun_ipv4(*ip) && !is_ignored_lan_iface(name))
+        .min_by_key(|(name, ip)| (lan_iface_priority(name), lan_ip_priority(*ip)))
+        .map(|(_, ip)| ip.to_string())
+}
+
+#[cfg(target_os = "android")]
+fn android_interface_lan_address() -> Option<String> {
+    let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut addrs) } != 0 || addrs.is_null() {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    let mut current = addrs;
+    while !current.is_null() {
+        unsafe {
+            let ifa = &*current;
+            let up = (ifa.ifa_flags & (libc::IFF_UP as u32)) != 0;
+            let loopback = (ifa.ifa_flags & (libc::IFF_LOOPBACK as u32)) != 0;
+            if up && !loopback && !ifa.ifa_name.is_null() && !ifa.ifa_addr.is_null() {
+                let sa = &*ifa.ifa_addr;
+                if i32::from(sa.sa_family) == libc::AF_INET {
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip = std::net::Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
+                    if let Ok(name) = std::ffi::CStr::from_ptr(ifa.ifa_name).to_str() {
+                        candidates.push((name.to_string(), ip));
+                    }
+                }
+            }
+            current = ifa.ifa_next;
+        }
+    }
+    unsafe { libc::freeifaddrs(addrs) };
+    pick_lan_address(&candidates)
+}
+
+fn udp_probe_lan_address() -> Option<String> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // connect() on UDP only picks a route; nothing is sent.
     socket.connect("192.168.255.255:9").or_else(|_| socket.connect("10.255.255.255:9")).ok()?;
     match socket.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip.to_string()),
+        std::net::IpAddr::V4(ip) if ip.is_private() && !is_billow_tun_ipv4(ip) => Some(ip.to_string()),
         _ => None,
     }
+}
+
+/// This machine's address on the local network, for LAN clients to point at.
+/// On Android, enumerates active Wi-Fi and hotspot interfaces first so mobile
+/// hotspot sharing does not pick a cellular carrier IP.
+#[tauri::command(async)]
+fn lan_address() -> Option<String> {
+    #[cfg(target_os = "android")]
+    if let Some(ip) = android_interface_lan_address() {
+        return Some(ip);
+    }
+    udp_probe_lan_address()
 }
 
 #[tauri::command(async)]
@@ -1192,7 +1305,7 @@ fn refresh_ids(app: &AppHandle, ids: &[String]) -> ProfileSnapshot {
 
 #[tauri::command(async)]
 fn save_kernel_settings(app: AppHandle, settings: KernelSettings) -> ProfileSnapshot {
-    with_session(&app, |session| {
+    let snapshot = with_session(&app, |session| {
         let ProfileSession {
             book,
             runtime,
@@ -1201,7 +1314,9 @@ fn save_kernel_settings(app: AppHandle, settings: KernelSettings) -> ProfileSnap
             vpn,
         } = session;
         book.save_settings(settings, runtime, proxy, tun, vpn)
-    })
+    });
+    publish_android(&app);
+    snapshot
 }
 
 #[tauri::command(async)]
@@ -2027,6 +2142,7 @@ fn spawn_kernel_guardian(app: &AppHandle) {
             });
             if let Some(snapshot) = recovered {
                 if !shutdown::suppress_background_work() {
+                    publish_android(&handle);
                     refresh_tray(&handle, &snapshot);
                     let _ = handle.emit("profile-changed", snapshot);
                 }
@@ -2738,10 +2854,49 @@ pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeRevoked(
     };
     tauri::async_runtime::spawn_blocking(move || {
         ANDROID_CONNECTING.store(false, Ordering::SeqCst);
+        let text = i18n::tr(i18n::Key::AndroidVpnRevoked).to_string();
+        with_profile(&app, |session| session.book.record_failure_log(&text));
         let snapshot = disconnect_session(app.clone());
         publish_android(&app);
         refresh_tray(&app, &snapshot);
         let _ = app.emit("profile-changed", snapshot);
+    });
+}
+
+/// The system destroyed BillowVpnService while its tunnel was still active.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_billow_client_BillowVpnBridge_nativeServiceDestroyed(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    let Some(app) = android_app() else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = ANDROID_RECOVERY.lock().unwrap_or_else(|err| err.into_inner());
+        let still_connected = with_profile(&app, |session| session.book.is_connected());
+        if !still_connected {
+            return;
+        }
+        let text = i18n::tr(i18n::Key::AndroidVpnServiceDestroyed).to_string();
+        let snapshot = with_session_raw(&app, |session| {
+            let ProfileSession { book, runtime, proxy, tun, vpn } = session;
+            if !book.is_connected() {
+                return None;
+            }
+            book.record_failure_log(&text);
+            if runtime.running() {
+                book.restart_kernel(runtime, proxy, tun, vpn).ok()
+            } else {
+                book.recover_crashed_kernel(runtime, proxy, tun, vpn)
+            }
+        });
+        if let Some(snapshot) = snapshot {
+            publish_android(&app);
+            refresh_tray(&app, &snapshot);
+            let _ = app.emit("profile-changed", snapshot);
+        }
     });
 }
 
@@ -2763,6 +2918,14 @@ fn recover_android_connection(app: AppHandle, change: diagnostics::AndroidRecove
         return;
     }
 
+    // Give a waking or GC-paused kernel a brief breather before tearing down a live VPN.
+    if let Some(ep) = endpoint.as_ref() {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if diagnostics::controller_responds(ep) {
+            return;
+        }
+    }
+
     let snapshot = with_session_raw(&app, |session| {
         let ProfileSession { book, runtime, proxy, tun, vpn } = session;
         if !book.is_connected() || ProfileBook::controller_of(runtime) != endpoint {
@@ -2775,6 +2938,8 @@ fn recover_android_connection(app: AppHandle, change: diagnostics::AndroidRecove
         if endpoint.as_ref().is_some_and(diagnostics::controller_responds) {
             return None;
         }
+        let text = i18n::tr(i18n::Key::AndroidControllerUnresponsive).to_string();
+        book.record_failure_log(&text);
         book.restart_kernel(runtime, proxy, tun, vpn).ok()
     });
     if let Some(snapshot) = snapshot {
@@ -3088,5 +3253,40 @@ mod tests {
         let mac_cfg = build_main_window_config(&[base], 960.0, 680.0, "macos");
         assert_eq!(mac_cfg.title_bar_style, tauri::utils::TitleBarStyle::Overlay);
         assert!(mac_cfg.hidden_title);
+    }
+
+    #[test]
+    fn pick_lan_address_prefers_hotspot_and_wifi_over_cellular_and_vpn() {
+        let ipv4 = |a, b, c, d| std::net::Ipv4Addr::new(a, b, c, d);
+        // Cellular + Billow VPN + mobile hotspot AP: must pick hotspot gateway, never rmnet or tun.
+        let hotspot = vec![
+            ("lo".to_string(), ipv4(127, 0, 0, 1)),
+            ("rmnet_data0".to_string(), ipv4(10, 88, 12, 34)),
+            ("tun0".to_string(), ipv4(172, 19, 0, 1)),
+            ("ap0".to_string(), ipv4(192, 168, 43, 1)),
+        ];
+        assert_eq!(pick_lan_address(&hotspot).as_deref(), Some("192.168.43.1"));
+
+        // Wi-Fi + hotspot both active: hotspot AP wins for tethering clients.
+        let wifi_and_hotspot = vec![
+            ("wlan0".to_string(), ipv4(192, 168, 1, 20)),
+            ("swlan0".to_string(), ipv4(192, 168, 137, 1)),
+        ];
+        assert_eq!(pick_lan_address(&wifi_and_hotspot).as_deref(), Some("192.168.137.1"));
+
+        // Plain Wi-Fi + VPN: picks Wi-Fi IP and ignores VPN tunnel IP.
+        let wifi_only = vec![
+            ("tun0".to_string(), ipv4(172, 19, 0, 1)),
+            ("wlan0".to_string(), ipv4(192, 168, 50, 8)),
+        ];
+        assert_eq!(pick_lan_address(&wifi_only).as_deref(), Some("192.168.50.8"));
+
+        // Only cellular / VPN / public IPs: returns None rather than a misleading IP.
+        let no_lan = vec![
+            ("rmnet_data1".to_string(), ipv4(10, 1, 2, 3)),
+            ("tun0".to_string(), ipv4(172, 19, 0, 1)),
+            ("wlan0".to_string(), ipv4(100, 64, 1, 2)),
+        ];
+        assert_eq!(pick_lan_address(&no_lan), None);
     }
 }

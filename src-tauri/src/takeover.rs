@@ -3755,6 +3755,9 @@ mod tests {
         assert!(source.contains("nativeNetworkChanged"));
         assert!(source.contains("nativeResumeCheck"));
         assert!(source.contains("nativeScreenInteractive"));
+        assert!(source.contains("nativeServiceDestroyed"));
+        assert!(source.contains("FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED"));
+        assert!(source.contains("VpnService.SERVICE_INTERFACE"));
         assert!(source.contains("ACTION_SCREEN_OFF"));
         assert!(!source.to_ascii_lowercase().contains("mihomo"));
         let manifest = include_str!("../gen/android/app/src/main/AndroidManifest.xml");
@@ -3770,6 +3773,7 @@ mod tests {
         let lib_rs = include_str!("lib.rs");
         assert!(lib_rs.contains("Java_app_billow_client_BillowVpnBridge_nativeNetworkChanged"));
         assert!(lib_rs.contains("Java_app_billow_client_BillowVpnBridge_nativeResumeCheck"));
+        assert!(lib_rs.contains("Java_app_billow_client_BillowVpnBridge_nativeServiceDestroyed"));
     }
 
     #[test]

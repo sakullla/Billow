@@ -707,10 +707,13 @@ onMounted(() => {
       <div class="search provider-search grow">
         <Icon name="search" :size="16" />
         <input v-model="query" type="search" :placeholder="tr('筛选代理集与规则集')" data-page-search data-testid="provider-search" />
-        <kbd v-if="!compact && !query" class="search-kbd" aria-hidden="true">/</kbd>
-        <span class="small muted mono search-count" data-testid="provider-count">
-          {{ isFiltered ? `${visibleCount}/${providers.length}` : providers.length }}
-        </span>
+        <span
+          v-if="isFiltered"
+          class="toolbar-count search-match-count small mono"
+          data-testid="provider-count"
+          aria-live="polite"
+        >{{ visibleCount }}/{{ providers.length }}</span>
+        <kbd v-if="!compact && !query && !isFiltered" class="search-kbd" aria-hidden="true">/</kbd>
         <button v-if="query" type="button" class="icon-btn sm" :aria-label="tr('清空筛选')" @click="query = ''">
           <Icon name="x" :size="14" />
         </button>

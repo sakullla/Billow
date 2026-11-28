@@ -490,6 +490,61 @@ button.copy-chip:hover {
 .copy-chip.static {
   color: var(--text-2);
 }
+.lan-refresh {
+  color: var(--text-2);
+}
+.lan-refresh:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.lan-guide {
+  margin-top: 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.lan-guide-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-2);
+  font-weight: 500;
+  user-select: none;
+}
+.lan-guide-summary::-webkit-details-marker {
+  display: none;
+}
+.lan-guide-summary:hover {
+  color: var(--text);
+}
+.lan-guide-chevron {
+  margin-left: auto;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.lan-guide[open] .lan-guide-chevron {
+  transform: rotate(180deg);
+}
+.lan-guide-steps {
+  margin: 0;
+  padding: 2px 12px 8px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.lan-guide-note {
+  margin: 0;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border);
+  line-height: 1.5;
+  color: var(--text-3);
+}
 
 /* ── Kernel and about headers ── */
 .kernel-hero {

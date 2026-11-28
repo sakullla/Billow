@@ -5102,6 +5102,10 @@ textarea.input {
   outline: 2px solid var(--accent-ring);
   outline-offset: 1px;
 }
+.provider-fold > h2 {
+  flex: none;
+  white-space: nowrap;
+}
 .provider-fold .count-pill {
   margin-left: 0;
 }
@@ -5127,8 +5131,12 @@ textarea.input {
   width: 100%;
 }
 .compact .provider-search {
-  flex: 1;
-  width: auto;
+  flex: none;
+  width: 100%;
+}
+.compact .provider-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .provider-detail {
@@ -10612,6 +10620,11 @@ details.cfg-section[open] .cfg-fold-icon {
   flex-direction: column;
   align-items: stretch;
   gap: var(--space-2);
+}
+.compact .log-toolbar > .search,
+.compact .res-toolbar > .search {
+  flex: none;
+  width: 100%;
 }
 .compact .log-toolbar .log-level-filter {
   width: 100%;
