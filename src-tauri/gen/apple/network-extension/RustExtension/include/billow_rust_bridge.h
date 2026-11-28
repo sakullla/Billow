@@ -27,7 +27,7 @@ int32_t billow_rust_kernel_version(char *buf, int size);
 void billow_rust_kernel_set_home(const char *home);
 int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn write, char **error);
 // Feeds one [4B big-endian length][IP packet] record from packetFlow.readPackets.
-int32_t billow_rust_kernel_write(void *packet, uint32_t length);
+int32_t billow_rust_kernel_write(const void *packet, uint32_t length);
 // Polls egress when the callback route is not used (tests/diagnostics).
 // `length` is the byte capacity of `packet`; the wrapper derives the record
 // count as length / (4 + 65535) so it can never write past the caller's

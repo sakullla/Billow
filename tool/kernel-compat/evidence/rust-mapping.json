@@ -234,7 +234,7 @@
     },
     "dns": {
       "status": "partial",
-      "reason": "Implemented for the shapes a pinned v1.19.34 configuration can observe: nameserver/default-nameserver/fallback/fallback-filter/nameserver-policy/proxy-server-nameserver(+policy)/direct-nameserver, respect-rules, ipv6/ipv6-timeout, enhanced-mode normal/redir-host/fake-ip, fake-ip-range(6)/fake-ip-filter(blacklist|whitelist)/fake-ip-ttl, use-hosts/use-system-hosts, cache-algorithm lru|arc (arc served by the LRU cache), cache-max-size, listen (UDP+TCP A/AAAA/CNAME only) and prefer-h3 (recorded; DoH uses HTTP/1.1). `fallback-filter.geoip-code` keeps a leading `!` exactly like the pinned not-matcher plus the fallback filter's inversion. Unimplemented upstream forms are rejected by name: quic:// DoQ, system://, dhcp://, ts/et overlay DNS, rcode://, #h3=true, EDNS client subnet, name-cert-verify, #proxy names and fake-ip-filter-mode rule.",
+      "reason": "Implemented for the shapes a pinned v1.19.34 configuration can observe: nameserver/default-nameserver/fallback/fallback-filter/nameserver-policy/proxy-server-nameserver(+policy)/direct-nameserver, respect-rules, ipv6/ipv6-timeout, enhanced-mode normal/redir-host/fake-ip, fake-ip-range(6)/fake-ip-filter(blacklist|whitelist)/fake-ip-ttl, use-hosts/use-system-hosts, cache-algorithm lru|arc (arc served by the LRU cache), cache-max-size, listen (UDP+TCP A/AAAA/CNAME only) and direct DoH over HTTP/1.1 or HTTP/3 (including #h3=true and prefer-h3). `fallback-filter.geoip-code` keeps a leading `!` exactly like the pinned not-matcher plus the fallback filter's inversion. Unimplemented upstream forms are rejected by name: quic:// DoQ, system://, dhcp://, ts/et overlay DNS, rcode://, forced HTTP/3 with respect-rules, EDNS client subnet, name-cert-verify, #proxy names and fake-ip-filter-mode rule.",
       "evidence": [
         "tests/dns.rs::parses_dns_and_hosts_like_the_pinned_defaults",
         "tests/dns.rs::rejects_unimplemented_dns_shapes_by_name",
@@ -247,7 +247,8 @@
         "tests/dns.rs::fake_ip_pool_ttl_filter_and_dns_server",
         "tests/dns.rs::fallback_geoip_code_negation_matches_the_pinned_filter",
         "tests/dns.rs::hosts_answers_on_the_listener_in_every_enhanced_mode",
-        "tool/kernel-compat/evidence/t22-dns.json"
+        "tool/kernel-compat/evidence/t22-dns.json",
+        "tests/dns.rs::forced_doh_http3_carries_dns_and_verifies_the_certificate"
       ]
     },
     "proxy-groups": {
@@ -421,7 +422,7 @@
       "options": [
         "server",
         "port",
-        "cipher (aes-128-gcm, aes-192-gcm, aes-256-gcm, chacha20-ietf-poly1305, xchacha20-ietf-poly1305)",
+        "cipher (AES-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305 and Shadowsocks 2022 AES-GCM or ChaCha20-Poly1305)",
         "password",
         "udp",
         "dialer-proxy (one socks5 hop for UDP)",
@@ -433,8 +434,8 @@
         "udp-over-tcp",
         "udp-over-tcp-version: 1|2"
       ],
-      "udp": "implemented: AEAD-2017 datagrams (`salt || sealed(addr || payload)`), replies decrypted with the server's salt; `udp-over-tcp: true` switches to sing UoT (v2 magic `sp.v2.udp-over-tcp.arpa`, v1 legacy framing) instead; the pinned outbound opens one UoT stream per destination, so the relay keeps one association per target; with `dialer-proxy` the datagrams travel through exactly one socks5 hop's UDP relay (any other chain fails at load time)",
-      "cipherNamedRejections": "The pinned ss outbound uses `sing-shadowsocks2` and accepts 39 method names; the other 34 are rejected by name (never silently accepted): legacy AEAD additions (chacha8-ietf-poly1305, xchacha8-ietf-poly1305, rabbit128-poly1305, aes-128/192/256-ccm, aes-128/256-gcm-siv, aegis-128l, aegis-256, aez-384, deoxys-ii-256-128, lea-128/192/256-gcm, ascon128, ascon128a), shadowstream (aes-128/192/256-ctr, aes-128/192/256-cfb, rc4-md5, chacha20-ietf, xchacha20, chacha20), `none`, and 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305, 2022-blake3-chacha8-poly1305, 2022-blake3-aes-128-ccm, 2022-blake3-aes-256-ccm. `DUMMY` is not an ss method in the pinned engine either. The full value matrix and the pinned `-t` verdicts are in evidence/t28-option-parity.{md,json}.",
+      "udp": "AEAD 2017 and 2022 datagrams; udp-over-tcp selects sing UoT v1/v2. A single SOCKS5 dialer hop can carry native UDP.",
+      "cipherNamedRejections": "Unsupported methods are rejected by name, including stream ciphers, none, extra AEADs, Shadowsocks 2022 ChaCha8 and AES-CCM.",
       "notImplemented": [
         "plugin",
         "plugin-opts"
@@ -455,9 +456,11 @@
         "tests/config.rs::t28_masque_quic_controller_and_trojan_ss_opts_are_parsed",
         "tests/mihomo_peers.rs::shadowsocks_uot_reaches_the_echo_through_mihomo",
         "tests/mihomo_peers.rs::shadowsocks_uot_v1_reaches_the_echo_through_mihomo",
-        "tests/mihomo_peers.rs::shadowsocks_uot_v2_reaches_two_destinations_from_one_association"
+        "tests/mihomo_peers.rs::shadowsocks_uot_v2_reaches_two_destinations_from_one_association",
+        "tests/mihomo_peers.rs::subscription_transport_ss2022_tcp_through_mihomo",
+        "tests/mihomo_peers.rs::subscription_transport_ss2022_udp_through_mihomo"
       ],
-      "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name). AEAD ciphers follow the pinned ss outbound (`sing-shadowsocks2`) names for aes-128/192/256-gcm, chacha20-ietf-poly1305 and xchacha20-ietf-poly1305 (the 24-byte XChaCha nonce is honoured); every other pinned-accepted name (the shadowstream list, ChaCha8/AES-CCM/GCM-SIV/AEGIS/AEZ/Deoxys/LEA/Ascon AEADs, `none` and the `2022-blake3-*` methods) is a named rejection, enumerated value by value in evidence/t28-option-parity.{md,json}."
+      "notes": "The shared dialer applies tfo, mptcp, interface-name, routing-mark and ip-version. Shadowsocks 2022 uses the upstream shadowsocks crate for the wire protocol."
     },
     "trojan": {
       "status": "implemented",
@@ -719,21 +722,22 @@
         "server",
         "port",
         "psk",
-        "version (1, 2, 3)",
+        "version (1, 2, 3, 6)",
         "obfs-opts (mode http, host)",
         "dialer-proxy",
         "tfo",
         "mptcp",
         "interface-name",
         "routing-mark",
-        "ip-version"
+        "ip-version",
+        "mode (v6 default, unshaped or unsafe-raw)",
+        "reuse (v6)"
       ],
-      "udp": "not implemented: `udp: true` is rejected (no Snell UDP command); `udp: false` loads",
+      "udp": "Snell v6 supports UDP over the TCP record stream.",
       "notImplemented": [
-        "udp: true",
-        "version 4-6",
-        "reuse",
-        "mode",
+        "version 4 or 5",
+        "udp: true on version 3",
+        "reuse on legacy versions",
         "obfs-opts.mode: tls"
       ],
       "evidence": [
@@ -744,7 +748,10 @@
         "tests/mihomo_peers.rs::snell_v3_with_http_obfs_reaches_the_receiving_side_through_mihomo",
         "tests/mihomo_peers.rs::snell_wrong_psk_never_reaches_the_sink",
         "tests/protocols.rs::basic_dialer_options_are_applied_to_the_proxy_connection",
-        "tests/config.rs::t27_tls_identity_options_are_parsed"
+        "tests/config.rs::t27_tls_identity_options_are_parsed",
+        "tests/mihomo_peers.rs::subscription_transport_snell_v6_tcp_through_mihomo",
+        "tests/mihomo_peers.rs::subscription_transport_snell_v6_udp_through_mihomo",
+        "src/outbound/snell_v6.rs::tests::both_logical_half_closes_return_the_physical_connection_to_the_pool"
       ],
       "notes": "BasicOption dialer knobs are applied by the shared stream dialer: tfo (Linux TCP_FASTOPEN_CONNECT, macOS TCP_FASTOPEN), mptcp (IPPROTO_MPTCP, TCP fallback when the stack lacks it), interface-name (SO_BINDTODEVICE on Linux, IP_BOUND_IF/IPV6_BOUND_IF on macOS), routing-mark (SO_MARK on Linux; accepted and logged on other platforms exactly like the pinned dialer) and ip-version (address-family filter/order for the proxy-server name)."
     },
@@ -2076,7 +2083,8 @@
       ]
     },
     "global": [
-      "any key no proxy type declares (a typo or a newer option)"
+      "any key no proxy type declares (a typo or a newer option)",
+      "global-client-fingerprint (removed; emits a warning)"
     ]
   },
   "quicProfile": {
@@ -2094,7 +2102,7 @@
       "udp": "implemented (default port 53; a TC=1 reply is retried over TCP, like the pinned client)",
       "tcp": "implemented (default port 53, length-prefixed)",
       "dot": "implemented (default port 853; SNI is the nameserver host, platform+custom roots, `skip-cert-verify`)",
-      "doh": "implemented over HTTP/1.1 GET `?dns=<base64url>` with Accept: application/dns-message (default 443/80); HTTP/2 and HTTP/3 are not used, so prefer-h3 is recorded and #h3=true is rejected",
+      "doh": "HTTP/1.1 and direct HTTP/3 GET ?dns=<base64url> with Accept: application/dns-message; #h3=true requires HTTP/3 and prefer-h3 adds a concurrent HTTP/3 attempt.",
       "doq": "not implemented: quic:// is rejected by name",
       "others": "system://, dhcp://, ts://, et://, rcode:// are rejected by name"
     },
@@ -2130,7 +2138,8 @@
       "nameserver #proxy names",
       "EDNS client subnet (ecs/ecs-override)",
       "name-cert-verify",
-      "h3=true / DoH over HTTP/2 or HTTP/3",
+      "DoH over HTTP/2",
+      "forced DoH over HTTP/3 with respect-rules",
       "fake-ip-filter-mode: rule",
       "DNS server forwarding of qtypes other than A/AAAA/CNAME",
       "fallback-filter.geosite with ! negation",

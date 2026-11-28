@@ -4258,3 +4258,143 @@ fn vmess_plain_udp_reaches_two_destinations_from_one_association() {
         assert_eq!(second.received(), vec![b"marker-vmess-plain-target-b".to_vec()]);
     });
 }
+
+const SUBSCRIPTION_TEST_SS_KEY: &str = "ABEiM0RVZneImaq7zN3u/w==";
+const SUBSCRIPTION_TEST_SNELL_PSK: &str = "local-snell-v6-test-psk";
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn subscription_transport_ss2022_tcp_through_mihomo() {
+    let port = free_port();
+    let options = format!("cipher: 2022-blake3-aes-128-gcm, password: '{SUBSCRIPTION_TEST_SS_KEY}'");
+    with_peer("ss2022-tcp", &listener("shadowsocks", port, &format!(", {options}")), |sink, _, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, {options}}}\n"
+        ));
+        let marker = "marker-ss2022-tcp";
+        let status = connect_while(running.proxy, &format!("127.0.0.1:{}", sink.port), marker.as_bytes(), || {
+            expect_marker("ss2022-tcp", sink, marker);
+        });
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn subscription_transport_ss2022_udp_through_mihomo() {
+    let port = free_port();
+    let options = format!("cipher: 2022-blake3-aes-128-gcm, password: '{SUBSCRIPTION_TEST_SS_KEY}'");
+    with_udp_peer("ss2022-udp", &listener("shadowsocks", port, &format!(", {options}")), |_, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: ss, server: 127.0.0.1, port: {port}, {options}, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let payload = b"marker-ss2022-udp";
+        send_datagram(relay, target, payload);
+        assert_eq!(echo.received(), vec![payload.to_vec()]);
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn subscription_transport_snell_v6_tcp_through_mihomo() {
+    let port = free_port();
+    let options = format!("version: 6, mode: default, psk: '{SUBSCRIPTION_TEST_SNELL_PSK}'");
+    with_peer("snell-v6-tcp", &listener("snell", port, &format!(", {options}")), |sink, _, _| {
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, {options}, reuse: true}}\n"
+        ));
+        for marker in ["marker-snell-v6-tcp-a", "marker-snell-v6-tcp-b"] {
+            let status = connect_while(running.proxy, &format!("127.0.0.1:{}", sink.port), marker.as_bytes(), || {
+                expect_marker("snell-v6-tcp", sink, marker);
+            });
+            assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        }
+    });
+}
+
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn subscription_transport_snell_v6_udp_through_mihomo() {
+    let port = free_port();
+    let options = format!("version: 6, mode: default, psk: '{SUBSCRIPTION_TEST_SNELL_PSK}'");
+    with_udp_peer("snell-v6-udp", &listener("snell", port, &format!(", {options}")), |_, _| {
+        let echo = UdpEcho::start();
+        let (running, _) = start_kernel(&format!(
+            "  - {{name: p0, type: snell, server: 127.0.0.1, port: {port}, {options}, udp: true}}\n"
+        ));
+        let (_control, relay) = udp_associate(running.proxy);
+        let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+        let payload = b"marker-snell-v6-udp";
+        send_datagram(relay, target, payload);
+        assert_eq!(echo.received(), vec![payload.to_vec()]);
+    });
+}
+
+#[cfg(feature = "device-vpn")]
+#[ignore = "needs the pinned Mihomo peer: set KC_MIHOMO_BIN and run with --ignored"]
+#[test]
+fn device_tunnel_udp_streams_round_trip_through_mihomo() {
+    use billow_kernel::outbound::ipstack;
+    use billow_kernel::tunnel::{Ingest, PacketSink, Tunnel, TunnelOptions};
+
+    struct Sink(std::sync::mpsc::SyncSender<Vec<u8>>);
+    impl PacketSink for Sink {
+        fn emit(&self, packet: &[u8]) -> bool {
+            self.0.try_send(packet.to_vec()).is_ok()
+        }
+    }
+
+    let anytls = free_port();
+    let vless = free_port();
+    let vmess = free_port();
+    let ss = free_port();
+    let listeners = format!(
+        "{}{}{}{}",
+        listener("anytls", anytls, &format!(", certificate: CERT, private-key: KEY, users: {{user1: '{ANYTLS_PASSWORD}'}}")),
+        listener("vless", vless, &format!(", certificate: CERT, private-key: KEY, users: [{{username: u1, uuid: {UUID}}}]")),
+        vmess_listener(vmess, UUID, 0),
+        listener("shadowsocks", ss, &format!(", cipher: aes-256-gcm, password: '{SS_PASSWORD}'")),
+    );
+    with_udp_peer("device-udp-streams", &listeners, |peer, _| {
+        let cases = [
+            format!("type: anytls, port: {anytls}, password: '{ANYTLS_PASSWORD}', skip-cert-verify: true, sni: localhost, udp: true"),
+            format!("type: vless, port: {vless}, uuid: {UUID}, tls: true, skip-cert-verify: true, udp: true"),
+            format!("type: vless, port: {vless}, uuid: {UUID}, tls: true, skip-cert-verify: true, udp: true, packet-encoding: packetaddr"),
+            format!("type: vmess, port: {vmess}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true"),
+            format!("type: vmess, port: {vmess}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true, packet-encoding: packetaddr"),
+            format!("type: vmess, port: {vmess}, uuid: {UUID}, alterId: 0, cipher: auto, udp: true, packet-encoding: xudp"),
+            format!("type: ss, port: {ss}, cipher: aes-256-gcm, password: '{SS_PASSWORD}', udp-over-tcp: true"),
+        ];
+        for (case, proxy) in cases.iter().enumerate() {
+            let echo = UdpEcho::start();
+            let yaml = format!(
+                "mixed-port: {}\nproxies:\n  - {{name: p0, server: 127.0.0.1, {proxy}}}\nrules: ['MATCH,p0']\n",
+                free_port(),
+            );
+            let (send, receive) = std::sync::mpsc::sync_channel(8);
+            let tunnel = Tunnel::start(&yaml, peer.dir.clone(), TunnelOptions::default(), Some(Arc::new(Sink(send)))).unwrap();
+            let source: SocketAddr = "198.18.0.2:41000".parse().unwrap();
+            let target = SocketAddr::from(([127, 0, 0, 1], echo.port));
+            let payloads = [format!("device-{case}-first"), format!("device-{case}-second")];
+            // Send both before reading the first reply. A reader must be able
+            // to finish a partial frame while the writer handles the next datagram.
+            for payload in &payloads {
+                let packet = ipstack::build_udp_packet(source.ip(), target.ip(), source.port(), target.port(), payload.as_bytes(), 64).unwrap();
+                assert_eq!(tunnel.ingest(&packet), Ingest::Accepted, "{proxy}");
+            }
+            for payload in &payloads {
+                let bytes = receive.recv_timeout(Duration::from_secs(8)).unwrap_or_else(|err| panic!("{proxy}: {err}"));
+                let ip = ipstack::parse_ip_packet(&bytes).unwrap();
+                let udp = ipstack::parse_udp(&ip).unwrap();
+                assert_eq!((ip.src, udp.src_port), (target.ip(), target.port()), "{proxy}");
+                assert_eq!((ip.dst, udp.dst_port), (source.ip(), source.port()), "{proxy}");
+                assert_eq!(udp.payload, payload.as_bytes(), "{proxy}");
+            }
+            assert_eq!(echo.received(), payloads.map(String::into_bytes), "{proxy}");
+            tunnel.stop();
+        }
+    });
+}

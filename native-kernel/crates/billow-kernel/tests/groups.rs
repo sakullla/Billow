@@ -106,7 +106,8 @@ rules:
 "#;
     let loaded = billow_kernel::load_config(yaml, "g.yaml").expect("valid groups load");
     let groups = &loaded.config.proxy_groups;
-    assert_eq!(groups.len(), 5);
+    assert_eq!(groups.len(), 6);
+    assert_eq!(groups.last().unwrap().name, "GLOBAL");
     assert_eq!(groups[0].kind, GroupKind::Select);
     assert_eq!(groups[0].proxies, ["a", "b"]);
     assert_eq!(groups[0].default_selected.as_deref(), Some("b"));
@@ -279,14 +280,6 @@ rules: ['MATCH,g']
     assert!(loaded.config.profile.store_fake_ip);
     assert_eq!(loaded.config.proxy_groups[0].empty_fallback, EmptyFallback::Compatible);
     assert_eq!(loaded.config.proxy_groups[1].empty_fallback, EmptyFallback::Proxy(0));
-    assert!(
-        loaded
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("store-fake-ip")),
-        "{:?}",
-        loaded.warnings
-    );
     assert_eq!(loaded.config.rules[0].action, Action::Group(0));
 }
 

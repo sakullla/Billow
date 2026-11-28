@@ -8,8 +8,7 @@
 //! of that stream. The server answers with one command byte: `0` tunnel, `2`
 //! error (code, message length, message).
 //!
-//! v4-v6 replace the record layer and are rejected at load time, as are
-//! `reuse` and `mode` (v6 traffic shaping).
+//! Snell v6 uses a separate record layer in `snell_v6`.
 
 use std::io;
 use std::pin::Pin;
@@ -99,7 +98,7 @@ pub fn snell_key(psk: &[u8], salt: &[u8]) -> [u8; 32] {
     out
 }
 
-fn increment(nonce: &mut [u8; 12]) {
+pub(super) fn increment(nonce: &mut [u8; 12]) {
     for byte in nonce.iter_mut() {
         *byte = byte.wrapping_add(1);
         if *byte != 0 {
@@ -632,7 +631,7 @@ fn obfs_base64(input: &[u8]) -> String {
 }
 
 /// Read the server's one-byte reply and the error body when it is an error.
-async fn read_reply<S: AsyncRead + Unpin>(stream: &mut S) -> io::Result<()> {
+pub(super) async fn read_reply<S: AsyncRead + Unpin>(stream: &mut S) -> io::Result<()> {
     let mut command = [0u8; 1];
     stream.read_exact(&mut command).await?;
     match command[0] {
@@ -661,6 +660,9 @@ async fn read_reply<S: AsyncRead + Unpin>(stream: &mut S) -> io::Result<()> {
 }
 
 pub async fn dial(option: &SnellOutbound, target: &Target) -> Result<Dialed, DialError> {
+    if let Some(config) = &option.v6 {
+        return super::snell_v6::dial(option, config, target).await;
+    }
     let tcp = connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| handshake("snell", e))?;
     let psk = option.psk.expose().as_bytes().to_vec();

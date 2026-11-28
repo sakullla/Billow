@@ -21,7 +21,10 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "socks-port",
     "port",
     "allow-lan",
+    "lan-allowed-ips",
+    "lan-disallowed-ips",
     "bind-address",
+    "global-client-fingerprint",
     "mode",
     "log-level",
     "rules",
@@ -51,11 +54,11 @@ pub const SUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
 /// a valid configuration must load).
 pub const KNOWN_UNSUPPORTED_TOP_LEVEL_KEYS: &[&str] = &[
     "ss-config", "vmess-config", "inbound-tfo", "inbound-mptcp",
-    "skip-auth-prefixes", "lan-allowed-ips", "lan-disallowed-ips",
+    "skip-auth-prefixes",
     "external-controller-routing-mark", "external-controller-pipe",
     "external-ui", "external-ui-url", "external-ui-name", "external-doh-server",
     "interface-name", "routing-mark", "tunnels",
-    "global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
+    "global-ua", "etag-support", "keep-alive-idle",
     "listeners", "ntp", "tuic-server",
     "iptables", "experimental", "geox-url", "sniffer", "clash-for-android"
 ];
@@ -970,13 +973,43 @@ impl TunConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum RoutingMode {
+    Rule,
+    Global,
+    Direct,
+}
+
+impl RoutingMode {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "rule" => Some(Self::Rule),
+            "global" => Some(Self::Global),
+            "direct" => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Global => "global",
+            Self::Direct => "direct",
+        }
+    }
+}
+
 /// Parsed, validated configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub listen: SocketAddr,
+    lan_allowed_ips: Option<Vec<ipnet_like::IpNet>>,
+    lan_disallowed_ips: Vec<ipnet_like::IpNet>,
     /// First port that asked to be rebound on a clash-style port key, if any.
     pub port_rebound_from: Option<u16>,
     pub mode: Option<String>,
+    pub(crate) sniffer: crate::sniff::Sniffer,
     pub log_level: Option<String>,
     pub rules: Vec<Rule>,
     /// Rule-less configuration goes straight to DIRECT like Mihomo does.
@@ -1028,6 +1061,17 @@ pub enum RulesSource {
 }
 
 impl Config {
+    pub(crate) fn allows_inbound(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
+        self.lan_allowed_ips
+            .as_ref()
+            .is_none_or(|prefixes| prefixes.iter().any(|prefix| prefix.contains(address)))
+            && !self
+                .lan_disallowed_ips
+                .iter()
+                .any(|prefix| prefix.contains(address))
+    }
+
     /// Geodata files referenced by the inline rule list and sub-rules. Rule
     /// provider payloads add their own references when the providers are read.
     pub fn geodata_requirements(&self) -> GeodataRequirements {
@@ -1054,6 +1098,9 @@ impl Config {
         // DNS fallback filters and nameserver policies can reference geosite
         // lists and the GEOIP database too (pinned `parseDNS` loads them).
         if self.dns.enable {
+            for rule in &self.dns.fake_ip_rules {
+                requirements.visit_matcher(&rule.matcher);
+            }
             let filter = &self.dns.fallback_filter;
             if !self.dns.fallback.is_empty() {
                 if filter.geoip
@@ -1158,29 +1205,6 @@ pub struct LoadedConfig {
 
 /// `tun`/`sniffer` enabled flag. A missing `enable` is false in both pinned
 /// schemas; a non-mapping value is an invalid configuration.
-fn block_enabled(
-    value: &serde_yaml::Value,
-    path: &str,
-    key: &str,
-) -> Result<bool, ConfigError> {
-    match value {
-        serde_yaml::Value::Null => Ok(false),
-        serde_yaml::Value::Bool(flag) => Ok(*flag),
-        serde_yaml::Value::Mapping(mapping) => {
-            optional_bool(mapping, "enable")
-                .map(|flag| flag.unwrap_or(false))
-                .map_err(|error| config_error_with_prefix(error, &format!("{path}: {key}")))
-        }
-        other => Err(ConfigError::InvalidValue(format!(
-            "{path}: {key} must be a mapping or boolean, found {}",
-            kind_of(other)
-        ))),
-    }
-}
-
-/// Parse the `tun:` block strictly (T34). Unknown keys and behaviour-changing
-/// shapes that this kernel cannot honour fail with their name instead of being
-/// silently ignored.
 fn parse_tun(
     value: &serde_yaml::Value,
     path: &str,
@@ -1442,21 +1466,33 @@ fn parse_tun_prefix_list(
     path: &str,
     key: &str,
 ) -> Result<Vec<String>, ConfigError> {
+    Ok(parse_prefix_list(value, path, key)?
+        .into_iter()
+        .map(|network| network.to_string())
+        .collect())
+}
+
+fn parse_prefix_list(
+    value: &serde_yaml::Value,
+    path: &str,
+    key: &str,
+) -> Result<Vec<ipnet_like::IpNet>, ConfigError> {
     let entries = parse_tun_string_list(value, path, key)?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         let network: ipnet_like::IpNet = entry.parse().map_err(|error| {
             ConfigError::InvalidValue(format!("{path}: {key} '{entry}' is not a CIDR: {error}"))
         })?;
-        out.push(network.to_string());
+        out.push(network);
     }
     Ok(out)
 }
 
 /// Parse and validate `yaml`. `path` is only used for diagnostics.
 pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> {
-    let raw: serde_yaml::Value =
+    let mut raw: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|e| ConfigError::Invalid(format!("{path}: {e}")))?;
+    raw.apply_merge().map_err(|e| ConfigError::Invalid(format!("{path}: {e}")))?;
     let mapping = match raw {
         serde_yaml::Value::Mapping(m) => m,
         other => {
@@ -1485,8 +1521,11 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
     // ephemeral port the app never saw.
     let mut listener_disabled = false;
     let mut allow_lan: Option<bool> = None;
+    let mut lan_allowed_ips = None;
+    let mut lan_disallowed_ips = Vec::new();
     let mut bind: Option<String> = None;
     let mut mode = None;
+    let mut sniffer = crate::sniff::Sniffer::default();
     let mut log_level = None;
     let mut geodata_mode = false;
     let mut geodata_loader = "memconservative".to_string();
@@ -1599,18 +1638,18 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
                 warnings.push("find-process-mode is off; process matching rules stay unsupported".to_string());
             }
             "allow-lan" => allow_lan = Some(parse_bool(value, path, key)?),
+            "lan-allowed-ips" => lan_allowed_ips = Some(parse_prefix_list(value, path, key)?),
+            "lan-disallowed-ips" => lan_disallowed_ips = parse_prefix_list(value, path, key)?,
             "bind-address" => {
                 let s = parse_string(value, path, key)?;
                 bind = Some(s);
             }
             "mode" => {
                 let s = parse_string(value, path, key)?;
-                if s != "rule" {
-                    return Err(ConfigError::Unsupported(format!(
-                        "mode '{s}' (only 'rule' can be honoured by this slice)"
-                    )));
-                }
-                mode = Some(s);
+                let parsed = RoutingMode::parse(&s).ok_or_else(|| {
+                    ConfigError::InvalidValue(format!("invalid mode '{s}' (expected rule, direct or global)"))
+                })?;
+                mode = Some(parsed.as_str().to_string());
             }
             "log-level" => {
                 let s = parse_string(value, path, key)?;
@@ -1711,17 +1750,12 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             // `tun` is parsed strictly (T34); `sniffer` remains an inert block
             // because this kernel does not implement sniffing at all.
             "tun" => tun = parse_tun(value, path, &mut warnings)?,
-            "sniffer" => {
-                if block_enabled(value, path, key)? {
-                    return Err(ConfigError::Unsupported(format!(
-                        "top-level key '{key}' with enable: true is not implemented (sniffing is T7)"
-                    )));
+            "global-client-fingerprint" => {
+                if !value.is_null() && !parse_string(value, path, key)?.is_empty() {
+                    warnings.push("global-client-fingerprint was removed; set client-fingerprint on individual proxies".to_string());
                 }
-                warnings.push(
-                    "'sniffer' is present but disabled; this kernel has no sniffer implementation, so the block is inert"
-                        .to_string(),
-                );
             }
+            "sniffer" => sniffer = crate::sniff::Sniffer::parse(value, &mut warnings)?,
             "geox-url" => {
                 let mapping = value.as_mapping().ok_or_else(|| {
                     ConfigError::InvalidValue(format!("{path}: geox-url must be a mapping"))
@@ -1805,7 +1839,7 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         .iter()
         .map(|provider| provider.name.clone())
         .collect::<BTreeSet<_>>();
-    let proxy_groups = match proxy_groups_value {
+    let mut proxy_groups = match proxy_groups_value {
         None => Vec::new(),
         Some(value) => parse_proxy_groups(
             value,
@@ -1815,6 +1849,39 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
             &mut warnings,
         )?,
     };
+
+    // Mihomo exposes a built-in GLOBAL selector in configuration/rule mode
+    // too, so an API mode change can use the same groups without reloading.
+    if !proxy_groups.iter().any(|group| group.name == "GLOBAL") {
+        let mut members = vec!["DIRECT".to_string(), "REJECT".to_string()];
+        members.extend(proxies.iter().map(|proxy| proxy.name.clone()));
+        members.extend(proxy_groups.iter().map(|group| group.name.clone()));
+        proxy_groups.push(ProxyGroup {
+            name: "GLOBAL".into(),
+            kind: GroupKind::Select,
+            proxies: members,
+            use_providers: Vec::new(),
+            url: DEFAULT_TEST_URL.to_string(),
+            url_explicit: false,
+            interval: 0,
+            registration_interval: 0,
+            timeout: 5000,
+            lazy: true,
+            max_failed_times: 5,
+            expected_status: ExpectedStatus::default(),
+            filter: Vec::new(),
+            exclude_filter: Vec::new(),
+            exclude_type: Vec::new(),
+            tolerance: 0,
+            strategy: LoadBalanceStrategy::ConsistentHashing,
+            hash_key: HashKey::Default,
+            default_selected: None,
+            disable_udp: false,
+            hidden: false,
+            icon: String::new(),
+            empty_fallback: EmptyFallback::Compatible,
+        });
+    }
 
     let sub_rule_names = match sub_rules_value {
         None => BTreeSet::new(),
@@ -1844,6 +1911,26 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
         providers: &provider_names,
         sub_rules: &sub_rule_names,
     };
+    if dns.fake_ip_filter_mode == crate::dns::FakeIpFilterMode::Rule {
+        for text in &dns.fake_ip_filter {
+            let mut fields = split_rule_fields(text);
+            let policy = fields.len().checked_sub(1).ok_or_else(|| ConfigError::InvalidValue("empty Fake-IP rule".into()))?;
+            fields[policy] = match fields[policy].trim().to_ascii_lowercase().as_str() {
+                "real-ip" => "DIRECT".into(),
+                "fake-ip" => "REJECT".into(),
+                _ => return Err(ConfigError::InvalidValue(format!("dns.fake-ip-filter '{text}' requires fake-ip or real-ip"))),
+            };
+            let rule = parse_rule_line(&fields.join(","), true, &context)?;
+            match &rule.matcher {
+                Matcher::Match | Matcher::Domain(_) | Matcher::DomainSuffix(_) | Matcher::DomainKeyword(_) |
+                Matcher::DomainRegex(_) | Matcher::DomainWildcard(_) | Matcher::GeoSite(_) => {}
+                Matcher::RuleSet { name, .. } if rule_providers.iter().any(|provider| provider.name == *name && provider.behavior != RuleBehavior::IpCidr) => {}
+                _ => return Err(ConfigError::InvalidValue(format!("dns.fake-ip-filter '{text}' requires a domain matcher"))),
+            }
+            dns.fake_ip_rules.push(rule);
+        }
+    }
+
     let sub_rules = match sub_rules_value {
         None => BTreeMap::new(),
         Some(value) => parse_sub_rules(value, path, &context)?,
@@ -1863,8 +1950,11 @@ pub fn load_config(yaml: &str, path: &str) -> Result<LoadedConfig, ConfigError> 
 
     let config = Config {
         listen: SocketAddr::new(host, port),
+        lan_allowed_ips,
+        lan_disallowed_ips,
         port_rebound_from: requested_port.filter(|p| Some(*p) != listen_port),
         mode,
+        sniffer,
         log_level,
         empty_rules: rules.is_empty() && rules_source == RulesSource::None,
         rules,
@@ -2722,7 +2812,7 @@ fn parse_proxy_providers(
 fn parse_profile(
     value: &serde_yaml::Value,
     path: &str,
-    warnings: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
 ) -> Result<ProfileConfig, ConfigError> {
     if value.is_null() {
         return Ok(ProfileConfig::default());
@@ -2746,12 +2836,6 @@ fn parse_profile(
             // tolerates extra keys, so they are ignored the same way.
             _ => {}
         }
-    }
-    if profile.store_fake_ip {
-        warnings.push(
-            "profile.store-fake-ip is true but the fake-ip pool and its IP->host mapping are in-memory only: the pinned cache.db persistence of allocations across restarts is not implemented"
-                .to_string(),
-        );
     }
     Ok(profile)
 }

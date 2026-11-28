@@ -315,16 +315,30 @@ pub fn build_packet(
     payload: &[u8],
     hop_limit: u8,
 ) -> Result<Vec<u8>, IpError> {
-    match (src, dst) {
+    build_packet_with(src, dst, protocol, payload.len(), hop_limit, |packet| {
+        packet.extend_from_slice(payload);
+    })
+}
+
+/// Allocate the whole packet once and let the caller write the transport bytes.
+pub(super) fn build_packet_with(
+    src: IpAddr,
+    dst: IpAddr,
+    protocol: u8,
+    payload_len: usize,
+    hop_limit: u8,
+    write_payload: impl FnOnce(&mut Vec<u8>),
+) -> Result<Vec<u8>, IpError> {
+    let mut packet = match (src, dst) {
         (IpAddr::V4(src), IpAddr::V4(dst)) => {
-            let total = 20 + payload.len();
-            if total > usize::from(u16::MAX) {
+            if payload_len > usize::from(u16::MAX) - 20 {
                 return Err(IpError::Malformed(format!(
                     "{} bytes exceeds the IPv4 maximum of {}",
-                    payload.len(),
+                    payload_len,
                     usize::from(u16::MAX) - 20
                 )));
             }
+            let total = 20 + payload_len;
             let mut packet = Vec::with_capacity(total);
             packet.push(0x45);
             packet.push(0);
@@ -338,32 +352,36 @@ pub fn build_packet(
             packet.extend_from_slice(&dst.octets());
             let header_checksum = internet_checksum(&packet[..20]);
             packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
-            packet.extend_from_slice(payload);
-            Ok(packet)
+            packet
         }
         (IpAddr::V6(src), IpAddr::V6(dst)) => {
-            if payload.len() > usize::from(u16::MAX) {
+            if payload_len > usize::from(u16::MAX) {
                 return Err(IpError::Malformed(format!(
                     "{} bytes exceeds the IPv6 payload maximum of {}",
-                    payload.len(),
+                    payload_len,
                     usize::from(u16::MAX)
                 )));
             }
-            let mut packet = Vec::with_capacity(40 + payload.len());
+            let mut packet = Vec::with_capacity(40 + payload_len);
             packet.push(0x60);
             packet.extend_from_slice(&[0, 0, 0]); // traffic class / flow label
-            packet.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            packet.extend_from_slice(&(payload_len as u16).to_be_bytes());
             packet.push(protocol);
             packet.push(hop_limit);
             packet.extend_from_slice(&src.octets());
             packet.extend_from_slice(&dst.octets());
-            packet.extend_from_slice(payload);
-            Ok(packet)
+            packet
         }
-        _ => Err(IpError::Malformed(
-            "source and destination are different address families".to_string(),
-        )),
-    }
+        _ => {
+            return Err(IpError::Malformed(
+                "source and destination are different address families".to_string(),
+            ));
+        }
+    };
+    let header_len = packet.len();
+    write_payload(&mut packet);
+    debug_assert_eq!(packet.len(), header_len + payload_len);
+    Ok(packet)
 }
 
 /// Build one IPv4 or IPv6 packet carrying one UDP datagram.
@@ -375,15 +393,18 @@ pub fn build_udp_packet(
     payload: &[u8],
     hop_limit: u8,
 ) -> Result<Vec<u8>, IpError> {
-    let mut udp = Vec::with_capacity(8 + payload.len());
-    udp.extend_from_slice(&src_port.to_be_bytes());
-    udp.extend_from_slice(&dst_port.to_be_bytes());
-    udp.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
-    udp.extend_from_slice(&[0, 0]);
-    udp.extend_from_slice(payload);
-    let checksum = transport_checksum(src, dst, IPPROTO_UDP, &udp);
-    udp[6..8].copy_from_slice(&checksum.to_be_bytes());
-    build_packet(src, dst, IPPROTO_UDP, &udp, hop_limit)
+    let udp_len = 8 + payload.len();
+    build_packet_with(src, dst, IPPROTO_UDP, udp_len, hop_limit, |packet| {
+        let start = packet.len();
+        packet.extend_from_slice(&src_port.to_be_bytes());
+        packet.extend_from_slice(&dst_port.to_be_bytes());
+        packet.extend_from_slice(&(udp_len as u16).to_be_bytes());
+        packet.extend_from_slice(&[0, 0]);
+        packet.extend_from_slice(payload);
+        let udp = &mut packet[start..];
+        let checksum = transport_checksum(src, dst, IPPROTO_UDP, udp);
+        udp[6..8].copy_from_slice(&checksum.to_be_bytes());
+    })
 }
 
 /// The RFC 1071 one's-complement sum used by both checksums.

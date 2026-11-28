@@ -332,7 +332,7 @@ fn supervise(parent: &OwnedHandle, input: File, output: &mut File) -> io::Result
 fn spawn_kernel(launch: &Launch, output: &File) -> io::Result<std::process::Child> {
     let mut command = Command::new(&launch.kernel);
     if launch.engine == "rust" {
-        command.arg(&launch.config);
+        command.arg(&launch.config).arg("--geosite-dir").arg(&launch.home);
         if launch.tun {
             command.arg("--tun");
         }

@@ -108,6 +108,7 @@ impl EnhancedMode {
 pub enum FakeIpFilterMode {
     Blacklist,
     Whitelist,
+    Rule,
 }
 
 /// One upstream transport.
@@ -117,6 +118,7 @@ pub enum NameServerNet {
     Tcp,
     Tls,
     Https,
+    Quic,
 }
 
 impl NameServerNet {
@@ -126,6 +128,7 @@ impl NameServerNet {
             NameServerNet::Tcp => "tcp",
             NameServerNet::Tls => "tls",
             NameServerNet::Https => "https",
+            NameServerNet::Quic => "quic",
         }
     }
 }
@@ -242,6 +245,7 @@ pub struct DnsConfig {
     pub fake_ip_range6: Option<IpNet>,
     pub fake_ip_filter: Vec<String>,
     pub fake_ip_filter_mode: FakeIpFilterMode,
+    pub(crate) fake_ip_rules: Vec<crate::config::Rule>,
     pub fake_ip_ttl: u32,
     pub default_nameserver: Vec<NameServer>,
     pub cache_algorithm: String,
@@ -279,6 +283,7 @@ impl Default for DnsConfig {
                 "www.msftconnecttest.com".to_string(),
             ],
             fake_ip_filter_mode: FakeIpFilterMode::Blacklist,
+            fake_ip_rules: Vec::new(),
             fake_ip_ttl: 1,
             default_nameserver: Vec::new(),
             cache_algorithm: "lru".to_string(),
@@ -309,6 +314,14 @@ impl DnsConfig {
             ConfigError::InvalidValue(format!("{path}: dns must be a mapping"))
         })?;
         let mut cfg = DnsConfig::default();
+        for (key, flag) in [
+            ("prefer-h3", &mut cfg.prefer_h3),
+            ("respect-rules", &mut cfg.respect_rules),
+        ] {
+            if let Some(value) = mapping.get(key) {
+                *flag = yaml_bool(value, &format!("{path}.dns.{key}"))?;
+            }
+        }
         let mut default_nameserver_present = false;
         for (key, item) in mapping {
             let key = key.as_str().ok_or_else(|| {
@@ -317,14 +330,13 @@ impl DnsConfig {
             let at = format!("{path}.dns.{key}");
             match key {
                 "enable" => cfg.enable = yaml_bool(item, &at)?,
-                "prefer-h3" => cfg.prefer_h3 = yaml_bool(item, &at)?,
+                "prefer-h3" | "respect-rules" => {}
                 "ipv6" => cfg.ipv6 = yaml_bool(item, &at)?,
                 "ipv6-timeout" => {
                     cfg.ipv6_timeout = Duration::from_millis(yaml_u64(item, &at)?)
                 }
                 "use-hosts" => cfg.use_hosts = yaml_bool(item, &at)?,
                 "use-system-hosts" => cfg.use_system_hosts = yaml_bool(item, &at)?,
-                "respect-rules" => cfg.respect_rules = yaml_bool(item, &at)?,
                 "nameserver" => {
                     cfg.nameserver = parse_nameserver_list(item, &at, cfg.respect_rules, cfg.prefer_h3)?
                 }
@@ -366,11 +378,7 @@ impl DnsConfig {
                     cfg.fake_ip_filter_mode = match text.as_str() {
                         "blacklist" => FakeIpFilterMode::Blacklist,
                         "whitelist" => FakeIpFilterMode::Whitelist,
-                        "rule" => {
-                            return Err(ConfigError::Unsupported(format!(
-                                "{at}: rule mode (fake-ip-filter rule lines are not implemented; blacklist and whitelist are)"
-                            )))
-                        }
+                        "rule" => FakeIpFilterMode::Rule,
                         other => {
                             return Err(ConfigError::InvalidValue(format!(
                                 "{at}: unknown fake-ip-filter-mode '{other}'"
@@ -672,11 +680,7 @@ pub(crate) fn parse_nameserver(
         "tcp" => NameServerNet::Tcp,
         "tls" => NameServerNet::Tls,
         "http" | "https" => NameServerNet::Https,
-        "quic" => {
-            return Err(ConfigError::Unsupported(format!(
-                "{at}: DoQ (quic://) is not implemented (udp, tcp, tls and https are)"
-            )))
-        }
+        "quic" => NameServerNet::Quic,
         "system" => {
             return Err(ConfigError::Unsupported(format!(
                 "{at}: system:// nameservers are not implemented (udp, tcp, tls and https are)"
@@ -717,7 +721,7 @@ pub(crate) fn parse_nameserver(
     }
     let default_port = match net {
         NameServerNet::Udp | NameServerNet::Tcp => 53,
-        NameServerNet::Tls => 853,
+        NameServerNet::Tls | NameServerNet::Quic => 853,
         NameServerNet::Https if scheme == "http" => 80,
         NameServerNet::Https => 443,
     };
@@ -744,17 +748,8 @@ pub(crate) fn parse_nameserver(
                     )));
                 }
             }
-            "h3" if params.get("h3").map(String::as_str) == Some("true") => {
-                return Err(ConfigError::Unsupported(format!(
-                    "{at}: h3=true forces DoH over HTTP/3, which is not implemented (DoH uses HTTP/1.1); drop the parameter or set h3=false"
-                )))
-            }
             "h3" => {}
-            "ecs" | "ecs-override" => {
-                return Err(ConfigError::Unsupported(format!(
-                    "{at}: EDNS client subnet ('{key}') is not implemented"
-                )))
-            }
+            "ecs" | "ecs-override" => {}
             "name-cert-verify" => {
                 return Err(ConfigError::Unsupported(format!(
                     "{at}: name-cert-verify is not implemented (skip-cert-verify is)"
@@ -763,10 +758,25 @@ pub(crate) fn parse_nameserver(
             _ => {}
         }
     }
-    if let Some(name) = &proxy {
+    if net == NameServerNet::Https && params.get("h3").is_some_and(|value| value == "true") {
+        if scheme != "https" {
+            return Err(ConfigError::InvalidValue(format!("{at}: h3=true requires https://")));
+        }
+        if respect_rules {
+            return Err(ConfigError::Unsupported(format!(
+                "{at}: h3=true with respect-rules requires a QUIC-capable rule route"
+            )));
+        }
+    }
+    if (matches!(net, NameServerNet::Udp | NameServerNet::Quic) || params.get("h3").is_some_and(|v| v == "true"))
+        && proxy.as_deref().is_some_and(|name| name != "DIRECT")
+    {
         return Err(ConfigError::Unsupported(format!(
-            "{at}: nameserver routing through proxy '{name}' (#{name}) is not implemented; use respect-rules with tcp://, tls:// or https:// nameservers"
+            "{at}: this DNS transport requires a packet-capable route through the named proxy"
         )));
+    }
+    if let Some(value) = params.get("ecs") {
+        ecs_option(value).map_err(|error| ConfigError::InvalidValue(format!("{at}: {error}")))?;
     }
     Ok(NameServer {
         net,
@@ -774,7 +784,7 @@ pub(crate) fn parse_nameserver(
         port,
         path,
         params,
-        proxy: None,
+        proxy,
         plain_http: scheme == "http",
         respect_rules: respect_rules,
         prefer_h3,
@@ -1297,6 +1307,7 @@ enum RrData {
     A(Ipv4Addr),
     Aaaa(Ipv6Addr),
     Cname(String),
+    Presentation { text: String, wire: Vec<u8> },
     /// A parsed record this kernel does not interpret (kept with its raw
     /// payload so the response keeps the pinned answer count).
     Other(Vec<u8>),
@@ -1362,7 +1373,12 @@ fn build_query(id: u16, question: &Question) -> Vec<u8> {
 }
 
 fn encode_name(out: &mut Vec<u8>, name: &str) {
-    for label in name.trim_end_matches('.').split('.') {
+    let name = name.trim_end_matches('.');
+    if name.is_empty() {
+        out.push(0);
+        return;
+    }
+    for label in name.split('.') {
         let bytes = label.as_bytes();
         let len = bytes.len().min(63) as u8;
         out.push(len);
@@ -1451,6 +1467,43 @@ fn parse_record(raw: &[u8], offset: &mut usize) -> Result<Record, String> {
             let mut inner = data_start;
             RrData::Cname(read_name(raw, &mut inner)?)
         }
+        2 | 12 | 15 | 33 | TYPE_SVCB | TYPE_HTTPS => {
+            let numeric_bytes = match rtype { 15 | TYPE_SVCB | TYPE_HTTPS => 2, 33 => 6, _ => 0 };
+            let end = data_start + rdlength;
+            if numeric_bytes >= rdlength {
+                return Err("DNS record is missing its target name".to_string());
+            }
+            let mut inner = data_start + numeric_bytes;
+            let name = read_name(raw, &mut inner)?;
+            if inner > end {
+                return Err("DNS target name exceeds its record".to_string());
+            }
+            let mut wire = raw[data_start..data_start + numeric_bytes].to_vec();
+            encode_name(&mut wire, &name);
+            let mut text = raw[data_start..data_start + numeric_bytes].chunks_exact(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]).to_string())
+                .collect::<Vec<_>>();
+            text.push(format!("{name}."));
+            if matches!(rtype, TYPE_SVCB | TYPE_HTTPS) {
+                text.extend(service_params(&raw[inner..end])?);
+                wire.extend_from_slice(&raw[inner..end]);
+            }
+            RrData::Presentation { text: text.join(" "), wire }
+        }
+        16 => {
+            let mut remaining = &raw[data_start..data_start + rdlength];
+            let mut chunks = Vec::new();
+            while let Some((&length, payload)) = remaining.split_first() {
+                let length = usize::from(length);
+                let text = payload.get(..length).ok_or("DNS TXT string exceeds its record")?;
+                chunks.push(serde_json::to_string(&String::from_utf8_lossy(text)).unwrap_or_default());
+                remaining = &payload[length..];
+            }
+            RrData::Presentation {
+                text: chunks.join(" "),
+                wire: raw[data_start..data_start + rdlength].to_vec(),
+            }
+        }
         _ => RrData::Other(raw[*offset..*offset + rdlength].to_vec()),
     };
     *offset += rdlength;
@@ -1460,6 +1513,42 @@ fn parse_record(raw: &[u8], offset: &mut usize) -> Result<Record, String> {
         ttl,
         data,
     })
+}
+
+fn service_params(mut raw: &[u8]) -> Result<Vec<String>, String> {
+    let mut params = Vec::new();
+    while !raw.is_empty() {
+        if raw.len() < 4 { return Err("truncated DNS service parameter".into()); }
+        let key = u16::from_be_bytes([raw[0], raw[1]]);
+        let size = usize::from(u16::from_be_bytes([raw[2], raw[3]]));
+        let value = raw.get(4..4 + size).ok_or("truncated DNS service parameter value")?;
+        let param = match key {
+            1 => {
+                let mut list = value;
+                let mut alpn = Vec::new();
+                while let Some((&length, item)) = list.split_first() {
+                    let length = usize::from(length);
+                    alpn.push(String::from_utf8_lossy(item.get(..length).ok_or("invalid DNS ALPN")?));
+                    list = &item[length..];
+                }
+                format!("alpn=\"{}\"", alpn.join(","))
+            }
+            2 if size == 0 => "no-default-alpn".to_string(),
+            3 if size == 2 => format!("port={}", u16::from_be_bytes([value[0], value[1]])),
+            4 if size % 4 == 0 => {
+                let ips = value.chunks_exact(4).map(|ip| Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]).to_string()).collect::<Vec<_>>();
+                format!("ipv4hint={}", ips.join(","))
+            }
+            6 if size % 16 == 0 => {
+                let ips = value.chunks_exact(16).map(|ip| Ipv6Addr::from(<[u8; 16]>::try_from(ip).unwrap()).to_string()).collect::<Vec<_>>();
+                format!("ipv6hint={}", ips.join(","))
+            }
+            _ => format!("key{key}=\\#{}", value.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        };
+        params.push(param);
+        raw = &raw[4 + size..];
+    }
+    Ok(params)
 }
 
 fn read_name(raw: &[u8], offset: &mut usize) -> Result<String, String> {
@@ -1533,6 +1622,7 @@ fn encode_message(message: &Message, question: &Question) -> Vec<u8> {
             RrData::A(ip) => data.extend_from_slice(&ip.octets()),
             RrData::Aaaa(ip) => data.extend_from_slice(&ip.octets()),
             RrData::Cname(target) => encode_name(&mut data, target),
+            RrData::Presentation { wire, .. } => data.extend_from_slice(wire),
             RrData::Other(raw) => data.extend_from_slice(raw),
         }
         out.extend_from_slice(&(data.len() as u16).to_be_bytes());
@@ -1662,6 +1752,56 @@ pub(crate) struct FakeIpPool {
     by_ip: HashMap<IpAddr, String>,
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SavedFakeIpPool {
+    first: IpAddr,
+    last: IpAddr,
+    offset: IpAddr,
+    cycle: bool,
+    entries: Vec<(IpAddr, String)>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct SavedFakeIp {
+    v4: Option<SavedFakeIpPool>,
+    v6: Option<SavedFakeIpPool>,
+}
+
+fn read_fake_ip_state(path: &std::path::Path) -> io::Result<SavedFakeIp> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized Fake-IP cache"));
+    }
+    serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(path)?)).map_err(io::Error::other)
+}
+
+fn write_fake_ip_state(path: &std::path::Path, state: &SavedFakeIp) -> io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension(format!("{}.tmp", rand::random::<u64>()));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = std::io::BufWriter::new(options.open(&temp)?);
+        serde_json::to_writer(&mut output, state).map_err(io::Error::other)?;
+        output.flush()?;
+        output.get_ref().sync_all()?;
+        drop(output);
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
+
 impl FakeIpPool {
     fn new(prefix: &IpNet) -> Result<FakeIpPool, DnsError> {
         let range = PoolRange::new(prefix)?;
@@ -1672,6 +1812,33 @@ impl FakeIpPool {
             by_ip: HashMap::new(),
             range,
         })
+    }
+
+    fn save(&self) -> SavedFakeIpPool {
+        SavedFakeIpPool {
+            first: self.range.first, last: self.range.last, offset: self.offset, cycle: self.cycle,
+            entries: self.by_ip.iter().map(|(ip, host)| (*ip, host.clone())).collect(),
+        }
+    }
+
+    fn restore(&mut self, state: SavedFakeIpPool) {
+        if state.first != self.range.first || state.last != self.range.last
+            || !self.range.contains(state.offset) || !ip_less(state.offset, self.range.last)
+        {
+            return;
+        }
+        self.offset = state.offset;
+        self.cycle = state.cycle;
+        for (ip, host) in state.entries.into_iter().take(FAKE_IP_STORE_SIZE) {
+            if ip_less(ip, self.range.first) || !ip_less(ip, self.range.last)
+                || ip.is_ipv4() != self.range.first.is_ipv4() || host.is_empty() || host.len() > 253
+                || self.by_host.contains_key(&host) || self.by_ip.contains_key(&ip)
+            {
+                continue;
+            }
+            self.by_host.insert(host.clone(), ip);
+            self.by_ip.insert(ip, host);
+        }
     }
 
     fn lookup(&mut self, host: &str) -> IpAddr {
@@ -1729,6 +1896,7 @@ struct Enhancer {
     pool6: Option<FakeIpPool>,
     filter: DomainSet,
     filter_mode: FakeIpFilterMode,
+    filter_rules: Option<Arc<crate::rules::RuleSet>>,
     ttl: u32,
     mapping: std::collections::VecDeque<(IpAddr, String, Instant)>,
     use_hosts: bool,
@@ -1812,6 +1980,11 @@ impl Enhancer {
         match self.filter_mode {
             FakeIpFilterMode::Whitelist => !matched,
             FakeIpFilterMode::Blacklist => matched,
+            FakeIpFilterMode::Rule => self.filter_rules.as_ref().is_some_and(|rules| {
+                let result = rules.evaluate(&crate::rules::Target::new(host, None));
+                // Treat the resolver's normal fallthrough as fake-ip.
+                result.index != usize::MAX && result.action == crate::config::Action::Direct
+            }),
         }
     }
 }
@@ -1830,6 +2003,8 @@ pub type RouteStreamBox = crate::outbound::BoxStream;
 /// upstream destination and returns the outbound stream (DIRECT or a proxy).
 pub trait DnsRoute: Send + Sync {
     fn connect<'a>(&'a self, host: &'a str, port: u16) -> BoxFuture<'a, io::Result<RouteStreamBox>>;
+
+    fn connect_named<'a>(&'a self, name: &'a str, host: &'a str, port: u16) -> BoxFuture<'a, io::Result<RouteStreamBox>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1893,6 +2068,7 @@ pub struct DnsService {
     cache: Mutex<HashMap<(String, u16), CacheEntry>>,
     cache_max: usize,
     enhancer: Mutex<Enhancer>,
+    fake_ip_path: Option<std::path::PathBuf>,
     hosts: Arc<HostsTable>,
     tls: Arc<ClientTls>,
     route: RwLock<Option<Arc<dyn DnsRoute>>>,
@@ -1921,6 +2097,7 @@ impl DnsService {
         tls: Arc<ClientTls>,
         providers: &Arc<crate::provider::RuleProviders>,
         warnings: &mut Vec<String>,
+        fake_ip_path: Option<std::path::PathBuf>,
     ) -> Result<DnsService, ConfigError> {
         let ipv6 = config.effective_ipv6(general_ipv6);
         let geodata = providers.geodata();
@@ -1962,7 +2139,7 @@ impl DnsService {
         )?;
 
         let mut filter = DomainSet::default();
-        if config.enhanced_mode == EnhancedMode::FakeIp {
+        if config.enhanced_mode == EnhancedMode::FakeIp && config.fake_ip_filter_mode != FakeIpFilterMode::Rule {
             for domain in &config.fake_ip_filter {
                 let lower = domain.to_ascii_lowercase();
                 let parts = valid_and_split_domain(&lower).map_err(|e| {
@@ -1982,13 +2159,18 @@ impl DnsService {
             }
         }
 
-        let pool4 = match config.fake_ip_range {
+        let filter_rules = if config.fake_ip_filter_mode == FakeIpFilterMode::Rule {
+            Some(crate::rules::RuleSet::compile_rules(&config.fake_ip_rules, &Default::default(), providers.clone())?)
+        } else {
+            None
+        };
+        let mut pool4 = match config.fake_ip_range {
             Some(range) if config.enhanced_mode == EnhancedMode::FakeIp => {
                 Some(FakeIpPool::new(&range).map_err(|e| ConfigError::InvalidValue(e.to_string()))?)
             }
             _ => None,
         };
-        let pool6 = match config.fake_ip_range6 {
+        let mut pool6 = match config.fake_ip_range6 {
             Some(range) if config.enhanced_mode == EnhancedMode::FakeIp => {
                 Some(FakeIpPool::new(&range).map_err(|e| ConfigError::InvalidValue(e.to_string()))?)
             }
@@ -2001,13 +2183,15 @@ impl DnsService {
                     .to_string(),
             );
         }
-        if !config.prefer_h3 {
-            // no warning: prefer-h3 only changes DoH HTTP version preference
-        } else {
-            warnings.push(
-                "dns.prefer-h3 is recorded but DoH uses HTTP/1.1: HTTP/3 is not implemented for DNS upstreams"
-                    .to_string(),
-            );
+        if let Some(path) = &fake_ip_path {
+            match read_fake_ip_state(path) {
+                Ok(state) => {
+                    if let (Some(pool), Some(saved)) = (&mut pool4, state.v4) { pool.restore(saved); }
+                    if let (Some(pool), Some(saved)) = (&mut pool6, state.v6) { pool.restore(saved); }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => warnings.push(format!("could not restore the Fake-IP cache: {error}")),
+            }
         }
         let enhancer = Enhancer {
             mode: config.enhanced_mode,
@@ -2015,6 +2199,7 @@ impl DnsService {
             pool6,
             filter,
             filter_mode: config.fake_ip_filter_mode,
+            filter_rules,
             ttl: config.fake_ip_ttl.max(FAKE_IP_MIN_TTL),
             mapping: std::collections::VecDeque::new(),
             use_hosts: config.use_hosts,
@@ -2037,6 +2222,7 @@ impl DnsService {
             cache: Mutex::new(HashMap::new()),
             cache_max: config.cache_max_size.max(1),
             enhancer: Mutex::new(enhancer),
+            fake_ip_path,
             hosts,
             tls,
             route: RwLock::new(None),
@@ -2112,6 +2298,32 @@ impl DnsService {
             pool.offset = add_offset(pool.range.first, u128::MAX);
         }
         enhancer.mapping.clear();
+        drop(enhancer);
+        self.persist_fake_ip();
+    }
+
+    /// Save only at a lifecycle boundary or explicit flush, so regular DNS
+    /// traffic does not keep the filesystem active.
+    pub(crate) fn persist_fake_ip(&self) {
+        let Some(path) = &self.fake_ip_path else { return };
+        let state = {
+            let enhancer = self.enhancer.lock().unwrap_or_else(|error| error.into_inner());
+            if !enhancer.fake_enabled() { return; }
+            SavedFakeIp {
+                v4: enhancer.pool4.as_ref().map(FakeIpPool::save),
+                v6: enhancer.pool6.as_ref().map(FakeIpPool::save),
+            }
+        };
+        if let Err(error) = write_fake_ip_state(path, &state) {
+            tracing::warn!(%error, "could not persist the Fake-IP cache");
+        }
+    }
+
+    pub(crate) fn reclaim_expired_cache(&self) {
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        cache.retain(|_, entry| entry.expires > now);
+        cache.shrink_to_fit();
     }
 
     pub fn clear_cache(&self) {
@@ -2531,6 +2743,27 @@ impl DnsService {
             .mapping_enabled()
     }
 
+    pub(crate) async fn query_json(&self, name: &str, qtype: u16) -> Result<serde_json::Value, DnsError> {
+        let message = self.exchange_question(name, qtype).await?;
+        let records = |records: Vec<Record>| records.into_iter().filter_map(|record| {
+            let data = match record.data {
+                RrData::A(ip) => ip.to_string(),
+                RrData::Aaaa(ip) => ip.to_string(),
+                RrData::Cname(host) => format!("{host}."),
+                RrData::Presentation { text, .. } => text,
+                RrData::Other(_) => return None,
+            };
+            Some(serde_json::json!({"name": format!("{}.", record.name), "type": record.rtype, "TTL": record.ttl, "data": data}))
+        }).collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "Status": message.rcode,
+            "TC": message.truncated,
+            "Question": [{"Name": format!("{}.", name.trim_end_matches('.')), "Qtype": qtype, "Qclass": 1}],
+            "Answer": records(message.answers),
+            "Authority": records(message.authority),
+        }))
+    }
+
     /// Answer one raw DNS query for the `dns.listen` server (pinned
     /// `newHandler`: hosts → fake-ip → mapping → resolver).
     pub async fn answer_query(&self, raw: &[u8]) -> Vec<u8> {
@@ -2552,21 +2785,18 @@ impl DnsService {
             if fake_mode && matches!(q.qtype, TYPE_HTTPS | TYPE_SVCB) {
                 return encode_message(&Message::empty_answer(query.id, &q), &q);
             }
-            // Pinned forwards every other type; this kernel only decodes
-            // A/AAAA/CNAME, so the gap is named as NOTIMP.
-            let message = Message {
-                id: query.id,
-                rcode: 4, // NOTIMP
-                truncated: false,
-                question: Some(q.clone()),
-                answers: Vec::new(),
-                authority: Vec::new(),
+            let result = if matches!(q.qtype, 2 | 12 | 15 | 16 | 33 | TYPE_HTTPS | TYPE_SVCB) {
+                self.exchange_question(&q.name, q.qtype).await.ok()
+            } else {
+                None
             };
+            let mut message = result.unwrap_or_else(|| {
+                let mut response = Message::empty_answer(query.id, &q);
+                response.rcode = 4;
+                response
+            });
+            message.id = query.id;
             return encode_message(&message, &q);
-        }
-        let is_ip_request = matches!(q.qtype, TYPE_A | TYPE_AAAA | TYPE_CNAME);
-        if !is_ip_request {
-            return encode_message(&Message::empty_answer(query.id, &q), &q);
         }
         let host = q.name.trim_end_matches('.').to_ascii_lowercase();
 
@@ -2924,7 +3154,20 @@ impl ExchangeContext {
                 authority: Vec::new(),
             });
         }
-        let result = tokio::time::timeout(DNS_TIMEOUT, self.exchange_once(server, raw)).await;
+        let query = server.param("ecs").map(|subnet| {
+            let mut edited = raw.to_vec();
+            let mut option = ecs_option(subnet).expect("ECS is validated at configuration load");
+            // Resolver-generated queries have no EDNS records. Emit one OPT
+            // record with the configured subnet and a conservative UDP size.
+            edited[10..12].copy_from_slice(&1u16.to_be_bytes());
+            edited.extend_from_slice(&[0, 0, 41, 0x04, 0xd0, 0, 0, 0, 0]);
+            edited.extend_from_slice(&(option.len() as u16).to_be_bytes());
+            edited.append(&mut option);
+            edited
+        });
+        let result = tokio::time::timeout(
+            DNS_TIMEOUT, self.exchange_once(server, query.as_deref().unwrap_or(raw)),
+        ).await;
         let bytes = match result {
             Err(_) => {
                 return Err(DnsError::Timeout(
@@ -2970,6 +3213,25 @@ impl ExchangeContext {
             NameServerNet::Udp => self.exchange_udp(server, addr, raw).await,
             NameServerNet::Tcp => self.exchange_tcp(server, addr, raw).await,
             NameServerNet::Tls => self.exchange_tls(server, addr, raw).await,
+            NameServerNet::Quic => self.exchange_doq(server, addr, raw).await,
+            NameServerNet::Https if server.param("h3") == Some("true") => {
+                self.exchange_doh_h3(server, addr, raw).await
+            }
+            NameServerNet::Https if server.prefer_h3 && !server.plain_http && !server.respect_rules && server.proxy.is_none() => {
+                let h3 = self.exchange_doh_h3(server, addr, raw);
+                let https = self.exchange_doh(server, addr, raw);
+                tokio::pin!(h3, https);
+                tokio::select! {
+                    result = &mut h3 => match result {
+                        Ok(answer) => Ok(answer),
+                        Err(_) => https.await,
+                    },
+                    result = &mut https => match result {
+                        Ok(answer) => Ok(answer),
+                        Err(_) => h3.await,
+                    },
+                }
+            }
             NameServerNet::Https => self.exchange_doh(server, addr, raw).await,
         }
     }
@@ -3012,7 +3274,12 @@ impl ExchangeContext {
         server: &NameServer,
         addr: SocketAddr,
     ) -> Result<RouteStreamBox, String> {
-        if server.respect_rules {
+        if let Some(name) = server.proxy.as_deref().filter(|name| *name != "DIRECT") {
+            let route = self.route.as_ref().ok_or_else(|| "DNS named proxy route is unavailable".to_string())?;
+            return route.connect_named(name, &addr.ip().to_string(), addr.port())
+                .await.map_err(|error| format!("route upstream via {name}: {error}"));
+        }
+        if server.respect_rules && server.proxy.is_none() {
             let route = self
                 .route
                 .as_ref()
@@ -3094,6 +3361,110 @@ impl ExchangeContext {
         .map_err(|e| format!("TLS to {}: {e}", server.address()))?;
         write_dns_stream(&mut stream, raw).await?;
         read_dns_stream(&mut stream).await
+    }
+
+    async fn connect_quic(
+        &self,
+        server: &NameServer,
+        addr: SocketAddr,
+        alpn: &str,
+    ) -> Result<(quinn::Connection, quinn::Endpoint), String> {
+        use crate::outbound::quic;
+        let settings = crate::proxies::TlsSettings {
+            sni: Some(server.host.clone()),
+            skip_cert_verify: server.skip_cert_verify(),
+            ..Default::default()
+        };
+        let options = quic::QuicOptions::new(vec![alpn.to_string()]);
+        let bind = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let socket = crate::outbound::bind_udp_str(bind)
+            .await
+            .and_then(tokio::net::UdpSocket::into_std)
+            .map_err(|e| format!("bind DNS QUIC socket: {e}"))?;
+        quic::connect_over_socket(
+            socket,
+            addr,
+            &server.host,
+            &settings,
+            &self.tls,
+            &options,
+            DNS_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("DNS QUIC handshake: {e}"))
+    }
+
+    async fn exchange_doq(
+        &self,
+        server: &NameServer,
+        addr: SocketAddr,
+        raw: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let (connection, _endpoint) = self.connect_quic(server, addr, "doq").await?;
+        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| error.to_string())?;
+        let mut query = raw.to_vec();
+        // RFC 9250 uses one stream per query and requires a zero DNS ID.
+        query[..2].fill(0);
+        write_dns_stream(&mut send, &query).await?;
+        send.finish().map_err(|error| error.to_string())?;
+        let bytes = read_dns_stream(&mut recv).await?;
+        if !bytes.starts_with(&[0, 0]) {
+            return Err("DoQ response did not use a zero DNS ID".to_string());
+        }
+        Ok(bytes)
+    }
+
+    async fn exchange_doh_h3(
+        &self,
+        server: &NameServer,
+        addr: SocketAddr,
+        raw: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        use crate::outbound::h3;
+
+        let (connection, endpoint) = self.connect_quic(server, addr, "h3").await?;
+        let session = h3::Session::open_with_settings(connection, endpoint, &[])
+            .await
+            .map_err(|e| format!("DoH HTTP/3 settings: {e}"))?;
+        let path = server.path.split('?').next().unwrap_or("/");
+        let path = format!("{path}?dns={}", base64_url(raw));
+        let authority = if server.host.contains(':') {
+            format!("[{}]:{}", server.host, server.port)
+        } else {
+            format!("{}:{}", server.host, server.port)
+        };
+        let (mut send, mut recv) = session
+            .open_request(&[
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":authority", &authority),
+                (":path", &path),
+                ("accept", "application/dns-message"),
+            ])
+            .await
+            .map_err(|e| format!("DoH HTTP/3 request: {e}"))?;
+        send.finish().map_err(|e| format!("DoH HTTP/3 request: {e}"))?;
+        let response = h3::read_response(&mut recv)
+            .await
+            .map_err(|e| format!("DoH HTTP/3 response: {e}"))?;
+        if response.status != 200 {
+            return Err(format!("DoH HTTP/3 status {}", response.status));
+        }
+
+        let mut body = Vec::new();
+        let limit = usize::from(u16::MAX);
+        while let Some((frame_type, payload)) = h3::read_frame_limited(&mut recv, limit as u64)
+            .await
+            .map_err(|e| format!("DoH HTTP/3 body: {e}"))?
+        {
+            if frame_type == 0 {
+                if body.len() + payload.len() > limit {
+                    return Err("DoH HTTP/3 DNS message too large".to_string());
+                }
+                body.extend(payload);
+            }
+        }
+        Ok(body)
     }
 
     async fn exchange_doh(
@@ -3247,6 +3618,35 @@ where
         .await
         .map_err(|e| format!("read DNS body: {e}"))?;
     Ok(body)
+}
+
+/// EDNS Client Subnet option (RFC 7871), with the address truncated to
+/// its source prefix and unused bits cleared.
+fn ecs_option(value: &str) -> Result<Vec<u8>, String> {
+    let (text, prefix) = value.split_once('/').map_or((value, None), |(a, b)| (a, Some(b)));
+    let address: IpAddr = text.parse().map_err(|_| "invalid DNS ecs address".to_string())?;
+    let (family, mut bytes) = match address {
+        IpAddr::V4(ip) => (1u16, ip.octets().to_vec()),
+        IpAddr::V6(ip) => (2u16, ip.octets().to_vec()),
+    };
+    let bits = (bytes.len() * 8) as u8;
+    let prefix = prefix.map(|prefix| prefix.parse::<u8>().map_err(|_| "invalid DNS ecs prefix".to_string()))
+        .transpose()?.unwrap_or(bits);
+    if prefix > bits {
+        return Err("DNS ecs prefix exceeds its address family".to_string());
+    }
+    bytes.truncate(usize::from(prefix).div_ceil(8));
+    if prefix % 8 != 0 {
+        if let Some(last) = bytes.last_mut() {
+            *last &= u8::MAX << (8 - prefix % 8);
+        }
+    }
+    let mut option = vec![0, 8];
+    option.extend_from_slice(&((4 + bytes.len()) as u16).to_be_bytes());
+    option.extend_from_slice(&family.to_be_bytes());
+    option.extend_from_slice(&[prefix, 0]);
+    option.extend_from_slice(&bytes);
+    Ok(option)
 }
 
 fn base64_url(input: &[u8]) -> String {

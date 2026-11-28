@@ -87,6 +87,12 @@ pub struct TcpSegment<'a> {
 /// Parse one TCP segment out of an IP packet, verifying the transport checksum.
 pub fn parse_segment(packet: &[u8]) -> Result<TcpSegment<'_>, String> {
     let parsed = ipstack::parse_ip_packet(packet).map_err(|error| error.to_string())?;
+    parse_segment_from_ip(&parsed)
+}
+
+pub(crate) fn parse_segment_from_ip<'a>(
+    parsed: &ipstack::IpPacket<'a>,
+) -> Result<TcpSegment<'a>, String> {
     if parsed.protocol == ipstack::IPPROTO_UDP {
         return Err("UDP packet is not a TCP segment".to_string());
     }
@@ -101,8 +107,7 @@ pub fn parse_segment(packet: &[u8]) -> Result<TcpSegment<'_>, String> {
     if header_len < 20 || header_len > bytes.len() {
         return Err(format!("TCP header length {header_len}"));
     }
-    if !ipstack::transport_checksum_valid(parsed.src, parsed.dst, ipstack::IPPROTO_TCP, &bytes[..])
-    {
+    if !ipstack::transport_checksum_valid(parsed.src, parsed.dst, ipstack::IPPROTO_TCP, bytes) {
         return Err("TCP checksum".to_string());
     }
     let mut mss = None;
@@ -145,6 +150,7 @@ pub fn parse_segment(packet: &[u8]) -> Result<TcpSegment<'_>, String> {
 }
 
 /// Build one TCP segment (without the IP header) and fill its checksum.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_segment(
     src: IpAddr,
@@ -158,26 +164,74 @@ pub(crate) fn build_segment(
     mss: Option<u16>,
     payload: &[u8],
 ) -> Vec<u8> {
-    let options: Vec<u8> = match mss {
-        Some(mss) => vec![2, 4, (mss >> 8) as u8, mss as u8],
-        None => Vec::new(),
-    };
-    let header_len = 20 + options.len();
+    let header_len = 20 + 4 * usize::from(mss.is_some());
     let mut segment = Vec::with_capacity(header_len + payload.len());
-    segment.extend_from_slice(&src_port.to_be_bytes());
-    segment.extend_from_slice(&dst_port.to_be_bytes());
-    segment.extend_from_slice(&seq.to_be_bytes());
-    segment.extend_from_slice(&ack.to_be_bytes());
-    segment.push(((header_len / 4) as u8) << 4);
-    segment.push(flags);
-    segment.extend_from_slice(&window.to_be_bytes());
-    segment.extend_from_slice(&[0, 0]); // checksum placeholder
-    segment.extend_from_slice(&[0, 0]); // urgent pointer
-    segment.extend_from_slice(&options);
-    segment.extend_from_slice(payload);
-    let checksum = ipstack::transport_checksum(src, dst, ipstack::IPPROTO_TCP, &segment);
-    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+    append_segment(
+        &mut segment, src, dst, src_port, dst_port, seq, ack, flags, window, mss, payload,
+    );
     segment
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_tcp_packet(
+    src: IpAddr,
+    dst: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    mss: Option<u16>,
+    payload: &[u8],
+    hop_limit: u8,
+) -> Result<Vec<u8>, ipstack::IpError> {
+    let segment_len = 20 + 4 * usize::from(mss.is_some()) + payload.len();
+    ipstack::build_packet_with(
+        src,
+        dst,
+        ipstack::IPPROTO_TCP,
+        segment_len,
+        hop_limit,
+        |packet| {
+            append_segment(
+                packet, src, dst, src_port, dst_port, seq, ack, flags, window, mss, payload,
+            );
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_segment(
+    packet: &mut Vec<u8>,
+    src: IpAddr,
+    dst: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    mss: Option<u16>,
+    payload: &[u8],
+) {
+    let start = packet.len();
+    packet.extend_from_slice(&src_port.to_be_bytes());
+    packet.extend_from_slice(&dst_port.to_be_bytes());
+    packet.extend_from_slice(&seq.to_be_bytes());
+    packet.extend_from_slice(&ack.to_be_bytes());
+    packet.push(if mss.is_some() { 6 << 4 } else { 5 << 4 });
+    packet.push(flags);
+    packet.extend_from_slice(&window.to_be_bytes());
+    packet.extend_from_slice(&[0; 4]); // checksum and urgent pointer
+    if let Some(mss) = mss {
+        let [high, low] = mss.to_be_bytes();
+        packet.extend_from_slice(&[2, 4, high, low]);
+    }
+    packet.extend_from_slice(payload);
+    let segment = &mut packet[start..];
+    let checksum = ipstack::transport_checksum(src, dst, ipstack::IPPROTO_TCP, segment);
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
 }
 
 /// One segment that has been sent and not cumulatively acknowledged. Its
@@ -713,7 +767,7 @@ impl TcpConnection {
     }
 
     fn packet(&self, seq: u32, ack: u32, flags: u8, mss: Option<u16>, payload: &[u8]) -> Vec<u8> {
-        let segment = build_segment(
+        build_tcp_packet(
             self.cfg.local,
             self.cfg.remote,
             self.cfg.local_port,
@@ -724,12 +778,6 @@ impl TcpConnection {
             self.advertised_window(),
             mss,
             payload,
-        );
-        ipstack::build_packet(
-            self.cfg.local,
-            self.cfg.remote,
-            ipstack::IPPROTO_TCP,
-            &segment,
             self.cfg.hop_limit,
         )
         .unwrap_or_default()
@@ -770,7 +818,7 @@ mod tests {
         mss: Option<u16>,
         payload: &[u8],
     ) -> Vec<u8> {
-        let segment = build_segment(
+        build_tcp_packet(
             cfg.remote,
             cfg.local,
             cfg.remote_port,
@@ -781,8 +829,9 @@ mod tests {
             window,
             mss,
             payload,
-        );
-        ipstack::build_packet(cfg.remote, cfg.local, ipstack::IPPROTO_TCP, &segment, 64).unwrap()
+            64,
+        )
+        .unwrap()
     }
 
     /// SYN -> SYN-ACK -> ACK (the handshake every test below starts from).

@@ -664,23 +664,20 @@ mod tests {
     }
 
     #[test]
-    fn staging_strips_enabled_sniffer_so_the_config_loader_accepts_it() {
+    fn staging_preserves_enabled_tcp_sniffing() {
         use crate::config::load_config;
 
         let home = stage_dir("sniffer");
         let yaml = "mixed-port: 17893\n\
                     sniffer:\n  enable: true\n  sniff:\n    HTTP:\n      ports: [80]\n\
                     rules:\n  - MATCH,DIRECT\n";
-        // The shared file is rejected by name before staging.
-        let error = load_config(yaml, "config.yaml").unwrap_err().to_string();
-        assert!(error.contains("sniffer"), "{error}");
         let staged = stage_config(&home, yaml).unwrap();
         let value: serde_yaml::Value = serde_yaml::from_str(&staged.yaml).unwrap();
         assert_eq!(
             value.get("mixed-port").and_then(serde_yaml::Value::as_u64),
             Some(17_893)
         );
-        assert!(value.get("sniffer").is_none(), "{}", staged.yaml);
+        assert_eq!(value["sniffer"]["enable"].as_bool(), Some(true));
         load_config(&staged.yaml, "config.rust.yaml").expect("staged config must load");
         let _ = std::fs::remove_dir_all(&home);
     }

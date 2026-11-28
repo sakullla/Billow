@@ -64,4 +64,4 @@ for _ in $(seq 1 50); do
 done
 echo_port=$(head -1 "$port_file")
 echo "== simctl spawn booted rust-kernel-smoke (UDP echo :$echo_port on the host)"
-xcrun simctl spawn booted "$binary" "$echo_port"
+xcrun simctl spawn booted "$binary" "$echo_port" "${BILLOW_IOS_SMOKE_ANYTLS_PORT:-0}"

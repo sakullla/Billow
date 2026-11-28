@@ -46,7 +46,7 @@ const ATYP_IPV4: u8 = 1;
 const ATYP_DOMAIN: u8 = 2;
 const ATYP_IPV6: u8 = 3;
 const CHUNK_SIZE: usize = 1 << 14;
-const MAX_RECORD: usize = 17 * 1024;
+pub(super) const MAX_RECORD: usize = 17 * 1024;
 const TAG_LEN: usize = 16;
 
 const KDF_SALT: &[u8] = b"VMess AEAD KDF";

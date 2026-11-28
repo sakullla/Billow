@@ -46,7 +46,6 @@ fn rejects_every_unimplemented_top_level_key() {
         "external-controller-pipe",
         "experimental",
         "skip-auth-prefixes",
-        "global-client-fingerprint",
     ] {
         let yaml = format!("{key}: {{}}\nmixed-port: 1\n");
         assert!(
@@ -481,21 +480,22 @@ fn unknown_top_level_keys_are_ignored_like_mihomo() {
     let loaded = load_config("mixed-port: 1\ndns: {}\nhosts: {}\n", "t").expect("empty blocks load");
     assert!(!loaded.config.dns.enable);
     assert!(loaded.config.hosts.entries.is_empty());
-    // The do-nothing forms of TUN/sniffer and inert geox-url are registered
-    // with a warning; enabling them still fails by name.
+    // Disabled TUN and inert geox-url are reported. Sniffer is a supported
+    // option, so its disabled form is accepted without a warning.
     let loaded = load_config(
         "mixed-port: 1\ntun: {enable: false}\nsniffer: {enable: false}\ngeox-url: {geoip: 'https://example.invalid/GeoIP.dat'}\n",
         "t",
     )
     .expect("disabled tun/sniffer and geox-url load");
-    for needle in ["tun", "sniffer", "geox-url"] {
+    assert!(!loaded.warnings.iter().any(|warning| warning.contains("sniffer")));
+    for needle in ["tun", "geox-url"] {
         assert!(
             loaded.warnings.iter().any(|warning| warning.contains(needle)),
             "{needle}: {:?}",
             loaded.warnings
         );
     }
-    assert!(err_tag("sniffer: {enable: true}\n").starts_with("unsupported"));
+    assert!(err_tag("sniffer: {enable: true}\n").starts_with("ok"));
 
     // T34: `tun` is parsed strictly. The pinned default stack name is accepted
     // (served by the in-tree userspace stack), while `system` and unknown keys
@@ -545,8 +545,46 @@ fn geodata_options_are_parsed_and_named_gaps_rejected() {
 }
 
 #[test]
-fn rejects_unimplemented_modes_and_levels() {
-    assert!(err_tag("mode: global\n").starts_with("unsupported"));
+fn subscription_provider_inherits_its_vehicle_from_a_yaml_merge() {
+    let loaded = load_config(r#"
+provider-template: &provider
+  type: http
+  interval: 900
+  url: https://example.org/default.yaml
+proxy-providers:
+  subscription:
+    <<: *provider
+    url: https://example.org/nodes.yaml
+proxy-groups:
+  - name: outbound
+    type: select
+    use: [subscription]
+rules: ['MATCH,outbound']
+"#, "t").unwrap();
+    let provider = &loaded.config.proxy_providers[0];
+    assert_eq!(provider.interval, Some(std::time::Duration::from_secs(900)));
+    assert!(matches!(
+        &provider.vehicle,
+        billow_kernel::config::ProviderVehicle::Http { url, .. } if url == "https://example.org/nodes.yaml"
+    ));
+}
+
+#[test]
+fn removed_global_tls_fingerprint_does_not_block_a_valid_profile() {
+    let loaded = load_config("global-client-fingerprint: chrome\nrules: ['MATCH,DIRECT']\n", "t")
+        .expect("Mihomo v1.19.34 accepts this legacy field");
+    assert!(loaded.warnings.iter().any(|warning| warning.contains("global-client-fingerprint was removed")));
+}
+
+#[test]
+fn validates_modes_and_levels() {
+    for mode in ["global", "direct", "rule"] {
+        let yaml = format!("mode: {mode}\n");
+        let loaded = load_config(&yaml, "routing.yaml").unwrap();
+        assert_eq!(loaded.config.mode.as_deref(), Some(mode));
+        assert!(loaded.config.proxy_groups.iter().any(|group| group.name == "GLOBAL"));
+    }
+    assert!(err_tag("mode: unknown\n").starts_with("invalid_value"));
     assert!(err_tag("log-level: trace\n").starts_with("unsupported"));
     // Port 0 is valid Mihomo syntax (disabled); a configuration with no other
     // listener fails by name rather than binding an ephemeral port.
@@ -1372,7 +1410,6 @@ fn snell_options_are_strict() {
     load_config(obfs, "t").expect("snell http obfs accepted");
     for (field, value) in [
         ("version", "4"),
-        ("version", "6"),
         ("reuse", "true"),
         ("mode", "unshaped"),
         ("udp", "true"),
@@ -1391,6 +1428,11 @@ fn snell_options_are_strict() {
         } else {
             assert!(e.contains(&format!("option '{field}'")), "{field}: {e}");
         }
+    }
+    for mode in ["default", "unshaped", "unsafe-raw"] {
+        let yaml = format!("proxies:\n  - {{name: sn, type: snell, server: x, port: 1, version: 6, psk: test-key-123, mode: {mode}, udp: true, reuse: true}}\nrules: ['MATCH,sn']\n");
+        let loaded = load_config(&yaml, "t").expect("Snell v6 accepted");
+        assert!(loaded.config.proxies[0].udp_enabled());
     }
     let e = proxy_err("proxies:\n  - {name: sn, type: snell, server: x, port: 1, version: 2}\nrules: ['MATCH,sn']\n");
     assert!(e.contains("missing required option 'psk'"), "{e}");

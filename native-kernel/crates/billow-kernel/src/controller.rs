@@ -982,6 +982,9 @@ enum Route {
     ConfigsGet,
     ConfigsPut,
     ConfigsPatch,
+    DnsQuery,
+    CacheFlush { fake_ip: bool },
+    ReclaimMemory,
     Proxies,
     ProxyGet(String),
     ProxyDelay(String),
@@ -1055,10 +1058,47 @@ impl Route {
             ),
             Route::ConfigsGet => {
                 let runtime = core.runtime.snapshot();
-                Response::json(200, "OK", configs_json(&runtime.config))
+                Response::json(200, "OK", configs_json(&runtime.config, runtime.mode()))
             }
             Route::ConfigsPatch => patch_configs(request, state),
             Route::ConfigsPut => put_configs(request, state).await,
+            Route::DnsQuery => {
+                let runtime = core.runtime.snapshot();
+                let Some(dns) = &runtime.dns else {
+                    return Response::message(500, "Internal Server Error", "DNS section is disabled");
+                };
+                let name = request.query("name").unwrap_or_default().trim_end_matches('.');
+                if name.is_empty() || name.len() > 253 || name.split('.').any(|label| {
+                    label.is_empty() || label.len() > 63 || !label.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                }) {
+                    return Response::message(400, "Bad Request", "invalid query name");
+                }
+                let qtype = match request.query("type").unwrap_or("A").to_ascii_uppercase().as_str() {
+                    "A" => 1, "NS" => 2, "CNAME" => 5, "PTR" => 12,
+                    "MX" => 15, "TXT" => 16, "AAAA" => 28, "SRV" => 33, "HTTPS" => 65,
+                    _ => return Response::message(400, "Bad Request", "invalid query type"),
+                };
+                match dns.query_json(name, qtype).await {
+                    Ok(answer) => Response::json(200, "OK", answer),
+                    Err(error) => Response::message(500, "Internal Server Error", error.to_string()),
+                }
+            }
+            Route::CacheFlush { fake_ip } => {
+                if let Some(dns) = &core.runtime.snapshot().dns {
+                    if *fake_ip { dns.flush_fake_ip(); } else { dns.clear_cache(); }
+                }
+                Response::empty(204, "No Content")
+            }
+            Route::ReclaimMemory => {
+                let runtime = core.runtime.snapshot();
+                if runtime.config.log_level.as_deref() != Some("debug") {
+                    return Response::not_found();
+                }
+                if let Some(dns) = &runtime.dns {
+                    dns.reclaim_expired_cache();
+                }
+                Response::empty(204, "No Content")
+            }
             Route::Proxies => {
                 let runtime = core.runtime.snapshot();
                 Response::json(200, "OK", json!({ "proxies": proxies_map(&runtime) }))
@@ -1287,6 +1327,11 @@ fn resolve_route(request: &Request, parts: &[String]) -> Result<Route, Response>
             // capability instead of a silent success.
             Err(Response::not_found())
         }
+        [dns, query] if dns == "dns" && query == "query" => matched(Route::DnsQuery, &["GET"]),
+        [cache, which, flush] if cache == "cache" && flush == "flush" && matches!(which.as_str(), "dns" | "fakeip") => {
+            matched(Route::CacheFlush { fake_ip: which == "fakeip" }, &["POST"])
+        }
+        [debug, gc] if debug == "debug" && gc == "gc" => matched(Route::ReclaimMemory, &["PUT"]),
         [one] if one == "rules" => matched(Route::Rules, &["GET"]),
         [one] if one == "connections" => match method {
             "GET" => Ok(Route::Connections),
@@ -1352,7 +1397,7 @@ fn resolve_route(request: &Request, parts: &[String]) -> Result<Route, Response>
 // /configs
 // ---------------------------------------------------------------------------
 
-fn configs_json(config: &Config) -> Value {
+fn configs_json(config: &Config, mode: crate::config::RoutingMode) -> Value {
     let mut object = Map::new();
     object.insert("port".into(), json!(0));
     object.insert("socks-port".into(), json!(0));
@@ -1397,7 +1442,7 @@ fn configs_json(config: &Config) -> Value {
     object.insert("bind-address".into(), json!(config.listen.ip().to_string()));
     object.insert("inbound-tfo".into(), json!(false));
     object.insert("inbound-mptcp".into(), json!(false));
-    object.insert("mode".into(), json!("rule"));
+    object.insert("mode".into(), json!(mode.as_str()));
     object.insert("log-level".into(), json!(config.log_level.clone().unwrap_or_else(|| "info".to_string())));
     object.insert("ipv6".into(), json!(config.ipv6));
     object.insert("geodata-mode".into(), json!(config.geodata_mode));
@@ -1501,6 +1546,7 @@ fn patch_configs(request: &Request, state: &ControlState) -> Response {
     let runtime = state.core.runtime.snapshot();
     let config = &runtime.config;
     let mut changed = Vec::new();
+    let mut mode = None;
     for (key, value) in &body {
         let unsupported = |detail: String| Response::message(400, "Bad Request", detail);
         match key.as_str() {
@@ -1519,10 +1565,9 @@ fn patch_configs(request: &Request, state: &ControlState) -> Response {
                 }
             }
             "mode" => {
-                if value.as_str() != Some("rule") {
-                    return unsupported(format!(
-                        "mode {value} cannot be applied (only 'rule' can be honoured)"
-                    ));
+                mode = value.as_str().and_then(crate::config::RoutingMode::parse);
+                if mode.is_none() {
+                    return unsupported(format!("invalid mode {value}"));
                 }
             }
             "log-level" => {
@@ -1575,10 +1620,10 @@ fn patch_configs(request: &Request, state: &ControlState) -> Response {
             format!("{key} cannot be applied by this kernel at runtime"),
         );
     }
-    state
-        .core
-        .log_bus
-        .publish("info", "configuration patched");
+    if let Some(mode) = mode {
+        runtime.set_mode(mode);
+    }
+    state.core.log_bus.publish("info", "configuration patched");
     Response::empty(204, "No Content")
 }
 

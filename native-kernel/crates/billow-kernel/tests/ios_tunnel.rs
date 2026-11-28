@@ -18,7 +18,7 @@ use billow_kernel::outbound::ipstack;
 use quinn::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::CertificateDer;
 use billow_kernel::outbound::tcp::{
-    parse_segment, TcpSegment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_SYN,
+    parse_segment, TcpSegment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN,
 };
 use billow_kernel::tunnel::{Ingest, PacketSink, Tunnel, TunnelOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1132,31 +1132,36 @@ async fn dns_queries_are_answered_from_the_configured_resolver() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rejected_rule_closes_the_flow_with_reset() {
+async fn rejected_tcp_flows_send_resets_and_release_their_slots() {
     let config = format!(
         "mixed-port: {}\nrules:\n  - IP-CIDR,93.184.216.0/24,REJECT\n  - MATCH,DIRECT\n",
         free_port()
     );
-    let device = Device::start(&config, TunnelOptions::default());
-    let port = device.next_port();
+    let device = Device::start(
+        &config,
+        TunnelOptions {
+            max_tcp_flows: 1,
+            ..TunnelOptions::default()
+        },
+    );
     let target: SocketAddr = "93.184.216.34:443".parse().unwrap();
-    device.send_tcp(port, target, 7, 0, FLAG_SYN, &[]);
-    let packets = device
-        .sink
-        .wait_for(|packets| {
-            packets
-                .iter()
-                .filter_map(|packet| parse_segment(packet).ok())
-                .any(|segment| segment.flags & 0x04 != 0)
+    for rejected in 1..=2 {
+        let port = device.next_port();
+        device.send_tcp(port, target, 7, 0, FLAG_SYN, &[]);
+        let packets = device.wait_tcp(port, target, FLAG_RST).await;
+        assert!(packet_for(&packets, port, target, FLAG_RST).is_some());
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while device.tunnel.stats().tcp_closed < rejected {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
         })
-        .await;
-    let reset = packets
-        .iter()
-        .filter_map(|packet| parse_segment(packet).ok())
-        .find(|segment| segment.flags & 0x04 != 0)
-        .expect("RST");
-    assert_eq!(reset.dst_port, port);
-    assert_eq!(device.tunnel.stats().tcp_rejected, 1);
+        .await
+        .expect("rejected flow exits");
+        let stats = device.tunnel.stats();
+        assert_eq!(stats.tcp_rejected, rejected);
+        assert_eq!(stats.tcp_flows, 0);
+    }
     device.tunnel.stop();
 }
 

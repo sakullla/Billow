@@ -83,6 +83,7 @@ rustls-pki-types = "1"
 socket2 = "0.6"
 sha1 = "0.10"
 sha2 = "0.10"
+shadowsocks = { version = "=1.24.0", default-features = false, features = ["aead-cipher-2022"] }
 # Shared userspace TCP/UDP stack for the packet-oriented VPN outbounds
 # (WireGuard, OpenVPN). Medium::Ip means the device carries bare IP packets, the
 # same shape both tunnels produce; std makes the buffers heap-backed.

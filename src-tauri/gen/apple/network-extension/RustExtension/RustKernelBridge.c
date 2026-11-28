@@ -38,7 +38,7 @@ int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn wri
     }
     return -2;
 }
-int32_t billow_rust_kernel_write(void *packet, uint32_t length) {
+int32_t billow_rust_kernel_write(const void *packet, uint32_t length) {
     (void)packet; (void)length;
     return -1;
 }
@@ -88,8 +88,8 @@ int32_t billow_rust_kernel_start(void *ctx, char *home, billow_rust_write_fn wri
     return billow_ios_vpn_start(&port, ctx, home, error);
 }
 
-int32_t billow_rust_kernel_write(void *packet, uint32_t length) {
-    return billow_ios_vpn_write(packet, length);
+int32_t billow_rust_kernel_write(const void *packet, uint32_t length) {
+    return billow_ios_vpn_write((void *)packet, length);
 }
 
 int32_t billow_rust_kernel_drain(void *packet, uint32_t length, uint32_t *produced) {

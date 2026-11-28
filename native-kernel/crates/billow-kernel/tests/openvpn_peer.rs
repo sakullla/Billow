@@ -174,6 +174,10 @@ fn start_server() -> Option<Server> {
 }
 
 fn start_server_proto(proto: &str) -> Option<Server> {
+    start_server_with_pushes(proto, &[])
+}
+
+fn start_server_with_pushes(proto: &str, pushes: &[String]) -> Option<Server> {
     let bin = openvpn_bin()?;
     let dir = std::env::temp_dir().join(format!("billow-openvpn-peer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -185,8 +189,8 @@ fn start_server_proto(proto: &str) -> Option<Server> {
     } else {
         free_udp_port()
     };
-    let child = Command::new(bin)
-        .args([
+    let mut command = Command::new(bin);
+    command.args([
             "--dev",
             "null",
             "--mode",
@@ -217,7 +221,11 @@ fn start_server_proto(proto: &str) -> Option<Server> {
             "1",
             "--verb",
             "3",
-        ])
+        ]);
+    for option in pushes {
+        command.args(["--push", option]);
+    }
+    let child = command
         .stdout(std::fs::File::create(dir.join("server.log")).expect("server log"))
         .stderr(Stdio::null())
         .spawn()
@@ -226,6 +234,38 @@ fn start_server_proto(proto: &str) -> Option<Server> {
     // reset, so a short wait is enough.
     std::thread::sleep(Duration::from_millis(1200));
     Some(Server { child, port, dir })
+}
+
+#[test]
+#[ignore = "requires a local OpenVPN server binary"]
+fn split_push_reply_delivers_every_route_and_the_assigned_address() {
+    if skip("split_push_reply_delivers_every_route_and_the_assigned_address") {
+        return;
+    }
+    let routes: Vec<_> = (0..450)
+        .map(|index| std::net::Ipv4Addr::new(172, 16 + (index / 256) as u8, index as u8, 0))
+        .collect();
+    let pushes: Vec<_> = routes
+        .iter()
+        .map(|address| format!("route {address} 255.255.255.0"))
+        .collect();
+    let server = start_server_with_pushes("udp4", &pushes).expect("server");
+    let ca = std::fs::read_to_string(server.dir.join("server-ca.pem")).unwrap();
+    let cert = std::fs::read_to_string(server.dir.join("client.pem")).unwrap();
+    let key = std::fs::read_to_string(server.dir.join("client.key")).unwrap();
+    let option = openvpn_option(&config_yaml(&server, &ca, Some(&cert), Some(&key)));
+
+    let tunnel = OpenVpnTunnel::connect(&option, Duration::from_secs(15)).unwrap();
+    let push = tunnel.push_reply();
+    assert!(push.raw.contains("push-continuation 2"), "{}", push.raw);
+    let records = push.raw.matches("PUSH_REPLY").count();
+    assert!(records > 9, "expected more than nine records, got {records}");
+    assert_eq!(push.push_continuation, 1);
+    assert!(push.ifconfig.is_some(), "{}", push.raw);
+    for address in routes {
+        let route = (std::net::IpAddr::from(address), 24);
+        assert!(push.routes.contains(&route), "missing route {route:?}");
+    }
 }
 
 fn indent(pem: &str, spaces: usize) -> String {

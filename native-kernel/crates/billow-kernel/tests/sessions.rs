@@ -81,6 +81,25 @@ async fn echo_roundtrip_on(stream: &mut tokio::net::TcpStream, payload: &[u8]) -
 }
 
 #[tokio::test]
+async fn inbound_lan_prefixes_filter_new_connections_after_reload() {
+    let yaml = format!("{}lan-allowed-ips: [127.0.0.0/8]\n", direct_config());
+    let (running, _) = Running::start(&yaml, standard_limits());
+    let mut allowed = tokio::net::TcpStream::connect(running.proxy).await.unwrap();
+    allowed.write_all(&[5, 1, 0]).await.unwrap();
+    let mut reply = [0; 2];
+    allowed.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply, [5, 0]);
+
+    let yaml = format!("{yaml}lan-disallowed-ips: [127.0.0.1/32]\n");
+    running.kernel().reload(&yaml).unwrap();
+    let mut denied = tokio::net::TcpStream::connect(running.proxy).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), denied.read(&mut reply))
+        .await
+        .expect("denied connection is closed promptly");
+    assert_eq!(result.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn socks5_relays_and_ip_cidr_and_geosite_rules_apply() {
     let endpoint = spawn_endpoint(EchoMode::Echo).await;
     let geo = std::env::temp_dir().join(format!("billow-geosite-e2e-{}", std::process::id()));

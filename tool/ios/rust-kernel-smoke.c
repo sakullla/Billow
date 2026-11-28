@@ -97,14 +97,19 @@ static size_t build_udp(uint8_t *out, const uint8_t dst[4], uint16_t src_port,
     return total;
 }
 
-static char *write_config(const char *dir, uint16_t mixed_port) {
+static char *write_config(const char *dir, uint16_t mixed_port, uint16_t anytls_port) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/config.yaml", dir);
     FILE *file = fopen(path, "w");
     if (file == NULL) {
         return NULL;
     }
-    fprintf(file, "mixed-port: %u\nrules:\n  - MATCH,DIRECT\n", mixed_port);
+    fprintf(file, "mixed-port: %u\n", mixed_port);
+    if (anytls_port != 0) {
+        fprintf(file, "proxies:\n  - {name: smoke-peer, type: anytls, server: 127.0.0.1, port: %u, udp: true, password: ios-smoke-peer, skip-cert-verify: true}\nrules: ['MATCH,smoke-peer']\n", anytls_port);
+    } else {
+        fprintf(file, "rules: ['MATCH,DIRECT']\n");
+    }
     fclose(file);
     return strdup(path);
 }
@@ -166,7 +171,8 @@ int main(int argc, char **argv) {
     if (probe_fd >= 0) {
         close(probe_fd);
     }
-    CHECK(write_config(dir, mixed_port) != NULL, "config.yaml written");
+    uint16_t anytls_port = argc > 2 ? (uint16_t)atoi(argv[2]) : 0;
+    CHECK(write_config(dir, mixed_port, anytls_port) != NULL, "config.yaml written");
 
     rust_tunnel_port_t port;
     port.start = NULL;

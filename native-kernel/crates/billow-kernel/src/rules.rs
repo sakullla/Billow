@@ -256,18 +256,26 @@ pub struct RuleSet {
 impl RuleSet {
     /// Compile `config` against already-prepared providers.
     pub fn compile(config: &Config, providers: Arc<RuleProviders>) -> Result<Arc<Self>, ConfigError> {
+        Self::compile_rules(&config.rules, &config.sub_rules, providers)
+    }
+
+    pub(crate) fn compile_rules(
+        source: &[Rule],
+        sub: &BTreeMap<String, Vec<Rule>>,
+        providers: Arc<RuleProviders>,
+    ) -> Result<Arc<Self>, ConfigError> {
         let geodata = providers.geodata();
         let slots = providers.slots();
         let mut sub_rules = BTreeMap::new();
-        for (name, rules) in &config.sub_rules {
+        for (name, rules) in sub {
             let mut compiled = Vec::with_capacity(rules.len());
             for rule in rules {
                 compiled.push(compile_rule(rule, &geodata, &slots)?);
             }
             sub_rules.insert(name.clone(), compiled);
         }
-        let mut rules = Vec::with_capacity(config.rules.len());
-        for rule in &config.rules {
+        let mut rules = Vec::with_capacity(source.len());
+        for rule in source {
             rules.push(compile_rule(rule, &geodata, &slots)?);
         }
         Ok(Arc::new(RuleSet {

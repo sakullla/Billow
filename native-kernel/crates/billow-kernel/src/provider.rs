@@ -708,6 +708,7 @@ fn parse_rule_payload_bytes(
                 .map_err(|e| format!("payload is not UTF-8: {e}"))?;
             let mut value: serde_yaml::Value = serde_yaml::from_str(text)
                 .map_err(|e| format!("payload is not YAML: {e}"))?;
+            value.apply_merge().map_err(|e| format!("invalid YAML merge: {e}"))?;
             let Some(mapping) = value.as_mapping_mut() else {
                 return Err("YAML payload must be a mapping with payload or rules".to_string());
             };
@@ -763,11 +764,14 @@ fn read_proxy_payload(
                         provider.name
                     ))
                 })?;
-                let value: serde_yaml::Value = serde_yaml::from_str(text).map_err(|e| {
+                let mut value: serde_yaml::Value = serde_yaml::from_str(text).map_err(|e| {
                     ConfigError::Unsupported(format!(
                         "proxy-provider '{}': payload is not YAML: {e}",
                         provider.name
                     ))
+                })?;
+                value.apply_merge().map_err(|e| {
+                    ConfigError::Invalid(format!("proxy-provider '{}': invalid YAML merge: {e}", provider.name))
                 })?;
                 match value.as_mapping().and_then(|mapping| {
                     mapping.get(serde_yaml::Value::String("proxies".to_string()))

@@ -229,16 +229,14 @@ impl OpenVpnTunnel {
             if chunk.is_empty() {
                 continue;
             }
-            server_bytes.extend_from_slice(&chunk);
+            append_tls_control(&mut server_bytes, &chunk)?;
             if let Some((parsed, _)) = ServerKeySource::parse(&server_bytes) {
                 break parsed;
             }
         };
         debug_stage("key method 2 response");
 
-        // PUSH_REQUEST / PUSH_REPLY. A multi-segment reply ends with
-        // `push-continuation N`; the pinned client asks again and concatenates
-        // the next records.
+        // One PUSH_REQUEST can yield several NUL-terminated TLS records.
         control.write_app(&mut tls, b"PUSH_REQUEST\0")?;
         let mut push_bytes = Vec::new();
         let mut reply = read_push_record(
@@ -248,17 +246,10 @@ impl OpenVpnTunnel {
             timeout,
             &mut push_bytes,
         )?;
-        let mut segments = 0;
         // Pinned semantics: 2 means an intermediate segment; 1 or absent is
         // final. The server writes the continuation records on the same TLS
         // stream, so do not send another PUSH_REQUEST here.
         while reply.push_continuation == 2 {
-            segments += 1;
-            if segments > 8 {
-                return Err(OpenVpnError::Unsupported(
-                    "multi-segment PUSH_REPLY exceeds 8 segments".to_string(),
-                ));
-            }
             let next = read_push_record(
                 &mut control,
                 &mut tls,
@@ -1582,21 +1573,31 @@ fn read_push_record(
         if Instant::now() >= deadline {
             return Err(OpenVpnError::Timeout(timeout));
         }
-        let chunk = control.read_app(tls, Duration::from_millis(100))?;
-        push_bytes.extend_from_slice(&chunk);
-        let Some(end) = push_bytes.iter().position(|byte| *byte == 0) else {
+        if let Some(end) = push_bytes.iter().position(|byte| *byte == 0) {
+            let text = String::from_utf8_lossy(&push_bytes[..end]).into_owned();
+            push_bytes.drain(..=end);
+            if text.starts_with("AUTH_FAILED") {
+                return Err(OpenVpnError::Push(text));
+            }
+            if text.starts_with("PUSH_REPLY") {
+                return parse_push_reply(&text);
+            }
             continue;
-        };
-        let text = String::from_utf8_lossy(&push_bytes[..end]).to_string();
-        push_bytes.drain(..=end);
-        if text.starts_with("AUTH_FAILED") {
-            return Err(OpenVpnError::Push(text));
         }
-        if text.starts_with("PUSH_REPLY") {
-            return parse_push_reply(&text);
-        }
-        // A leading informational record: keep reading.
+        let chunk = control.read_app(tls, Duration::from_millis(100))?;
+        append_tls_control(push_bytes, &chunk)?;
     }
+}
+
+fn append_tls_control(buffer: &mut Vec<u8>, chunk: &[u8]) -> Result<(), OpenVpnError> {
+    const MAX_TLS_CONTROL_BUFFER: usize = 1 << 20;
+    if chunk.len() > MAX_TLS_CONTROL_BUFFER - buffer.len() {
+        return Err(OpenVpnError::Control(format!(
+            "TLS control buffer exceeds {MAX_TLS_CONTROL_BUFFER} bytes"
+        )));
+    }
+    buffer.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// Merge one continuation segment into the first `PUSH_REPLY`.

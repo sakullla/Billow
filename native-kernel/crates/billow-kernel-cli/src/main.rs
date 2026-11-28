@@ -220,6 +220,7 @@ fn run_android_tunnel(
 
     let options = AndroidVpnOptions {
         tunnel: TunnelOptions {
+            geodata_dir: args.geosite_dir.clone(),
             limits: Limits {
                 buffer_size: args.buffer_bytes,
                 max_sessions: args.max_sessions,
@@ -314,6 +315,7 @@ fn run_desktop_tunnel(
 
     let options = DesktopTunOptions {
         tunnel: TunnelOptions {
+            geodata_dir: args.geosite_dir.clone(),
             limits: Limits {
                 buffer_size: args.buffer_bytes,
                 max_sessions: args.max_sessions,

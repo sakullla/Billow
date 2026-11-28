@@ -8,11 +8,6 @@
 //!   owns the device route; on Android the host hands the established TUN fd
 //!   to [`crate::android_vpn`] and passes it as a launch argument, never as a
 //!   configuration key. The shared file keeps the block for Mihomo;
-//! * a `sniffer` block with `enable: true` is removed as well. This kernel does
-//!   not implement sniffing (`config.rs` rejects the enabled block by name),
-//!   and a device tunnel cannot accept a configuration it refuses. The
-//!   difference is visible: domain rules after staging match on the
-//!   destination IP/DNS result rather than a sniffed SNI/Host;
 //! * `rule-providers.*.path` / `proxy-providers.*.path` files referenced
 //!   outside the version directory are copied next to the config and the path
 //!   is rewritten to the basename (a sandboxed extension cannot read the host
@@ -40,12 +35,6 @@ pub fn stage_config(home: &Path, yaml: &str) -> Result<Staged, String> {
         mapping.remove(serde_yaml::Value::String("tun".into()));
         tracing::warn!(
             "tun.enable was removed for the Rust engine: the device tunnel owns the TUN"
-        );
-    }
-    if block_enabled(mapping.get(serde_yaml::Value::String("sniffer".into()))) {
-        mapping.remove(serde_yaml::Value::String("sniffer".into()));
-        tracing::warn!(
-            "sniffer.enable was removed for the Rust engine: sniffing is not implemented, so domain rules use the destination IP/DNS result instead of a sniffed SNI/Host"
         );
     }
     for group in ["rule-providers", "proxy-providers"] {

@@ -35,6 +35,8 @@ pub mod zerotier;
 pub mod shadowquic;
 pub mod shadow_tls;
 pub mod snell;
+pub mod snell_v6;
+mod snell_v6_profile;
 pub mod socks5;
 pub mod smux;
 pub mod sudoku;
@@ -1230,13 +1232,11 @@ mod tests {
     fn blocking_tcp_helper_connects_on_the_process_interface() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let accept = std::thread::spawn(move || {
-            let _ = listener.accept();
-        });
+        let accept = std::thread::spawn(move || listener.accept().unwrap().0);
         set_default_interface(Some("lo0".to_string()));
         let stream = tcp_stream_std_blocking(addr, Duration::from_secs(2));
         set_default_interface(None);
-        accept.join().unwrap();
+        let _peer = accept.join().unwrap();
         assert!(stream.is_ok(), "{stream:?}");
     }
 }

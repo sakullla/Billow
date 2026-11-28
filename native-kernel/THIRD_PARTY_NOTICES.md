@@ -40,6 +40,18 @@ license). The pinned Mihomo tree used as the differential peer is GPL-3.0 and
 is not vendored; it is fetched into the gitignored cache by the T1 baseline
 tooling.
 
+## Snell v6 and Shadowsocks 2022
+
+`crates/billow-kernel/src/outbound/snell_v6{,_profile}.rs` is based on
+Mihomo v1.19.34's `transport/snell/{v6,v6_profile,snell,pool}.go` (GPL-3.0).
+Mihomo credits the protocol notes in
+[SagerNet/sing-snell](https://github.com/SagerNet/sing-snell) (GPL-3.0-or-later)
+for the v6 profile constants and derivations.
+
+The Shadowsocks 2022 client uses the
+[`shadowsocks` crate v1.24.0](https://github.com/shadowsocks/shadowsocks-rust)
+under the MIT license.
+
 ## `github.com/metacubex/jls-tls`
 
 The JLS hello vectors in

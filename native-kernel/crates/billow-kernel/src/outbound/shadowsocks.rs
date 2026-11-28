@@ -25,7 +25,7 @@ use std::task::Poll as StdPoll;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::keys::{evp_bytes_to_key, hkdf_sha1_with_salt};
-use crate::proxies::{ShadowsocksOutbound, SsCipher};
+use crate::proxies::{ShadowsocksCipher, ShadowsocksOutbound, SsCipher};
 
 const TAG_LEN: usize = 16;
 const MAX_PAYLOAD: usize = 0x3FFF;
@@ -470,18 +470,149 @@ pub async fn dial(
 ) -> Result<super::Dialed, super::DialError> {
     let tcp = super::connect_tcp(&option.server, option.port).await?;
     let server = tcp.peer_addr().map_err(|e| super::handshake("ss", e))?;
-    let stream = connect(
-        tcp,
-        option.cipher,
+    let stream = connect_outbound(tcp, option, target)
+        .await
+        .map_err(|e| super::handshake("ss", e))?;
+    Ok(super::Dialed { stream, server })
+}
+
+pub(super) async fn connect_outbound<S>(
+    inner: S,
+    option: &ShadowsocksOutbound,
+    target: &super::Target,
+) -> io::Result<super::BoxStream>
+where
+    S: AsyncWrite + AsyncRead + Send + Unpin + 'static,
+{
+    match option.cipher {
+        ShadowsocksCipher::Aead2017(cipher) => Ok(Box::new(
+            connect(inner, cipher, option.password.expose(), &super::SocksAddr::encode(target)).await?,
+        )),
+        ShadowsocksCipher::Aead2022(cipher) => {
+            let config = ss2022_config(option, cipher)?;
+            Ok(Box::new(shadowsocks::ProxyClientStream::from_stream(
+                ss2022_context().clone(),
+                inner,
+                &config,
+                ss2022_address(target),
+            )))
+        }
+    }
+}
+
+fn ss2022_config(
+    option: &ShadowsocksOutbound,
+    cipher: shadowsocks::crypto::CipherKind,
+) -> io::Result<shadowsocks::ServerConfig> {
+    shadowsocks::ServerConfig::new(
+        (option.server.clone(), option.port),
         option.password.expose(),
-        &super::SocksAddr::encode(target),
+        cipher,
     )
-    .await
-    .map_err(|e| super::handshake("ss", e))?;
-    Ok(super::Dialed {
-        stream: Box::new(stream),
-        server,
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid Shadowsocks 2022 key"))
+}
+
+fn ss2022_context() -> &'static shadowsocks::context::SharedContext {
+    static CONTEXT: std::sync::OnceLock<shadowsocks::context::SharedContext> = std::sync::OnceLock::new();
+    CONTEXT.get_or_init(|| {
+        shadowsocks::context::Context::new_shared(shadowsocks::config::ServerType::Local)
     })
+}
+
+fn ss2022_address(target: &super::Target) -> shadowsocks::relay::socks5::Address {
+    use shadowsocks::relay::socks5::Address;
+    match target.host.parse::<std::net::IpAddr>() {
+        Ok(ip) => Address::SocketAddress(std::net::SocketAddr::new(ip, target.port)),
+        Err(_) => Address::DomainNameAddress(target.host.clone(), target.port),
+    }
+}
+
+pub(super) struct Ss2022Datagram {
+    server: shadowsocks::ServerConfig,
+    control: shadowsocks::relay::udprelay::options::UdpSocketControlData,
+    replies: std::collections::HashMap<u64, ReplyWindow>,
+}
+
+struct ReplyWindow {
+    latest: u64,
+    seen: u128,
+    last_seen: std::time::Instant,
+}
+
+impl Ss2022Datagram {
+    pub(super) fn new(option: &ShadowsocksOutbound, cipher: shadowsocks::crypto::CipherKind) -> io::Result<Self> {
+        let mut control = shadowsocks::relay::udprelay::options::UdpSocketControlData::default();
+        control.client_session_id = rand::random();
+        Ok(Self {
+            server: ss2022_config(option, cipher)?,
+            control,
+            replies: Default::default(),
+        })
+    }
+
+    pub(super) fn encode(&mut self, target: &super::Target, payload: &[u8]) -> io::Result<bytes::BytesMut> {
+        let mut packet = bytes::BytesMut::new();
+        if payload.is_empty() {
+            // The upstream codec leaves padding in reserved capacity for an
+            // empty datagram. Initialize that capacity before any padding is sealed.
+            packet.resize(2048, 0);
+            packet.clear();
+        }
+        self.control.packet_id = self.control.packet_id.checked_add(1)
+            .ok_or_else(|| io::Error::other("Shadowsocks 2022 UDP session exhausted"))?;
+        shadowsocks::relay::udprelay::crypto_io::encrypt_client_payload(
+            ss2022_context(),
+            self.server.method(),
+            self.server.key(),
+            &ss2022_address(target),
+            &self.control,
+            self.server.identity_keys(),
+            payload,
+            &mut packet,
+        );
+        Ok(packet)
+    }
+
+    pub(super) fn decode(&mut self, packet: &mut [u8]) -> Option<(super::Target, usize)> {
+        use shadowsocks::relay::socks5::Address;
+
+        let (length, address, control) = shadowsocks::relay::udprelay::crypto_io::decrypt_server_payload(
+            ss2022_context(),
+            self.server.method(),
+            self.server.key(),
+            packet,
+        ).ok()?;
+        let control = control?;
+        if control.client_session_id != self.control.client_session_id {
+            return None;
+        }
+
+        // Replies have timestamps checked by the wire codec. Keep the packet
+        // window for their full replay lifetime, including future clock skew.
+        let now = std::time::Instant::now();
+        self.replies.retain(|_, window| now.duration_since(window.last_seen) < std::time::Duration::from_secs(60));
+        if self.replies.len() >= 8 && !self.replies.contains_key(&control.server_session_id) {
+            return None;
+        }
+        let window = self.replies.entry(control.server_session_id)
+            .or_insert(ReplyWindow { latest: control.packet_id, seen: 0, last_seen: now });
+        if control.packet_id > window.latest {
+            let shift = control.packet_id - window.latest;
+            window.seen = if shift >= 128 { 0 } else { window.seen << shift };
+            window.latest = control.packet_id;
+        }
+        let bit = 1u128.checked_shl((window.latest - control.packet_id).try_into().ok()?)?;
+        if window.seen & bit != 0 {
+            return None;
+        }
+        window.seen |= bit;
+        window.last_seen = now;
+        let (host, port) = match address {
+            Address::SocketAddress(addr) => (addr.ip().to_string(), addr.port()),
+            Address::DomainNameAddress(host, port) => (host, port),
+        };
+        Some((super::Target { host, port }, length))
+    }
 }
 
 /// Wrap an established TCP stream: sends the salt and queues the address frame.

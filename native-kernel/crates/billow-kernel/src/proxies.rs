@@ -217,11 +217,17 @@ pub struct HttpOutbound {
     pub dialer_proxy: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowsocksCipher {
+    Aead2017(SsCipher),
+    Aead2022(shadowsocks::crypto::CipherKind),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShadowsocksOutbound {
     pub server: String,
     pub port: u16,
-    pub cipher: SsCipher,
+    pub cipher: ShadowsocksCipher,
     pub password: Secret,
     /// Shadowsocks AEAD UDP datagrams to the server (Mihomo's SS UDP).
     pub udp: bool,
@@ -533,14 +539,15 @@ pub struct SudokuOutbound {
 }
 
 /// Snell (`transport/snell`). Versions 1-3 share one request header and an
-/// Argon2id-derived AEAD record layer; v4+ change the record layer and are
-/// rejected explicitly.
+/// Argon2id-derived AEAD record layer; v6 has its own record profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnellOutbound {
     pub server: String,
     pub port: u16,
     pub psk: Secret,
     pub version: u8,
+    pub udp: bool,
+    pub v6: Option<crate::outbound::snell_v6::Config>,
     pub obfs: Option<SnellObfs>,
     pub dialer_proxy: Option<String>,
 }
@@ -1476,6 +1483,7 @@ impl Proxy {
             Protocol::Tuic(_) => true,
             Protocol::ShadowQuic(_) => true,
             Protocol::Sudoku(p) => p.udp,
+            Protocol::Snell(p) => p.udp,
             // The pinned OpenVPN outbound always advertises UDP; WireGuard
             // follows its `udp` switch. Both are carried by the shared
             // userspace L3 stack (`outbound::l3`).
@@ -3033,13 +3041,25 @@ fn parse_shadowsocks(entry: &mut Entry<'_>) -> Result<ShadowsocksOutbound, Confi
     let server = entry.server()?;
     let port = entry.port()?;
     let cipher_name = entry.required_string("cipher")?;
-    let cipher = SsCipher::from_name(&cipher_name).ok_or_else(|| {
-        entry.unsupported(format!(
-            "option 'cipher' value '{cipher_name}' is not implemented (supported: {})",
-            SsCipher::SUPPORTED
-        ))
-    })?;
     let password = Secret::new(entry.required_string("password")?);
+    let cipher = if let Some(cipher) = SsCipher::from_name(&cipher_name) {
+        ShadowsocksCipher::Aead2017(cipher)
+    } else if matches!(
+        cipher_name.to_ascii_lowercase().as_str(),
+        "2022-blake3-aes-128-gcm" | "2022-blake3-aes-256-gcm" | "2022-blake3-chacha20-poly1305"
+    ) {
+        let method = cipher_name.to_ascii_lowercase().parse().map_err(|_| {
+            entry.unsupported("this Shadowsocks 2022 cipher is unavailable")
+        })?;
+        shadowsocks::ServerConfig::new((server.clone(), port), password.expose(), method)
+            .map_err(|_| entry.invalid("Shadowsocks 2022 requires a base64 key of the cipher's size"))?;
+        ShadowsocksCipher::Aead2022(method)
+    } else {
+        return Err(entry.unsupported(format!(
+            "option 'cipher' value '{cipher_name}' is not implemented (supported: {}, 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm, 2022-blake3-chacha20-poly1305)",
+            SsCipher::SUPPORTED
+        )));
+    };
     let udp = entry.bool("udp")?.unwrap_or(false);
     let udp_over_tcp = entry.bool("udp-over-tcp")?.unwrap_or(false);
     let version = entry.int("udp-over-tcp-version")?.unwrap_or(0);
@@ -3935,34 +3955,51 @@ fn parse_vmess(entry: &mut Entry<'_>) -> Result<VmessOutbound, ConfigError> {
 /// defaults to 1 (Mihomo's outbound default); 4-6 change the record layer and
 /// are rejected by name.
 fn parse_snell(entry: &mut Entry<'_>) -> Result<SnellOutbound, ConfigError> {
+    use crate::outbound::snell_v6::{Config, Mode};
+
     let server = entry.server()?;
     let port = entry.port()?;
     let psk = Secret::new(entry.required_string("psk")?);
-    let version = entry.int("version")?.unwrap_or(1);
-    if !(1..=3).contains(&version) {
-        return Err(entry.unsupported(format!(
-            "option 'version' value {version} is not implemented (snell v1, v2, v3)"
-        )));
-    }
-    if entry.bool("reuse")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'reuse' is not implemented (one stream per connection)",
-        ));
-    }
-    if let Some(mode) = entry.string("mode")?.filter(|value| !value.is_empty()) {
-        return Err(entry.unsupported(format!(
-            "option 'mode' value '{mode}' is not implemented (v6 record layer)"
-        )));
-    }
+    let version = match entry.int("version")?.unwrap_or(1) {
+        0 => 1,
+        version @ (1..=3 | 6) => version,
+        version => return Err(entry.unsupported(format!(
+            "option 'version' value {version} is not implemented (snell v1, v2, v3, v6)"
+        ))),
+    };
+    let reuse = entry.bool("reuse")?.unwrap_or(false);
+    let mode = entry.string("mode")?.filter(|value| !value.is_empty());
+    let udp = entry.bool("udp")?.unwrap_or(false);
     let obfs = entry.snell_obfs()?;
-    if obfs.is_some() && version < 2 {
-        return Err(entry.invalid("option 'obfs-opts' requires version 2 or newer"));
-    }
-    if entry.bool("udp")?.unwrap_or(false) {
-        return Err(entry.unsupported(
-            "option 'udp' is not implemented for snell (no UDP command)",
-        ));
-    }
+    let v6 = if version == 6 {
+        if !(12..=255).contains(&psk.expose().len()) {
+            return Err(entry.invalid("option 'psk' must be 12 to 255 bytes for Snell v6"));
+        }
+        if obfs.is_some() {
+            return Err(entry.invalid("option 'obfs-opts' is incompatible with Snell v6"));
+        }
+        let mode = match mode.as_deref() {
+            None | Some("default") => Mode::Default,
+            Some("unshaped") => Mode::Unshaped,
+            Some("unsafe-raw") => Mode::UnsafeRaw,
+            Some(other) => return Err(entry.invalid(format!("option 'mode' value '{other}' is unknown"))),
+        };
+        Some(Config::new(mode, reuse, &psk))
+    } else {
+        if reuse {
+            return Err(entry.unsupported("option 'reuse' requires Snell v6 in this kernel"));
+        }
+        if mode.is_some() {
+            return Err(entry.unsupported("option 'mode' requires Snell v6"));
+        }
+        if obfs.is_some() && version < 2 {
+            return Err(entry.invalid("option 'obfs-opts' requires version 2 or newer"));
+        }
+        if udp {
+            return Err(entry.unsupported("option 'udp' requires Snell v6 in this kernel"));
+        }
+        None
+    };
     let dialer_proxy = entry.string("dialer-proxy")?.filter(|s| !s.is_empty());
     let allowed = [
         "dialer-proxy",
@@ -3985,6 +4022,8 @@ fn parse_snell(entry: &mut Entry<'_>) -> Result<SnellOutbound, ConfigError> {
         port,
         psk,
         version: version as u8,
+        udp,
+        v6,
         obfs,
         dialer_proxy,
     })

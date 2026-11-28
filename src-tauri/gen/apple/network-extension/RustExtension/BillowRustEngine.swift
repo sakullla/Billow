@@ -211,27 +211,15 @@ let rustKernelWrite: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawP
     return 0
 }
 
-/// Packet pump ingest: packs [length][packet] records and replays them into
-/// the Rust tunnel one at a time through billow_ios_vpn_write (the documented
-/// input path; drain is the polling output path).
+/// Feed packets directly while their Data storage is borrowed. The Rust
+/// input ABI accepts an unframed IP packet and consumes it synchronously.
 func rustIngest(_ flow: NEPacketTunnelFlow, _ packets: [Data]) -> Int32 {
     guard let engine = BillowRustTunnelProvider.current else { return 0 }
-    let capacity = 4 + ProviderSupport.mtu
-    var record = [UInt8](repeating: 0, count: capacity)
     for packet in packets {
-        let n = min(packet.count, capacity - 4)
-        guard n >= 20 else { continue }
-        record[0] = UInt8((n >> 24) & 0xff)
-        record[1] = UInt8((n >> 16) & 0xff)
-        record[2] = UInt8((n >> 8) & 0xff)
-        record[3] = UInt8(n & 0xff)
+        guard packet.count >= 20, let size = UInt32(exactly: packet.count) else { continue }
         let result: Int32 = packet.withUnsafeBytes { raw in
-            guard let src = raw.baseAddress else { return 0 }
-            return record.withUnsafeMutableBufferPointer { buffer in
-                guard let dst = buffer.baseAddress else { return 0 }
-                (dst + 4).update(from: src.assumingMemoryBound(to: UInt8.self), count: n)
-                return billow_rust_kernel_write(dst, UInt32(n + 4))
-            }
+            guard let bytes = raw.baseAddress else { return 0 }
+            return billow_rust_kernel_write(bytes, size)
         }
         if result < 0 {
             engine.recordFailure(BillowVPNError.make(.engineStopped, "billow_ios_vpn_write returned \(result)"))

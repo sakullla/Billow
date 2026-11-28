@@ -26,20 +26,29 @@ pub mod stage;
 pub mod tcp_server;
 pub mod udp;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::future::poll_fn;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{ready, Poll};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
 use tokio::sync::mpsc;
 
 use crate::config::NetworkKind;
 use crate::engine::{Kernel, KernelOptions, Limits, SessionContext};
 use crate::outbound::ipstack;
-use crate::outbound::tcp::{build_segment, parse_segment, FLAG_ACK, FLAG_FIN, FLAG_RST, FLAG_SYN};
+#[cfg(test)]
+use crate::outbound::tcp::build_segment;
+use crate::outbound::tcp::{
+    build_tcp_packet, parse_segment_from_ip, FLAG_ACK, FLAG_FIN, FLAG_RST, FLAG_SYN,
+};
 use crate::tunnel::tcp_server::{ServerConfig, ServerTcp};
 use crate::tunnel::udp::{direct_reader, AssocCommand, UdpFlowKey, UdpReply, MAX_ASSOCIATIONS};
 
@@ -53,6 +62,12 @@ const HOP_LIMIT: u8 = 64;
 const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// DNS queries answered concurrently (each is one UDP packet in flight).
 const DNS_SLOTS: usize = 32;
+
+// The bytes go into the flow's send queue within the same poll. Idle reads
+// release the scratch buffer immediately, so each tunnel worker only needs one.
+thread_local! {
+    static TCP_READ_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Tunables of one tunnel. The defaults are the values the iOS extension
 /// starts with; tests shrink them.
@@ -77,8 +92,10 @@ pub struct TunnelOptions {
     /// Pinned `ShouldHijackDns`: exact targets, or an unspecified entry that
     /// matches any target on port 53.
     pub dns_hijack: Vec<SocketAddr>,
-    /// Per-direction relay buffer.
+    /// Maximum size of each upstream TCP read.
     pub buffer_size: usize,
+    /// GEO data directory, falling back to the tunnel home.
+    pub geodata_dir: Option<PathBuf>,
     /// Engine limits (dial timeouts, UDP association idle) for this host.
     pub limits: Limits,
 }
@@ -96,6 +113,7 @@ impl Default for TunnelOptions {
             tcp_idle: Duration::from_secs(300),
             dns_hijack: vec![SocketAddr::from(([0, 0, 0, 0], 53))],
             buffer_size: 16 * 1024,
+            geodata_dir: None,
             limits: Limits {
                 // The extension relays whole packets; a 16 KiB copy buffer per
                 // direction matches the engine default and keeps R3 in reach.
@@ -138,6 +156,32 @@ pub(crate) struct FlowKey {
     pub proto: u8,
     pub src: SocketAddr,
     pub dst: SocketAddr,
+}
+
+struct TcpFlowEntry {
+    id: u64,
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+struct TcpFlowRegistration {
+    inner: Arc<Inner>,
+    key: FlowKey,
+    id: u64,
+}
+
+impl Drop for TcpFlowRegistration {
+    fn drop(&mut self) {
+        let mut flows = self
+            .inner
+            .tcp
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // A reload can clear the index and admit the same 4-tuple again.
+        if flows.get(&self.key).is_some_and(|entry| entry.id == self.id) {
+            flows.remove(&self.key);
+        }
+        self.inner.stats.tcp_closed.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// One device UDP datagram on its way through the engine.
@@ -219,7 +263,7 @@ pub(crate) struct Inner {
     /// has started; polling hosts leave it unset and drain the queue.
     sink: Mutex<Option<Arc<dyn PacketSink>>>,
     queue: Mutex<VecDeque<Vec<u8>>>,
-    tcp: Mutex<HashMap<FlowKey, mpsc::Sender<Vec<u8>>>>,
+    tcp: Mutex<HashMap<FlowKey, TcpFlowEntry>>,
     udp: Mutex<Option<mpsc::Sender<UdpCommand>>>,
     udp_flows: Arc<Mutex<HashMap<(SocketAddr, SocketAddr), tokio::time::Instant>>>,
     associations: Mutex<HashMap<String, mpsc::Sender<AssocCommand>>>,
@@ -356,7 +400,7 @@ impl Tunnel {
             .map_err(|error| format!("configuration: {error}"))?;
         let (kernel, warnings) = Kernel::start_with_options(
             &loaded,
-            Some(base_dir.clone()),
+            Some(options.geodata_dir.clone().unwrap_or_else(|| base_dir.clone())),
             base_dir.clone(),
             options.limits,
             &KernelOptions {
@@ -464,7 +508,7 @@ impl Tunnel {
     }
 
     fn ingest_tcp(&self, packet: &[u8], parsed: &ipstack::IpPacket<'_>) -> Ingest {
-        let segment = match parse_segment(packet) {
+        let segment = match parse_segment_from_ip(parsed) {
             Ok(segment) => segment,
             Err(error) => {
                 self.inner
@@ -480,27 +524,27 @@ impl Tunnel {
             src: SocketAddr::new(parsed.src, segment.src_port),
             dst: SocketAddr::new(parsed.dst, segment.dst_port),
         };
-        {
-            let map = self
-                .inner
-                .tcp
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(sender) = map.get(&key) {
-                if sender.try_send(packet.to_vec()).is_err() {
-                    self.inner
-                        .stats
-                        .dropped_inbound
-                        .fetch_add(1, Ordering::Relaxed);
-                    return Ingest::Dropped("flow queue full");
-                }
-                return Ingest::Accepted;
-            }
+        let mut map = self
+            .inner
+            .tcp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = map.get(&key) {
+            let Ok(permit) = entry.sender.try_reserve() else {
+                self.inner
+                    .stats
+                    .dropped_inbound
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ingest::Dropped("flow queue full");
+            };
+            permit.send(packet.to_vec());
+            return Ingest::Accepted;
         }
         if segment.flags & FLAG_SYN == 0 || segment.flags & FLAG_ACK != 0 {
+            drop(map);
             // Not a connection attempt and no flow knows the segment: answer a
             // RST the way a closed port does, so the device fails fast.
-            if let Some(reply) = reset_for(&segment, parsed) {
+            if let Some(reply) = reset_for(&segment) {
                 self.inner.emit(reply);
             }
             self.inner
@@ -509,14 +553,9 @@ impl Tunnel {
                 .fetch_add(1, Ordering::Relaxed);
             return Ingest::Dropped("no such TCP flow");
         }
-        let mut map = self
-            .inner
-            .tcp
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if map.len() >= self.inner.options.max_tcp_flows {
             drop(map);
-            if let Some(reply) = reset_for(&segment, parsed) {
+            if let Some(reply) = reset_for(&segment) {
                 self.inner.emit(reply);
             }
             self.inner
@@ -536,16 +575,20 @@ impl Tunnel {
         };
         let tcp = ServerTcp::accept(config, &segment);
         let (sender, receiver) = mpsc::channel(self.inner.options.inbound_queue.max(1));
-        map.insert(key, sender);
+        let id = self.inner.stats.tcp_opened.fetch_add(1, Ordering::Relaxed);
+        map.insert(key, TcpFlowEntry { id, sender });
         let len = map.len();
         drop(map);
         self.inner
             .stats
             .tcp_flow_high
             .fetch_max(len, Ordering::Relaxed);
-        self.inner.stats.tcp_opened.fetch_add(1, Ordering::Relaxed);
-        let inner = self.inner.clone();
-        self.inner.spawn(tcp_flow(inner, key, tcp, receiver));
+        let registration = TcpFlowRegistration {
+            inner: self.inner.clone(),
+            key,
+            id,
+        };
+        self.inner.spawn(tcp_flow(registration, tcp, receiver));
         Ingest::Accepted
     }
 
@@ -573,8 +616,7 @@ impl Tunnel {
                             .fetch_add(1, Ordering::Relaxed);
                         return Ingest::Dropped("DNS concurrency limit");
                     };
-                    let payload = datagram.payload.to_vec();
-                    let query = payload.clone();
+                    let query = datagram.payload.to_vec();
                     let inner = self.inner.clone();
                     self.inner.spawn(async move {
                         let _slot = slot;
@@ -923,10 +965,7 @@ fn build_icmp_unreachable(original: &[u8], code: u8) -> Option<Vec<u8>> {
 }
 
 /// A RST for a segment that no flow accepts.
-fn reset_for(
-    segment: &crate::outbound::tcp::TcpSegment<'_>,
-    parsed: &ipstack::IpPacket<'_>,
-) -> Option<Vec<u8>> {
+fn reset_for(segment: &crate::outbound::tcp::TcpSegment<'_>) -> Option<Vec<u8>> {
     let mut ack = segment.seq.wrapping_add(segment.payload.len() as u32);
     if segment.flags & FLAG_SYN != 0 || segment.flags & FLAG_FIN != 0 {
         ack = ack.wrapping_add(1);
@@ -941,9 +980,9 @@ fn reset_for(
     } else {
         FLAG_RST | FLAG_ACK
     };
-    let segment = build_segment(
-        parsed.dst,
-        parsed.src,
+    build_tcp_packet(
+        segment.dst,
+        segment.src,
         segment.dst_port,
         segment.src_port,
         seq,
@@ -952,12 +991,6 @@ fn reset_for(
         0,
         None,
         &[],
-    );
-    ipstack::build_packet(
-        parsed.dst,
-        parsed.src,
-        ipstack::IPPROTO_TCP,
-        &segment,
         HOP_LIMIT,
     )
     .ok()
@@ -972,19 +1005,20 @@ fn flush(inner: &Inner, tcp: &mut ServerTcp) {
 /// One device TCP flow: answer the handshake, route the connection through the
 /// engine and splice the byte stream to the outbound socket.
 async fn tcp_flow(
-    inner: Arc<Inner>,
-    key: FlowKey,
+    registration: TcpFlowRegistration,
     mut tcp: ServerTcp,
     mut rx: mpsc::Receiver<Vec<u8>>,
 ) {
+    let inner = registration.inner.as_ref();
+    let key = registration.key;
     let Some(session) = inner.session() else {
         tcp.reset();
-        flush(&inner, &mut tcp);
+        flush(inner, &mut tcp);
         return;
     };
     // The SYN-ACK goes out before any dial so the device does not retransmit
     // while the outbound is being established.
-    flush(&inner, &mut tcp);
+    flush(inner, &mut tcp);
     let idle_limit = inner.options.tcp_idle;
     let mut idle = Instant::now() + idle_limit;
 
@@ -1001,7 +1035,7 @@ async fn tcp_flow(
         Err(reason) => {
             tracing::warn!(dst = %key.dst, reason, "tunnel destination mapping failed");
             tcp.reset();
-            flush(&inner, &mut tcp);
+            flush(inner, &mut tcp);
             inner.stats.tcp_rejected.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -1014,16 +1048,52 @@ async fn tcp_flow(
 
     // 1. Route the flow (rule -> group -> outbound).
     let mut target = target;
+    let sniffer = &session.runtime.config.sniffer;
+    let mut original_destination = None;
+    if sniffer.wants_tcp(&target.host, key.src.ip(), key.dst.ip(), key.dst.port()) {
+        let mut prefix = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        let sniffed = loop {
+            tcp.append_received_prefix(&mut prefix, crate::sniff::MAX_PREFIX);
+            match sniffer.inspect_tcp(&prefix, key.dst.port()) {
+                crate::sniff::Inspection::Host(host, rewrite) => break Some((host, rewrite)),
+                crate::sniff::Inspection::NoHost => break None,
+                crate::sniff::Inspection::NeedMore => {}
+            }
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(packet)) => {
+                    tcp.on_packet(&packet, Instant::now());
+                    flush(inner, &mut tcp);
+                    if tcp.failure().is_some() { return; }
+                }
+                Ok(None) => return,
+                Err(_) => break None,
+            }
+        };
+        if let Some((host, rewrite)) = sniffed {
+            if !rewrite {
+                original_destination = Some((target.host.clone(), target.ip.or(Some(key.dst.ip()))));
+            }
+            target.host = host;
+            if rewrite {
+                target.ip = None;
+            }
+        }
+    }
     let (route, decision) = match route::decide(&session, &mut target, false).await {
         Ok(pair) => pair,
         Err(failure) => {
             tracing::info!(dst = %key.dst, reason = %failure.reason, "tunnel TCP flow refused");
             tcp.reset();
-            flush(&inner, &mut tcp);
+            flush(inner, &mut tcp);
             inner.stats.tcp_rejected.fetch_add(1, Ordering::Relaxed);
             return;
         }
     };
+    if let Some((host, ip)) = original_destination {
+        target.host = host;
+        target.ip = ip;
+    }
     let host = target.host.clone();
     let ip = target.ip;
 
@@ -1047,23 +1117,23 @@ async fn tcp_flow(
             packet = rx.recv() => match packet {
                 Some(packet) => {
                     tcp.on_packet(&packet, Instant::now());
-                    flush(&inner, &mut tcp);
+                    flush(inner, &mut tcp);
                     if tcp.failure().is_some() {
                         return;
                     }
                 }
                 None => {
                     tcp.reset();
-                    flush(&inner, &mut tcp);
+                    flush(inner, &mut tcp);
                     return;
                 }
             },
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
                 tcp.on_timer(Instant::now());
-                flush(&inner, &mut tcp);
+                flush(inner, &mut tcp);
                 if Instant::now() >= idle {
                     tcp.reset();
-                    flush(&inner, &mut tcp);
+                    flush(inner, &mut tcp);
                     return;
                 }
             },
@@ -1074,7 +1144,7 @@ async fn tcp_flow(
         Err(failure) => {
             tracing::warn!(dst = %key.dst, reason = %failure.reason, "tunnel TCP dial failed");
             tcp.reset();
-            flush(&inner, &mut tcp);
+            flush(inner, &mut tcp);
             return;
         }
     };
@@ -1112,10 +1182,10 @@ async fn tcp_flow(
 
     // 4. Relay.
     let (mut read_half, mut write_half) = tokio::io::split(routed.stream);
-    let mut buffer = vec![0u8; inner.options.buffer_size.max(1)];
+    let buffer_size = inner.options.buffer_size.clamp(1, tcp_server::SEND_BUFFER);
     let mut upstream_half_closed = false;
     loop {
-        flush(&inner, &mut tcp);
+        flush(inner, &mut tcp);
         if tcp.finished() {
             break;
         }
@@ -1131,7 +1201,7 @@ async fn tcp_flow(
             idle = Instant::now() + idle_limit;
             if write_half.write_all(&data).await.is_err() {
                 tcp.reset();
-                flush(&inner, &mut tcp);
+                flush(inner, &mut tcp);
                 break;
             }
             upload.fetch_add(data.len() as u64, Ordering::Relaxed);
@@ -1152,24 +1222,15 @@ async fn tcp_flow(
                 }
                 None => {
                     tcp.reset();
-                    flush(&inner, &mut tcp);
+                    flush(inner, &mut tcp);
                     break;
                 }
             },
-            read = read_half.read(&mut buffer), if tcp.can_accept() => match read {
+            read = read_into_tcp(&mut read_half, &mut tcp, buffer_size), if tcp.can_accept() => match read {
                 Ok(0) => tcp.shutdown(),
                 Ok(read) => {
                     idle = Instant::now() + idle_limit;
                     download.fetch_add(read as u64, Ordering::Relaxed);
-                    let accepted = tcp.enqueue(&buffer[..read]);
-                    if accepted < read {
-                        // The device is not reading: close instead of growing
-                        // an unbounded buffer.
-                        tracing::debug!(dst = %key.dst, "tunnel TCP send buffer full; closing");
-                        tcp.reset();
-                        flush(&inner, &mut tcp);
-                        break;
-                    }
                 }
                 Err(_) => {
                     tcp.shutdown();
@@ -1178,31 +1239,45 @@ async fn tcp_flow(
             _ = tokio::time::sleep_until(timer) => tcp.on_timer(Instant::now()),
             _ = closed.notified() => {
                 tcp.reset();
-                flush(&inner, &mut tcp);
+                flush(inner, &mut tcp);
                 break;
             },
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(idle)) => {
                 tracing::debug!(dst = %key.dst, "tunnel TCP flow idle timeout");
                 tcp.reset();
-                flush(&inner, &mut tcp);
+                flush(inner, &mut tcp);
                 break;
             },
         }
     }
-    // Best effort FIN/RST already emitted; release the flow index so a reload
-    // or a new connection is not blocked by a stale entry.
-    inner
-        .tcp
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&key);
-    inner.stats.tcp_closed.fetch_add(1, Ordering::Relaxed);
+}
+
+async fn read_into_tcp(
+    reader: &mut (impl AsyncRead + Unpin),
+    tcp: &mut ServerTcp,
+    buffer_size: usize,
+) -> io::Result<usize> {
+    // Leave excess data upstream until ACKs free space in the send queue.
+    let limit = buffer_size.min(tcp.send_capacity());
+    poll_fn(|cx| {
+        TCP_READ_BUFFER.with_borrow_mut(|scratch| {
+            if scratch.len() < buffer_size {
+                *scratch = vec![0; buffer_size];
+            }
+            let mut read = ReadBuf::new(&mut scratch[..limit]);
+            ready!(Pin::new(&mut *reader).poll_read(cx, &mut read))?;
+            let accepted = tcp.enqueue(read.filled());
+            debug_assert_eq!(accepted, read.filled().len());
+            Poll::Ready(Ok(accepted))
+        })
+    })
+    .await
 }
 
 /// DNS over the tunnel's own TCP listener (`:53` hijack): read length-prefixed
 /// queries, answer from the configured resolver, never dial.
 async fn dns_tcp_flow(
-    inner: Arc<Inner>,
+    inner: &Inner,
     mut tcp: ServerTcp,
     mut rx: mpsc::Receiver<Vec<u8>>,
     dns: Arc<crate::dns::DnsService>,
@@ -1211,7 +1286,7 @@ async fn dns_tcp_flow(
     let mut pending = Vec::new();
     let mut idle = Instant::now() + idle_limit;
     loop {
-        flush(&inner, &mut tcp);
+        flush(inner, &mut tcp);
         if tcp.finished() || tcp.failure().is_some() {
             break;
         }
@@ -1243,7 +1318,7 @@ async fn dns_tcp_flow(
                 inner.stats.dns_failures.fetch_add(1, Ordering::Relaxed);
                 break;
             }
-            flush(&inner, &mut tcp);
+            flush(inner, &mut tcp);
         }
         let timer = tcp
             .next_timer()
@@ -1258,19 +1333,18 @@ async fn dns_tcp_flow(
                 }
                 None => {
                     tcp.reset();
-                    flush(&inner, &mut tcp);
+                    flush(inner, &mut tcp);
                     break;
                 }
             },
             _ = tokio::time::sleep_until(timer) => tcp.on_timer(Instant::now()),
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(idle)) => {
                 tcp.reset();
-                flush(&inner, &mut tcp);
+                flush(inner, &mut tcp);
                 break;
             },
         }
     }
-    inner.stats.tcp_closed.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The UDP data plane: one task owns the DIRECT sockets, the associations and
@@ -1302,10 +1376,6 @@ async fn udp_task(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.values().copied().min()
-        };
-        let timer = match next_expiry {
-            Some(at) => at,
-            None => tokio::time::Instant::now() + Duration::from_secs(3600),
         };
         tokio::select! {
             biased;
@@ -1342,27 +1412,27 @@ async fn udp_task(
                 }
                 None => return,
             },
-            _ = tokio::time::sleep_until(timer) => {
+            _ = async {
+                match next_expiry {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
                 let now = tokio::time::Instant::now();
-                let live: std::collections::HashSet<UdpFlowKey> = {
-                    let mut guard = flows
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    guard.retain(|_, deadline| *deadline > now);
-                    guard.keys().copied().collect()
-                };
+                let mut live = flows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                live.retain(|_, deadline| *deadline > now);
                 // Release expired per-flow sockets and associations with the
                 // flow entry: a later flow to the same destination starts a
                 // fresh transport instead of inheriting a stale generation.
                 direct.retain(|key, entry| {
-                    if live.contains(key) {
+                    if live.contains_key(key) {
                         true
                     } else {
                         entry.1.abort();
                         false
                     }
                 });
-                associations.retain(|key, _| live.contains(key));
+                associations.retain(|key, _| live.contains_key(key));
             },
         }
     }
@@ -1422,15 +1492,26 @@ async fn handle_datagram(
     };
     match route {
         route::Route::Direct => {
+            associations.remove(&key);
             if !direct.contains_key(&key) {
-                let ipv4 = datagram.dst.is_ipv4();
+                let address = match crate::engine::direct_udp_destination(
+                    session, &target.host, target.ip, datagram.dst.port(),
+                ).await {
+                    Ok(address) => address,
+                    Err(error) => {
+                        tracing::warn!(dst = %datagram.dst, %error, "UDP DIRECT resolution failed");
+                        inner.stats.dropped_inbound.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
+                let ipv4 = address.is_ipv4();
                 let bind = if ipv4 { "0.0.0.0:0" } else { "[::]:0" };
                 match crate::outbound::bind_udp_str(bind).await {
                     Ok(socket) => {
                         // Connect the socket to the flow's remote: the kernel
                         // then only delivers packets from that remote, and the
                         // reader task owns exactly this device flow.
-                        if let Err(error) = socket.connect(datagram.dst).await {
+                        if let Err(error) = socket.connect(address).await {
                             tracing::warn!(dst = %datagram.dst, %error, "UDP DIRECT connect failed");
                             inner.stats.dropped_inbound.fetch_add(1, Ordering::Relaxed);
                             return;
@@ -1453,7 +1534,13 @@ async fn handle_datagram(
             }
         }
         route::Route::Proxy { proxy, .. } => {
+            if let Some((_, reader)) = direct.remove(&key) {
+                reader.abort();
+            }
             let name = proxy.name.clone();
+            if associations.get(&key).is_some_and(|(active, sender)| active != &name || sender.is_closed()) {
+                associations.remove(&key);
+            }
             let sender = match associations.get(&key) {
                 Some((_, sender)) => sender.clone(),
                 None => {

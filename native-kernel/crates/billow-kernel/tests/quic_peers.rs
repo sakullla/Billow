@@ -524,7 +524,7 @@ fn limits() -> Limits {
 
 fn start_kernel(peer_port: u16, password: &str) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: {UUID}, password: {password}, skip-cert-verify: true}}\nrules:\n  - MATCH,t1\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: {UUID}, password: {password}, skip-cert-verify: true}}\nrules:\n  - MATCH,t1\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
@@ -610,7 +610,7 @@ async fn tuic_v5_wrong_password_fails_without_forwarding() {
 
 fn start_tuic_v4_kernel(peer_port: u16, token: &str, fast_open: bool) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, token: {token}, skip-cert-verify: true, fast-open: {fast_open}}}\nrules:\n  - MATCH,t1\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, token: {token}, skip-cert-verify: true, fast-open: {fast_open}}}\nrules:\n  - MATCH,t1\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
@@ -988,7 +988,7 @@ fn udp_exchange(relay: SocketAddr, target: SocketAddr, payload: &[u8]) -> Vec<u8
 
 fn start_hysteria_kernel(peer_port: u16, auth: &str, extra: &str) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: {peer_port}, up: 50 Mbps, down: 50 Mbps, auth-str: \"{auth}\", skip-cert-verify: true{extra}}}\nrules:\n  - MATCH,h1\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: h1, type: hysteria, server: 127.0.0.1, port: {peer_port}, up: 50 Mbps, down: 50 Mbps, auth-str: \"{auth}\", skip-cert-verify: true{extra}}}\nrules:\n  - MATCH,h1\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
@@ -1176,7 +1176,7 @@ async fn tuic_v5_request_timeout_bounds_stream_open() {
     let cert = make_cert("tuic-timeout");
     let peer_port = spawn_tuic_blocked_peer(cert).await;
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: {UUID}, password: {PASSWORD}, request-timeout: 100, skip-cert-verify: true}}\nrules:\n  - MATCH,t1\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: t1, type: tuic, server: 127.0.0.1, port: {peer_port}, uuid: {UUID}, password: {PASSWORD}, request-timeout: 100, skip-cert-verify: true}}\nrules:\n  - MATCH,t1\n",
         free_port()
     );
     let (mut kernel, warnings) =
@@ -1735,7 +1735,7 @@ async fn spawn_masque_peer(mode: MasqueMode, cert: Cert) -> (u16, PeerLog) {
 
 fn start_masque_kernel(peer_port: u16, skip_verify: bool, udp: bool) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: {udp}, skip-cert-verify: {skip_verify}}}\nrules:\n  - MATCH,mq\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: {udp}, skip-cert-verify: {skip_verify}}}\nrules:\n  - MATCH,mq\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
@@ -2916,7 +2916,7 @@ fn warp_endpoint_public_key(cert: &Cert) -> String {
 
 fn start_warp_kernel(peer_port: u16, endpoint_key: &str, extra: &str) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits())
@@ -3218,7 +3218,7 @@ fn start_warp_kernel_with_limits(
     limits: Limits,
 ) -> Kernel {
     let yaml = format!(
-        "mixed-port: {}\nlog-level: warn\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
+        "mixed-port: {}\nlog-level: warn\nprofile: {{store-selected: false}}\nproxies:\n  - {{name: mq, type: masque, server: 127.0.0.1, port: {peer_port}, udp: true, private-key: '{WARP_TEST_KEY}', public-key: '{endpoint_key}', ip: 172.16.0.2, ipv6: fd00::2{extra}}}\nrules:\n  - MATCH,mq\n",
         free_port()
     );
     let (kernel, warnings) = Kernel::start_from_yaml(&yaml, None, limits)

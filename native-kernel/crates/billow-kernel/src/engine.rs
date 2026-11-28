@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, Matcher, NetworkKind};
+use crate::config::{Action, Config, ConfigError, InType, LoadedConfig, Matcher, NetworkKind, RoutingMode};
 use crate::dns::{DnsRoute, DnsService, HostValue, HostsTable, RouteStreamBox};
 use crate::groups::{GroupRegistry, Selected};
 use crate::identity::Identity;
@@ -237,6 +237,7 @@ impl Drop for ConnectionGuard {
 /// their rules, providers and DNS objects are reclaimed exactly then (R4).
 pub(crate) struct RuntimeSnapshot {
     pub config: Arc<Config>,
+    mode: AtomicU8,
     pub rules: Arc<RuleSet>,
     pub providers: Arc<crate::provider::RuleProviders>,
     pub groups: Arc<GroupRegistry>,
@@ -255,6 +256,18 @@ pub(crate) struct RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
+    pub(crate) fn mode(&self) -> RoutingMode {
+        match self.mode.load(Ordering::Relaxed) {
+            mode if mode == RoutingMode::Direct as u8 => RoutingMode::Direct,
+            mode if mode == RoutingMode::Global as u8 => RoutingMode::Global,
+            _ => RoutingMode::Rule,
+        }
+    }
+
+    pub(crate) fn set_mode(&self, mode: RoutingMode) {
+        self.mode.store(mode as u8, Ordering::Relaxed);
+    }
+
     pub fn listen_port(&self) -> u16 {
         self.config.listen.port()
     }
@@ -364,6 +377,9 @@ impl ControlCore {
                 "external-controller/external-controller-unix/external-controller-tls/secret/external-controller-cors cannot change on reload; restart the kernel"
                     .to_string(),
             )));
+        }
+        if let Some(dns) = &current.dns {
+            dns.persist_fake_ip();
         }
         let (next, _) = build_runtime(
             &loaded,
@@ -782,6 +798,9 @@ impl Kernel {
                 join_error = Some(io::Error::other("kernel thread panicked"));
             }
         }
+        if let Some(dns) = &self.control.runtime.snapshot().dns {
+            dns.persist_fake_ip();
+        }
         // A mux session holds a socket and background tasks created by this
         // engine; do not let a later engine in the same process reuse it.
         crate::outbound::sudoku::mux::close_all();
@@ -878,6 +897,7 @@ fn build_runtime(
             tls.clone(),
             &providers,
             &mut warnings,
+            if config.profile.store_fake_ip { options.cache_dir.as_ref().map(|dir| dir.join("fake-ip.json")) } else { None },
         )?))
     } else {
         if config.dns.listen.is_some() {
@@ -913,13 +933,15 @@ fn build_runtime(
         dns.set_route(Arc::new(EngineRoute {
             config: config.clone(),
             rules: rules.clone(),
-            groups: groups.clone(),
+            groups: Arc::downgrade(&groups),
             tls: tls.clone(),
             timeout: limits.dial_timeout,
         }));
     }
+    let mode = config.mode.as_deref().and_then(RoutingMode::parse).unwrap_or(RoutingMode::Rule);
     let snapshot = Arc::new(RuntimeSnapshot {
         config,
+        mode: AtomicU8::new(mode as u8),
         rules,
         providers,
         groups,
@@ -1036,6 +1058,11 @@ async fn listen_loop(
             }
             accepted = listener.accept(), if has_session_slot(context) => {
                 let (stream, peer) = accepted?;
+                // Use the same generation for admission and the whole session.
+                let runtime = shared.snapshot();
+                if !runtime.config.allows_inbound(peer.ip()) {
+                    continue;
+                }
                 session_id += 1;
                 context.counters.accepted.fetch_add(1, Ordering::Relaxed);
                 context.counters.active.fetch_add(1, Ordering::Relaxed);
@@ -1043,7 +1070,7 @@ async fn listen_loop(
                 // Snapshot the generation at accept time: a concurrent reload
                 // affects the next connection, never one already in flight.
                 let session = Arc::new(SessionContext {
-                    runtime: shared.snapshot(),
+                    runtime,
                     limits: context.limits,
                     counters: context.counters.clone(),
                     connections: context.connections.clone(),
@@ -1126,7 +1153,9 @@ enum SessionOutcome {
 struct EngineRoute {
     config: Arc<Config>,
     rules: Arc<RuleSet>,
-    groups: Arc<GroupRegistry>,
+    // GroupRegistry holds this DNS service for health probes. Keep the
+    // reverse reference weak so a replaced generation can be reclaimed.
+    groups: std::sync::Weak<GroupRegistry>,
     tls: Arc<ClientTls>,
     timeout: Duration,
 }
@@ -1143,16 +1172,36 @@ impl DnsRoute for EngineRoute {
                 .with_port(port)
                 .with_network(NetworkKind::Tcp);
             let decision = self.rules.evaluate(&target);
-            if matches!(decision.action, Action::Reject | Action::RejectDrop) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("DNS upstream {host}:{port} rejected by rule {decision}"),
-                ));
-            }
-            let selected = self
-                .groups
-                .resolve_action(decision.rule.action, &target, true)
-                .map_err(io::Error::other)?;
+            let selected = self.groups()?.resolve_action(decision.action, &target, true).map_err(io::Error::other)?;
+            self.connect_selected(selected, host, port).await
+        })
+    }
+
+    fn connect_named<'a>(
+        &'a self, name: &'a str, host: &'a str, port: u16,
+    ) -> crate::dns::BoxFuture<'a, io::Result<RouteStreamBox>> {
+        Box::pin(async move {
+            let target = Target::new(host, host.parse().ok())
+                .with_port(port).with_network(NetworkKind::Tcp);
+            let action = if let Some(index) = self.config.proxy_groups.iter().position(|group| group.name == name) {
+                Action::Group(index)
+            } else if let Some(index) = self.config.proxies.iter().position(|proxy| proxy.name == name) {
+                Action::Proxy(index)
+            } else {
+                return Err(io::Error::new(io::ErrorKind::NotFound, format!("DNS proxy or group '{name}' does not exist")));
+            };
+            let selected = self.groups()?.resolve_action(action, &target, true).map_err(io::Error::other)?;
+            self.connect_selected(selected, host, port).await
+        })
+    }
+}
+
+impl EngineRoute {
+    fn groups(&self) -> io::Result<Arc<GroupRegistry>> {
+        self.groups.upgrade().ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "DNS route generation expired"))
+    }
+
+    async fn connect_selected(&self, selected: Selected, host: &str, port: u16) -> io::Result<RouteStreamBox> {
             match selected {
                 Selected::Direct => {
                     let stream = crate::outbound::connect_bound_str(&host, port).await?;
@@ -1180,7 +1229,6 @@ impl DnsRoute for EngineRoute {
                     format!("DNS upstream {host}:{port} rejected by group"),
                 )),
             }
-        })
     }
 }
 
@@ -1245,6 +1293,19 @@ async fn resolve_for_rules(context: &SessionContext, host: &str) -> Option<IpAdd
 /// by [`RuleSet::evaluate_step`]). `target.ip` is updated when a resolution
 /// happens so group resolution sees the same address.
 pub(crate) async fn rule_decision(context: &SessionContext, target: &mut Target) -> RuleMatch {
+    let action = match context.runtime.mode() {
+        RoutingMode::Rule => None,
+        RoutingMode::Direct => Some(Action::Direct),
+        RoutingMode::Global => Some(context.runtime.config.proxy_groups.iter()
+            .position(|group| group.name == "GLOBAL").map_or(Action::Direct, Action::Group)),
+    };
+    if let Some(action) = action {
+        let mut decision = RuleSet::fallthrough_match();
+        decision.action = action;
+        decision.rule.action = action;
+        return decision;
+    }
+
     // Pinned `resolveMetadata` applies a hosts entry to `DstIP` before the
     // first rule runs, independently of `no-resolve`.
     if target.ip.is_none() && !target.host.is_empty() {
@@ -1914,6 +1975,9 @@ async fn serve_udp_associate_inner(
     let mut gost_target: Option<outbound::Target> = None;
     let mut trusttunnel: Option<outbound::trusttunnel::TrustTunnelUdp> = None;
     let mut sudoku: Option<outbound::udp::SudokuUdp> = None;
+    let mut snell: Option<(String, outbound::snell_v6::SnellUdp)> = None;
+    let mut snell_buf: Option<Vec<u8>> = None;
+    let mut snell_eof = false;
     let mut masque: Option<outbound::masque::MasqueUdpAssociation> = None;
     let mut shadowquic: Option<outbound::shadowquic::ShadowQuicUdp> = None;
     let mut hysteria: Option<outbound::udp::HysteriaUdp> = None;
@@ -2020,6 +2084,11 @@ async fn serve_udp_associate_inner(
             trusttunnel = None;
             trusttunnel_buf = None;
             trusttunnel_eof = false;
+        }
+        if snell_eof {
+            snell = None;
+            snell_buf = None;
+            snell_eof = false;
         }
         if sudoku_eof {
             sudoku = None;
@@ -2575,6 +2644,25 @@ async fn serve_udp_associate_inner(
                                 .expect("connected above")
                                 .send(&datagram.target, payload)
                                 .await
+                        }
+                        crate::proxies::Protocol::Snell(option) if option.udp => {
+                            if snell.as_ref().is_none_or(|(name, _)| name != &proxy.name) {
+                                let connect = outbound::with_dialer(
+                                    proxy.dialer.clone(), outbound::snell_v6::SnellUdp::connect(option),
+                                );
+                                match tokio::time::timeout(limits.dial_timeout, connect).await {
+                                    Ok(Ok(association)) => {
+                                        snell = Some((proxy.name.clone(), association));
+                                        snell_buf = Some(vec![0u8; outbound::udp::MAX_DATAGRAM]);
+                                    }
+                                    _ => {
+                                        warn!(session = id, proxy = %proxy.name, "Snell v6 UDP association failed");
+                                        failed = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                            snell.as_mut().expect("connected above").1.send(&outgoing, payload).await
                         }
                         crate::proxies::Protocol::Sudoku(option) if option.udp => {
                             if sudoku.is_none() {
@@ -3159,6 +3247,23 @@ async fn serve_udp_associate_inner(
                         let _ = relay.send_to(&reply, client_udp).await;
                         counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
                     }
+                }
+            }
+            received = async {
+                match (snell.as_mut(), snell_buf.as_mut()) {
+                    (Some((_, association)), Some(buffer)) => association.recv(buffer.as_mut_slice()).await,
+                    _ => std::future::pending().await,
+                }
+            }, if snell.is_some() && !snell_eof => {
+                if received.is_err() {
+                    snell_eof = true;
+                    failed = true;
+                }
+                if let (Ok(Some((from, read))), Some(buffer), Some(client_udp)) = (received, snell_buf.as_ref(), client_udp) {
+                    let mut reply = outbound::udp::reply_header(&from);
+                    reply.extend_from_slice(&buffer[..read]);
+                    let _ = relay.send_to(&reply, client_udp).await;
+                    counters.bytes_down.fetch_add(read as u64, Ordering::Relaxed);
                 }
             }
             received = async {

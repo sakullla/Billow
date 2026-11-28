@@ -44,6 +44,7 @@ pub mod identity;
 pub mod inbound;
 pub mod provider;
 pub mod rules;
+mod sniff;
 
 pub use config::{
     load_config, Action, Config, ConfigError, ControllerConfig, CorsConfig, ExpectedStatus,

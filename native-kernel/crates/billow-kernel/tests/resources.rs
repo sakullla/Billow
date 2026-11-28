@@ -887,14 +887,8 @@ rules:
 fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
     let yaml = billow_effective_yaml(free_port());
 
-    // T25 implements the control API, so the remaining named rejection in the
-    // full artifact is the enabled sniffer (`tun` is inert while disabled and
-    // DNS/hosts are T22).
-    let error = billow_kernel::load_config(&yaml, "effective.yaml")
-        .err()
-        .expect("the enabled sniffer must be rejected");
-    assert!(error.to_string().contains("sniffer"), "{error}");
-
+    billow_kernel::load_config(&yaml, "effective.yaml")
+        .expect("Billow's effective configuration loads with sniffing enabled");
     // The controller listener is accepted and recorded.
     let yaml = format!(
         "mixed-port: {}\nexternal-controller: 127.0.0.1:49152\nsecret: local\n",
@@ -922,16 +916,8 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
         "mixed-port: {}\ndns:\n  enable: true\n  nameserver: ['quic://dns.example']\n",
         free_port()
     );
-    let error = billow_kernel::load_config(&yaml, "effective.yaml")
-        .err()
-        .expect("DoQ must be rejected");
-    assert!(error.to_string().contains("DoQ"), "{error}");
-    // `sniffer` is still a named rejection; T34 `tun` loads strictly instead.
-    let yaml = format!("mixed-port: {}\nsniffer: {{enable: true}}\n", free_port());
-    let error = billow_kernel::load_config(&yaml, "effective.yaml")
-        .err()
-        .expect("enabled sniffer must be rejected");
-    assert!(error.to_string().contains("sniffer"), "{error}");
+    let loaded = billow_kernel::load_config(&yaml, "effective.yaml").expect("DoQ loads");
+    assert_eq!(loaded.config.dns.nameserver[0].port, 853);
     let yaml = format!("mixed-port: {}\ntun: {{enable: true}}\n", free_port());
     let loaded = billow_kernel::load_config(&yaml, "effective.yaml")
         .expect("an enabled tun block now loads (desktop runner owns the device)");
@@ -943,7 +929,8 @@ fn billow_effective_configuration_registers_cross_task_keys_explicitly() {
     );
     let loaded = billow_kernel::load_config(&groups_only, "effective.yaml")
         .expect("proxy-groups subset loads");
-    assert_eq!(loaded.config.proxy_groups.len(), 1);
+    assert_eq!(loaded.config.proxy_groups.len(), 2);
+    assert_eq!(loaded.config.proxy_groups[1].name, "GLOBAL");
     assert_eq!(
         loaded.config.rules[0].action,
         Action::Group(0),
@@ -986,7 +973,8 @@ fn billow_effective_configuration_rule_subset_keeps_override_order() {
     assert_eq!(loaded.config.rules.len(), 4);
     assert_eq!(loaded.config.rule_providers.len(), 1);
     assert_eq!(loaded.config.proxies.len(), 1);
-    assert_eq!(loaded.config.proxy_groups.len(), 1);
+    assert_eq!(loaded.config.proxy_groups.len(), 2);
+    assert_eq!(loaded.config.proxy_groups[1].name, "GLOBAL");
     assert_eq!(loaded.config.listen.port(), mixed_port);
     let kernel = start(&subset, None);
     assert_eq!(domain_eval(&kernel, "x.override.example"), Action::Reject);

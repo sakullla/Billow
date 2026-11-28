@@ -34,7 +34,7 @@ use tokio::net::UdpSocket;
 use super::tls::ClientTls;
 use super::{connect_tcp, handshake, BoxStream, DialError, SocksAddr, Target};
 use crate::keys::trojan_password_key;
-use crate::proxies::{ShadowsocksOutbound, TrojanOutbound};
+use crate::proxies::{ShadowsocksCipher, ShadowsocksOutbound, TrojanOutbound};
 
 /// Upper bound for one UDP datagram (the IPv4/IPv6 payload limit).
 pub const MAX_DATAGRAM: usize = 65_535;
@@ -241,10 +241,15 @@ impl PacketTransport {
     }
 }
 
-/// Shadowsocks AEAD-2017 datagrams for one association.
+/// Shadowsocks datagrams for one association.
 pub struct SsUdp {
     transport: PacketTransport,
-    codec: super::shadowsocks::SsDatagram,
+    codec: SsUdpCodec,
+}
+
+enum SsUdpCodec {
+    Aead2017(super::shadowsocks::SsDatagram),
+    Aead2022(Box<super::shadowsocks::Ss2022Datagram>),
 }
 
 impl SsUdp {
@@ -313,21 +318,29 @@ impl SsUdp {
                 )))
             }
         };
-        Ok(SsUdp {
-            transport,
-            codec: super::shadowsocks::SsDatagram {
-                cipher: option.cipher,
+        let codec = match option.cipher {
+            ShadowsocksCipher::Aead2017(cipher) => SsUdpCodec::Aead2017(super::shadowsocks::SsDatagram {
+                cipher,
                 password: option.password.expose().to_string(),
-            },
-        })
+            }),
+            ShadowsocksCipher::Aead2022(cipher) => SsUdpCodec::Aead2022(Box::new(
+                super::shadowsocks::Ss2022Datagram::new(option, cipher)
+                    .map_err(|err| handshake("ss udp", err))?,
+            )),
+        };
+        Ok(SsUdp { transport, codec })
     }
 
     /// Seal `target || payload` into one datagram and send it.
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
-        let mut plain = address_header(target);
-        plain.extend_from_slice(payload);
-        let packet = self.codec.encode(&plain);
-        self.transport.send(&packet).await
+        match &mut self.codec {
+            SsUdpCodec::Aead2017(codec) => {
+                let mut plain = address_header(target);
+                plain.extend_from_slice(payload);
+                self.transport.send(&codec.encode(&plain)).await
+            }
+            SsUdpCodec::Aead2022(codec) => self.transport.send(&codec.encode(target, payload)?).await,
+        }
     }
 
     /// Receive and open one datagram; returns the sender and the payload.
@@ -335,10 +348,13 @@ impl SsUdp {
         let Some(read) = self.transport.recv(buffer).await? else {
             return Ok(None);
         };
-        let plain = match self.codec.decode(&buffer[..read]) {
-            Ok(plain) => plain,
-            // A datagram from the wrong key (or a tampered one) is dropped.
-            Err(_) => return Ok(None),
+        let plain = match &mut self.codec {
+            SsUdpCodec::Aead2017(codec) => match codec.decode(&buffer[..read]) {
+                Ok(plain) => plain,
+                // Drop datagrams that fail authentication.
+                Err(_) => return Ok(None),
+            },
+            SsUdpCodec::Aead2022(codec) => return Ok(codec.decode(&mut buffer[..read])),
         };
         let Some((target, header)) = parse_address(&plain, 0) else {
             return Ok(None);
@@ -815,18 +831,27 @@ pub(crate) async fn server_stream(
 /// network | address | u16 len | data`); packet-addr frames are the 2-byte
 /// length records of the vless `PacketConn` with the destination inside the
 /// payload.
-pub struct VlessUdp {
-    stream: BoxStream,
+pub struct VlessUdp(VlessUdpReader, VlessUdpWriter);
+
+pub(crate) struct VlessUdpWriter {
+    stream: tokio::io::WriteHalf<BoxStream>,
     mode: VlessUdpMode,
-    sid: u16,
     first: bool,
+    frame: Vec<u8>,
+}
+
+pub(crate) struct VlessUdpReader {
+    stream: tokio::io::ReadHalf<BoxStream>,
+    mode: VlessUdpMode,
     bound: Option<Target>,
+    extra: Vec<u8>,
     /// The VLESS response header (`version || addon length || addon`) arrives
     /// with the first server write; the pinned client consumes it lazily on its
     /// first read, so the association does the same.
     response_pending: bool,
 }
 
+#[derive(Clone, Copy)]
 enum VlessUdpMode {
     Xudp,
     PacketAddr,
@@ -898,23 +923,35 @@ impl VlessUdp {
             .flush()
             .await
             .map_err(|e| handshake("vless-udp", e))?;
-        Ok(VlessUdp {
-            stream,
-            mode,
-            sid: 1,
-            first: true,
-            bound: None,
-            response_pending: true,
-        })
+        let (read, write) = tokio::io::split(stream);
+        Ok(VlessUdp(
+            VlessUdpReader { stream: read, mode, bound: None, extra: Vec::new(), response_pending: true },
+            VlessUdpWriter { stream: write, mode, first: true, frame: Vec::new() },
+        ))
+    }
+
+    pub(crate) fn into_halves(self) -> (VlessUdpReader, VlessUdpWriter) {
+        (self.0, self.1)
     }
 
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        self.1.send(target, payload).await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        self.0.recv(buffer).await
+    }
+}
+
+impl VlessUdpWriter {
+    pub(crate) async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        let frame = &mut self.frame;
+        frame.clear();
         match self.mode {
             VlessUdpMode::Xudp => {
                 let addr = vmess_address(target);
-                let mut frame = Vec::with_capacity(2 + 5 + addr.len() + 2 + payload.len());
                 frame.extend_from_slice(&((5 + addr.len()) as u16).to_be_bytes());
-                frame.extend_from_slice(&self.sid.to_be_bytes());
+                frame.extend_from_slice(&1u16.to_be_bytes());
                 frame.push(if self.first { 1 } else { 2 }); // new | keep
                 frame.push(1); // option data
                 frame.push(2); // network UDP
@@ -922,7 +959,7 @@ impl VlessUdp {
                 frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
                 frame.extend_from_slice(payload);
                 self.first = false;
-                self.stream.write_all(&frame).await?;
+                self.stream.write_all(frame).await?;
                 self.stream.flush().await
             }
             VlessUdpMode::PacketAddr => {
@@ -932,18 +969,22 @@ impl VlessUdp {
                     Ok(addr) => addr,
                     Err(error) => return Err(error),
                 };
-                let mut plain = packet_addr_bytes(addr.ip(), addr.port());
-                plain.extend_from_slice(payload);
-                let mut frame = Vec::with_capacity(2 + plain.len());
-                frame.extend_from_slice(&(plain.len() as u16).to_be_bytes());
-                frame.extend_from_slice(&plain);
-                self.stream.write_all(&frame).await?;
+                let addr = packet_addr_bytes(addr.ip(), addr.port());
+                let length = u16::try_from(addr.len() + payload.len()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "VLESS packet-addr datagram too long")
+                })?;
+                frame.extend_from_slice(&length.to_be_bytes());
+                frame.extend_from_slice(&addr);
+                frame.extend_from_slice(payload);
+                self.stream.write_all(frame).await?;
                 self.stream.flush().await
             }
         }
     }
+}
 
-    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+impl VlessUdpReader {
+    pub(crate) async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
         if self.response_pending {
             let mut header = [0u8; 2];
             if self.stream.read_exact(&mut header).await.is_err() {
@@ -970,25 +1011,20 @@ impl VlessUdp {
                     return Ok(None);
                 }
                 let length = u16::from_be_bytes(length) as usize;
-                if length > MAX_DATAGRAM {
+                if length > buffer.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "vless packet-addr record too long",
                     ));
                 }
-                let mut plain = vec![0u8; length];
-                if self.stream.read_exact(&mut plain).await.is_err() {
+                if self.stream.read_exact(&mut buffer[..length]).await.is_err() {
                     return Ok(None);
                 }
-                let Some((target, header)) = parse_packet_address(&plain, 0) else {
+                let Some((target, header)) = parse_packet_address(&buffer[..length], 0) else {
                     return Ok(None);
                 };
-                let payload = &plain[header..];
-                if payload.len() > buffer.len() {
-                    return Ok(None);
-                }
-                buffer[..payload.len()].copy_from_slice(payload);
-                Ok(Some((target, payload.len())))
+                buffer.copy_within(header..length, 0);
+                Ok(Some((target, length - header)))
             }
             VlessUdpMode::Xudp => loop {
                 let mut header = [0u8; 6];
@@ -1000,13 +1036,13 @@ impl VlessUdp {
                 let option = header[5];
                 let mut target: Option<Target> = None;
                 if length > 4 {
-                    let mut extra = vec![0u8; length - 4];
-                    if self.stream.read_exact(&mut extra).await.is_err() {
+                    self.extra.resize(length - 4, 0);
+                    if self.stream.read_exact(&mut self.extra).await.is_err() {
                         return Ok(None);
                     }
                     // extra = network(1) + vmess address (port first).
-                    if extra[0] == 2 {
-                        target = parse_vmess_address(&extra[1..]);
+                    if self.extra[0] == 2 {
+                        target = parse_vmess_address(&self.extra[1..]);
                     }
                 }
                 if status == 3 {
@@ -1215,7 +1251,7 @@ impl AnytlsUot {
                 read,
                 bound: self.bound,
             },
-            AnyUotWriter { write },
+            AnyUotWriter { write, frame: Vec::new() },
         )
     }
 }
@@ -1249,14 +1285,15 @@ impl AnyUotReader {
 /// Write half of one destination-bound AnyTLS UoT stream.
 pub struct AnyUotWriter {
     write: tokio::io::WriteHalf<super::anytls::AnyUotStream>,
+    frame: Vec<u8>,
 }
 
 impl AnyUotWriter {
     pub async fn send(&mut self, payload: &[u8]) -> io::Result<()> {
-        let mut frame = Vec::with_capacity(2 + payload.len());
-        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        frame.extend_from_slice(payload);
-        self.write.write_all(&frame).await?;
+        self.frame.clear();
+        self.frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        self.frame.extend_from_slice(payload);
+        self.write.write_all(&self.frame).await?;
         self.write.flush().await
     }
 }
@@ -1264,15 +1301,25 @@ impl AnyUotWriter {
 /// VMess UDP association: XUDP (mux frames), packet-addr (magic destination
 /// plus the ip:port inside the record) or plain `command 2` bound to one
 /// destination, matching the pinned `NewVmess` resolution.
-pub struct VmessUdp {
-    packet: super::vmess::VmessPacket,
+pub struct VmessUdp(VmessUdpReader, VmessUdpWriter);
+
+pub(crate) struct VmessUdpWriter {
+    packet: super::vmess::VmessPacketWriter,
     mode: VmessUdpMode,
     bound: Target,
-    sid: u16,
     first: bool,
-    read_buf: Vec<u8>,
+    frame: Vec<u8>,
 }
 
+pub(crate) struct VmessUdpReader {
+    packet: super::vmess::VmessPacketReader,
+    mode: VmessUdpMode,
+    bound: Target,
+    read_buf: Vec<u8>,
+    record: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
 enum VmessUdpMode {
     Xudp,
     PacketAddr,
@@ -1315,30 +1362,42 @@ impl VmessUdp {
                 super::vmess::dial_packet(option, target, via, timeout, tls).await?
             }
         };
-        Ok(VmessUdp {
-            packet,
-            mode,
-            bound: target.clone(),
-            sid: 1,
-            first: true,
-            read_buf: Vec::new(),
-        })
+        let (read, write) = packet.into_halves();
+        Ok(VmessUdp(
+            VmessUdpReader { packet: read, mode, bound: target.clone(), read_buf: Vec::new(), record: Vec::new() },
+            VmessUdpWriter { packet: write, mode, bound: target.clone(), first: true, frame: Vec::new() },
+        ))
     }
 
     /// Split a plain (`command 2`) association into independent halves, one
     /// per destination in the engine's map.
     pub fn into_plain_halves(self) -> (super::vmess::VmessPacketReader, super::vmess::VmessPacketWriter) {
-        debug_assert!(matches!(self.mode, VmessUdpMode::Plain));
-        self.packet.into_halves()
+        debug_assert!(matches!(self.0.mode, VmessUdpMode::Plain));
+        (self.0.packet, self.1.packet)
+    }
+
+    pub(crate) fn into_halves(self) -> (VmessUdpReader, VmessUdpWriter) {
+        (self.0, self.1)
     }
 
     pub async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
+        self.1.send(target, payload).await
+    }
+
+    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+        self.0.recv(buffer).await
+    }
+}
+
+impl VmessUdpWriter {
+    pub(crate) async fn send(&mut self, target: &Target, payload: &[u8]) -> io::Result<()> {
         match self.mode {
             VmessUdpMode::Xudp => {
                 let addr = vmess_address(target);
-                let mut frame = Vec::with_capacity(2 + 5 + addr.len() + 2 + payload.len());
+                let frame = &mut self.frame;
+                frame.clear();
                 frame.extend_from_slice(&((5 + addr.len()) as u16).to_be_bytes());
-                frame.extend_from_slice(&self.sid.to_be_bytes());
+                frame.extend_from_slice(&1u16.to_be_bytes());
                 frame.push(if self.first { 1 } else { 2 });
                 frame.push(1);
                 frame.push(2);
@@ -1346,7 +1405,7 @@ impl VmessUdp {
                 frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
                 frame.extend_from_slice(payload);
                 self.first = false;
-                self.packet.send(&frame).await
+                self.packet.send(frame).await
             }
             VmessUdpMode::PacketAddr => {
                 let addr = resolve(target).await?;
@@ -1366,7 +1425,10 @@ impl VmessUdp {
         }
     }
 
-    pub async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
+}
+
+impl VmessUdpReader {
+    pub(crate) async fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<(Target, usize)>> {
         match self.mode {
             VmessUdpMode::Plain => {
                 return self
@@ -1376,26 +1438,25 @@ impl VmessUdp {
                     .map(|read| read.map(|len| (self.bound.clone(), len)))
             }
             VmessUdpMode::PacketAddr => {
-                let mut record = vec![0u8; MAX_DATAGRAM];
-                let Some(read) = self.packet.recv(&mut record).await? else {
+                let Some(read) = self.packet.recv(buffer).await? else {
                     return Ok(None);
                 };
-                let Some((target, header)) = parse_packet_address(&record[..read], 0) else {
+                let Some((target, header)) = parse_packet_address(&buffer[..read], 0) else {
                     return Ok(None);
                 };
-                let payload = &record[header..read];
-                buffer[..payload.len()].copy_from_slice(payload);
-                return Ok(Some((target, payload.len())));
+                buffer.copy_within(header..read, 0);
+                return Ok(Some((target, read - header)));
             }
             VmessUdpMode::Xudp => loop {
                 if let Some(result) = self.take_xudp_frame(buffer)? {
                     return Ok(Some(result));
                 }
-                let mut record = vec![0u8; MAX_DATAGRAM];
-                let Some(read) = self.packet.recv(&mut record).await? else {
+                // A VMess body record is limited to 16 KiB plus framing.
+                self.record.resize(super::vmess::MAX_RECORD, 0);
+                let Some(read) = self.packet.recv(&mut self.record).await? else {
                     return Ok(None);
                 };
-                self.read_buf.extend_from_slice(&record[..read]);
+                self.read_buf.extend_from_slice(&self.record[..read]);
                 if self.read_buf.len() > 8 * MAX_DATAGRAM {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1437,14 +1498,15 @@ impl VmessUdp {
             } else {
                 None
             };
-            let payload = self.read_buf[cursor..cursor + data_len].to_vec();
-            self.read_buf.drain(..cursor + data_len);
+            let end = cursor + data_len;
             if status != 2 || option & 1 == 0 {
+                self.read_buf.drain(..end);
                 continue;
             }
-            let target = target.or_else(|| Some(self.bound.clone())).unwrap();
-            let len = payload.len().min(buffer.len());
-            buffer[..len].copy_from_slice(&payload[..len]);
+            let target = target.unwrap_or_else(|| self.bound.clone());
+            let len = data_len.min(buffer.len());
+            buffer[..len].copy_from_slice(&self.read_buf[cursor..cursor + len]);
+            self.read_buf.drain(..end);
             return Ok(Some((target, len)));
         }
     }
@@ -1454,7 +1516,7 @@ impl VmessUdp {
 /// UoT magic destination, then v2 (`u16 length`) or legacy v1 (address +
 /// `u16 length`) frames.
 pub struct SsUot {
-    stream: super::shadowsocks::SsStream<BoxStream>,
+    stream: BoxStream,
     version: u8,
     bound: Target,
 }
@@ -1477,12 +1539,7 @@ impl SsUot {
             },
             port: 0,
         };
-        let mut stream = super::shadowsocks::connect(
-            server,
-            option.cipher,
-            option.password.expose(),
-            &SocksAddr::encode(&magic),
-        )
+        let mut stream = super::shadowsocks::connect_outbound(server, option, &magic)
         .await
         .map_err(|e| handshake("ss-uot", e))?;
         if option.udp_over_tcp_version != 1 {
@@ -1524,7 +1581,7 @@ impl SsUot {
 
 /// Read half of one destination-bound ss UoT association.
 pub struct SsUotReader {
-    read: tokio::io::ReadHalf<super::shadowsocks::SsStream<BoxStream>>,
+    read: tokio::io::ReadHalf<BoxStream>,
     version: u8,
     bound: Target,
 }
@@ -1593,7 +1650,7 @@ impl SsUotReader {
 
 /// Write half of one destination-bound ss UoT association.
 pub struct SsUotWriter {
-    write: tokio::io::WriteHalf<super::shadowsocks::SsStream<BoxStream>>,
+    write: tokio::io::WriteHalf<BoxStream>,
     version: u8,
     bound: Target,
 }

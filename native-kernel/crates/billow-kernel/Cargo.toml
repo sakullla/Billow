@@ -60,6 +60,7 @@ rustls-pemfile.workspace = true
 rustls-pki-types.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+shadowsocks.workspace = true
 smoltcp.workspace = true
 socket2.workspace = true
 serde.workspace = true

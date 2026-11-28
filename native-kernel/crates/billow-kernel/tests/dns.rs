@@ -332,7 +332,7 @@ fn make_cert() -> Option<CertPair> {
     })
 }
 
-fn tls_acceptor(cert: &CertPair) -> tokio_rustls::TlsAcceptor {
+fn tls_server_config(cert: &CertPair) -> rustls::ServerConfig {
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     let pem = std::fs::read(&cert.cert_pem).unwrap();
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut std::io::BufReader::new(&pem[..]))
@@ -343,11 +343,14 @@ fn tls_acceptor(cert: &CertPair) -> tokio_rustls::TlsAcceptor {
     ))
     .unwrap()
     .expect("private key");
-    let config = rustls::ServerConfig::builder()
+    rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key as PrivateKeyDer<'static>)
-        .expect("server tls config");
-    tokio_rustls::TlsAcceptor::from(Arc::new(config))
+        .expect("server tls config")
+}
+
+fn tls_acceptor(cert: &CertPair) -> tokio_rustls::TlsAcceptor {
+    tokio_rustls::TlsAcceptor::from(Arc::new(tls_server_config(cert)))
 }
 
 fn spawn_dot_dns(cert: &CertPair, map: HashMap<(String, u16), (Vec<IpAddr>, u8, u32)>) -> u16 {
@@ -554,24 +557,8 @@ fn parses_dns_and_hosts_like_the_pinned_defaults() {
 fn rejects_unimplemented_dns_shapes_by_name() {
     let cases = [
         (
-            "quic://dns.example",
-            "DoQ",
-        ),
-        (
             "system://",
             "system://",
-        ),
-        (
-            "https://dns.example/dns-query#h3=true",
-            "h3=true",
-        ),
-        (
-            "https://dns.example/dns-query#ecs=1.2.3.0/24",
-            "client subnet",
-        ),
-        (
-            "https://dns.example/dns-query#PROXY",
-            "routing through proxy",
         ),
     ];
     for (nameserver, needle) in cases {
@@ -594,10 +581,6 @@ fn rejects_unimplemented_dns_shapes_by_name() {
             "{yaml}: {error}"
         );
     };
-    rejects(
-        "mixed-port: 18990\ndns:\n  enable: true\n  nameserver: [1.1.1.1]\n  fake-ip-filter-mode: rule\n  enhanced-mode: fake-ip\n",
-        "rule mode",
-    );
     rejects(
         "mixed-port: 18990\ndns:\n  enable: true\n  nameserver: [1.1.1.1]\n  respect-rules: true\n",
         "proxy-server-nameserver",
@@ -910,6 +893,57 @@ async fn dot_and_doh_transports_verify_the_server_certificate() {
         Some(IpAddr::V4(Ipv4Addr::new(10, 2, 0, 2)))
     );
     kernel.stop().ok();
+    let _ = std::fs::remove_dir_all(&cert.dir);
+}
+
+#[tokio::test]
+async fn forced_doh_http3_carries_dns_and_verifies_the_certificate() {
+    use billow_kernel::outbound::h3;
+    use quinn::crypto::rustls::QuicServerConfig;
+
+    let Some(cert) = make_cert() else {
+        eprintln!("skipping DoH HTTP/3: the openssl CLI is unavailable");
+        return;
+    };
+    let reply = Ipv4Addr::new(10, 3, 0, 1);
+    let mut server_config = tls_server_config(&cert);
+    server_config.alpn_protocols = vec![b"h3".to_vec()];
+    let config = quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_config).unwrap()));
+    let endpoint = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = endpoint.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let client = endpoint.accept().await.unwrap().await.unwrap();
+        let mut control = client.open_uni().await.unwrap();
+        control.write_all(&[0, 4, 0]).await.unwrap(); // control stream, empty SETTINGS
+        let (mut send, mut recv) = client.accept_bi().await.unwrap();
+        let (frame_type, payload) = h3::read_frame(&mut recv).await.unwrap().unwrap();
+        assert_eq!(frame_type, 1);
+        let headers = h3::decode_field_section(&payload).unwrap();
+        let path = headers.iter().find(|(key, _)| key == ":path").unwrap().1.as_str();
+        let query = base64_url_decode(path.strip_prefix("/dns-query?dns=").unwrap()).unwrap();
+        assert_eq!(parse_question(&query).unwrap().0, "doh3.test");
+        let headers = h3::encode_field_section(&[(":status", "200"), ("content-type", "application/dns-message")]);
+        let answer = build_answer(&query, &[IpAddr::V4(reply)], 0, 60);
+        let mut response = Vec::new();
+        for (kind, payload) in [(1, headers), (0, answer[..12].to_vec()), (0, answer[12..].to_vec())] {
+            h3::encode_varint(kind, &mut response);
+            h3::encode_varint(payload.len() as u64, &mut response);
+            response.extend(payload);
+        }
+        send.write_all(&response).await.unwrap();
+        send.finish().unwrap();
+        let _ = send.stopped().await;
+    });
+    let ca = cert.ca_pem.display();
+    let yaml = format!("mixed-port: {}
+tls:
+  custom-cert: ['{ca}']
+{}", free_port(),
+        dns_block(&format!("'https://127.0.0.1:{port}/dns-query#h3=true'"), ""));
+    let mut kernel = start_kernel(&yaml);
+    assert_eq!(kernel.dns().unwrap().resolve_one("doh3.test").await, Some(IpAddr::V4(reply)));
+    peer.await.unwrap();
+    kernel.stop().unwrap();
     let _ = std::fs::remove_dir_all(&cert.dir);
 }
 
@@ -1493,4 +1527,97 @@ async fn fallback_geoip_code_negation_matches_the_pinned_filter() {
         kernel.stop().ok();
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn doq_sends_a_zero_dns_id_and_masks_the_edns_subnet() {
+    use quinn::crypto::rustls::QuicServerConfig;
+
+    let Some(cert) = make_cert() else { return };
+    let reply = Ipv4Addr::new(10, 3, 0, 9);
+    let mut server_config = tls_server_config(&cert);
+    server_config.alpn_protocols = vec![b"doq".to_vec()];
+    let server_config = quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_config).unwrap()));
+    let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let port = endpoint.local_addr().unwrap().port();
+    let peer = tokio::spawn(async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let length = recv.read_u16().await.unwrap();
+        let mut query = vec![0; usize::from(length)];
+        recv.read_exact(&mut query).await.unwrap();
+        assert_eq!(&query[..2], &[0, 0]);
+        assert_eq!(&query[10..12], &[0, 1]);
+        // 192.0.2.255/25 is normalized to 192.0.2.128/25.
+        assert!(query.ends_with(&[0, 8, 0, 8, 0, 1, 25, 0, 192, 0, 2, 128]));
+        let answer = build_answer(&query, &[IpAddr::V4(reply)], 0, 60);
+        send.write_u16(answer.len() as u16).await.unwrap();
+        send.write_all(&answer).await.unwrap();
+        send.finish().unwrap();
+        let _ = send.stopped().await;
+    });
+    let ca = cert.ca_pem.display();
+    let yaml = format!(
+        "mixed-port: {}\ntls:\n  custom-cert: ['{ca}']\n{}",
+        free_port(), dns_block(&format!("'quic://127.0.0.1:{port}#ecs=192.0.2.255/25'"), "")
+    );
+    let mut kernel = start_kernel(&yaml);
+    assert_eq!(kernel.dns().unwrap().resolve_one("doq.test").await, Some(IpAddr::V4(reply)));
+    peer.await.unwrap();
+    kernel.stop().unwrap();
+    let _ = std::fs::remove_dir_all(&cert.dir);
+}
+
+#[tokio::test]
+async fn named_dns_route_dials_the_selected_group_member() {
+    let proxy = common::spawn_socks5_node();
+    let record = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+    let port = spawn_tcp_dns(answer_map(&[("named.test", record)]));
+    let yaml = format!(
+        "mixed-port: {}\nproxies:\n  - {{name: hop, type: socks5, server: 127.0.0.1, port: {}}}\nproxy-groups:\n  - {{name: via, type: select, proxies: [hop]}}\n{}",
+        free_port(), proxy.port, dns_block(&format!("'tcp://127.0.0.1:{port}#via'"), "")
+    );
+    let mut kernel = start_kernel(&yaml);
+    assert_eq!(kernel.dns().unwrap().resolve_one("named.test").await, Some(record));
+    assert_eq!(proxy.connections.load(Ordering::Relaxed), 1);
+    kernel.stop().unwrap();
+}
+
+#[tokio::test]
+async fn fake_ip_rules_choose_real_answers_and_restore_fake_ip_across_restart() {
+    let record = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 12));
+    let server = spawn_udp_dns(answer_map(&[("real.test", record)]));
+    let yaml = format!(
+        "mixed-port: {}\nprofile: {{store-fake-ip: true}}\n{}",
+        free_port(),
+        dns_block(&format!("udp://127.0.0.1:{}", server.port),
+            "  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter-mode: rule\n  fake-ip-filter: ['DOMAIN,real.test,real-ip', 'MATCH,fake-ip']\n")
+    );
+    let path = std::env::temp_dir().join(format!("billow-fake-ip-test-{}", free_port()));
+    let loaded = load_config(&yaml, "dns-cache.yaml").unwrap();
+    let start = || Kernel::start_with_options(&loaded, None, path.clone(), Limits::default(),
+        &billow_kernel::KernelOptions { cache_dir: Some(path.clone()), ..Default::default() }).unwrap().0;
+    let mut kernel = start();
+    let dns = kernel.dns().unwrap();
+    let query = |name: &str| {
+        let mut packet = vec![0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        encode_name(&mut packet, name);
+        packet.extend_from_slice(&[0, 1, 0, 1]);
+        packet
+    };
+    assert!(dns.answer_query(&query("real.test")).await.ends_with(&[192, 0, 2, 12]));
+    let answer = dns.answer_query(&query("fake.test")).await;
+    assert!(answer.ends_with(&[198, 18, 0, 4]));
+    kernel.stop().unwrap();
+    drop(kernel);
+    let mut kernel = start();
+    let dns = kernel.dns().unwrap();
+    assert_eq!(dns.find_host_by_ip("198.18.0.4".parse().unwrap()).as_deref(), Some("fake.test"));
+    dns.flush_fake_ip();
+    kernel.stop().unwrap();
+    drop(kernel);
+    let mut kernel = start();
+    assert_eq!(kernel.dns().unwrap().find_host_by_ip("198.18.0.4".parse().unwrap()), None);
+    kernel.stop().unwrap();
+    let _ = std::fs::remove_dir_all(path);
 }

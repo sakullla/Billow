@@ -26,9 +26,8 @@ use std::io;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use crate::outbound::ipstack;
 use crate::outbound::tcp::{
-    build_segment, parse_segment, TcpSegment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN,
+    build_tcp_packet, parse_segment, TcpSegment, FLAG_ACK, FLAG_FIN, FLAG_PSH, FLAG_RST, FLAG_SYN,
 };
 
 /// Bytes the application may queue for transmission.
@@ -206,22 +205,27 @@ impl ServerTcp {
 
     /// Whether the application may hand over more bytes.
     pub fn can_accept(&self) -> bool {
-        self.error.is_none()
+        self.send_capacity() > 0
+    }
+
+    pub(super) fn send_capacity(&self) -> usize {
+        if self.error.is_none()
             && matches!(
                 self.state,
                 ServerState::Established | ServerState::CloseWait
             )
             && !self.app_shutdown
-            && self.send_queue.len() < SEND_BUFFER
+        {
+            SEND_BUFFER - self.send_queue.len()
+        } else {
+            0
+        }
     }
 
     /// Queue application bytes; returns how many were accepted (0 when the
     /// send buffer is full or the connection cannot carry data).
     pub fn enqueue(&mut self, data: &[u8]) -> usize {
-        if !self.can_accept() {
-            return 0;
-        }
-        let accepted = data.len().min(SEND_BUFFER - self.send_queue.len());
+        let accepted = data.len().min(self.send_capacity());
         self.send_queue.extend(&data[..accepted]);
         accepted
     }
@@ -253,6 +257,20 @@ impl ServerTcp {
         self.buffered -= data.len();
         self.ack_pending = true;
         Some(data)
+    }
+
+    pub(crate) fn append_received_prefix(&self, out: &mut Vec<u8>, limit: usize) {
+        let mut copied = out.len();
+        for data in &self.received {
+            if copied >= data.len() {
+                copied -= data.len();
+                continue;
+            }
+            let length = (data.len() - copied).min(limit - out.len());
+            out.extend_from_slice(&data[copied..copied + length]);
+            copied = 0;
+            if out.len() == limit { break; }
+        }
     }
 
     pub fn received_empty(&self) -> bool {
@@ -316,8 +334,8 @@ impl ServerTcp {
         }
         self.snd_una = segment.ack;
         self.snd_wnd = segment.window;
-        self.snd_wl1 = segment.ack;
-        self.snd_wl2 = segment.seq;
+        self.snd_wl1 = segment.seq;
+        self.snd_wl2 = segment.ack;
         self.unacked.clear();
         self.state = ServerState::Established;
         self.rto = INITIAL_RTO;
@@ -350,12 +368,14 @@ impl ServerTcp {
         } else if segment.payload.is_empty() && segment.window == self.snd_wnd {
             self.dup_acks = self.dup_acks.saturating_add(1);
         }
-        if seq_after(segment.ack, self.snd_wl1)
-            || (segment.ack == self.snd_wl1 && seq_after(segment.seq, self.snd_wl2))
+        // RFC 9293 allows a pure window update with unchanged SEQ and ACK.
+        if !seq_before(segment.ack, self.snd_una)
+            && (seq_after(segment.seq, self.snd_wl1)
+                || (segment.seq == self.snd_wl1 && !seq_before(segment.ack, self.snd_wl2)))
         {
             self.snd_wnd = segment.window;
-            self.snd_wl1 = segment.ack;
-            self.snd_wl2 = segment.seq;
+            self.snd_wl1 = segment.seq;
+            self.snd_wl2 = segment.ack;
         }
     }
 
@@ -467,8 +487,8 @@ impl ServerTcp {
         };
         front.sent_at = now;
         front.retransmits = retransmits;
-        let (seq, flags, mss, payload) = (front.seq, front.flags, front.mss, front.payload.clone());
-        let packet = self.packet(seq, self.rcv_nxt, flags, mss, &payload);
+        let front = &self.unacked[0];
+        let packet = self.packet(front.seq, self.rcv_nxt, front.flags, front.mss, &front.payload);
         self.outbox.push_back(packet);
     }
 
@@ -534,7 +554,7 @@ impl ServerTcp {
                     seq,
                     flags: FLAG_ACK | FLAG_PSH,
                     len: count,
-                    payload: payload.clone(),
+                    payload,
                     mss: None,
                     sent_at: now,
                     retransmits: 0,
@@ -588,7 +608,7 @@ impl ServerTcp {
     }
 
     fn packet(&self, seq: u32, ack: u32, flags: u8, mss: Option<u16>, payload: &[u8]) -> Vec<u8> {
-        let segment = build_segment(
+        build_tcp_packet(
             self.cfg.local,
             self.cfg.remote,
             self.cfg.local_port,
@@ -599,12 +619,6 @@ impl ServerTcp {
             self.advertised_window(),
             mss,
             payload,
-        );
-        ipstack::build_packet(
-            self.cfg.local,
-            self.cfg.remote,
-            ipstack::IPPROTO_TCP,
-            &segment,
             self.cfg.hop_limit,
         )
         .unwrap_or_default()
@@ -622,6 +636,7 @@ fn seq_before(a: u32, b: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outbound::{ipstack, tcp::build_segment};
 
     fn config() -> ServerConfig {
         ServerConfig {
@@ -753,6 +768,54 @@ mod tests {
         assert_eq!(parsed.payload, b"HTTP/1.1 200 OK\r\n");
         assert_eq!(parsed.flags & FLAG_ACK, FLAG_ACK);
         assert_eq!(connection.take_received(), None);
+    }
+
+    #[tokio::test]
+    async fn upstream_read_leaves_excess_data_upstream_until_the_queue_drains() {
+        let syn = syn_packet(1, Some(1460));
+        let mut connection = ServerTcp::accept(config(), &parse_segment(&syn).unwrap());
+        permissive_peer(&mut connection);
+        assert_eq!(connection.enqueue(&vec![0; SEND_BUFFER - 3]), SEND_BUFFER - 3);
+
+        let mut upstream = b"hello".as_slice();
+        let read = crate::tunnel::read_into_tcp(&mut upstream, &mut connection, 16 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(read, 3);
+        assert_eq!(upstream, b"lo");
+        assert!(!connection.can_accept());
+
+        connection.poll_transmit(Instant::now()).expect("data");
+        let read = crate::tunnel::read_into_tcp(&mut upstream, &mut connection, 16 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(read, 2);
+        assert!(upstream.is_empty());
+    }
+
+    #[test]
+    fn pure_window_update_resumes_transmission_after_zero_window() {
+        let cfg = config();
+        let syn = syn_packet(1, Some(cfg.mss));
+        let mut connection = ServerTcp::accept(cfg, &parse_segment(&syn).unwrap());
+        let seq = permissive_peer(&mut connection);
+        let ack = connection.snd_una;
+        let window_update = |seq, window| {
+            build_tcp_packet(
+                cfg.remote, cfg.local, cfg.remote_port, cfg.local_port, seq, ack, FLAG_ACK,
+                window, None, &[], cfg.hop_limit,
+            )
+            .unwrap()
+        };
+        let now = Instant::now();
+        connection.on_packet(&window_update(seq, 0), now);
+        assert_eq!(connection.enqueue(b"resume"), 6);
+        assert!(connection.poll_transmit(now).is_none());
+
+        connection.on_packet(&window_update(seq, 4096), now);
+        connection.on_packet(&window_update(seq.wrapping_sub(1), 0), now);
+        let packet = connection.poll_transmit(now).expect("the device reopened its window");
+        assert_eq!(parse_segment(&packet).unwrap().payload, b"resume");
     }
 
     #[test]

@@ -469,7 +469,7 @@ fn a_user_tun_block_is_staged_away_instead_of_rejected() {
     let staged = std::fs::read_to_string(dir.join("config.rust.yaml")).expect("staged file");
     let value: serde_yaml::Value = serde_yaml::from_str(&staged).expect("staged YAML");
     assert!(value.get("tun").is_none(), "{staged}");
-    assert!(value.get("sniffer").is_none(), "{staged}");
+    assert_eq!(value["sniffer"]["enable"].as_bool(), Some(true), "{staged}");
     vpn.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

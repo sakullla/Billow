@@ -1845,6 +1845,20 @@ impl Drop for ProcessRuntime {
 }
 
 impl ProcessRuntime {
+    fn seed_geodata(&self) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        {
+            let apk = crate::kernel::android_app_dir("sourceDir")
+                .ok_or_else(|| "无法读取安装包中的 GEO 数据".to_string())?;
+            crate::bundled_geo::seed(&apk, &self.home_dir)?;
+        }
+        #[cfg(not(target_os = "android"))]
+        if let Some(resources) = &self.bundled_resources {
+            crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
+        }
+        Ok(())
+    }
+
     fn launch(&mut self, config_yaml: &str, force: bool) -> Result<(), String> {
         let Some(path) = self.engine_path() else {
             return Err(missing_kernel());
@@ -1852,9 +1866,7 @@ impl ProcessRuntime {
         if !path.is_file() {
             return Err(missing_kernel());
         }
-        if let Some(resources) = &self.bundled_resources {
-            crate::bundled_geo::seed_directory(&resources.join("geo"), &self.home_dir)?;
-        }
+        self.seed_geodata()?;
         let priv_now = kernel_file_privileged(&path);
         let tun_requested = yaml_tun_enabled(config_yaml);
         // Android stages its `tun` block away before this point, so a Rust
@@ -1971,12 +1983,6 @@ impl ProcessRuntime {
         let config_path = self.work_dir.join(format!("runtime-{nanos}.yaml"));
         fs::write(&config_path, &effective_yaml).map_err(|_| "配置没有写入".to_string())?;
         let controller = nodes::controller_from_yaml(&effective_yaml);
-        #[cfg(target_os = "android")]
-        {
-            let apk = crate::kernel::android_app_dir("sourceDir")
-                .ok_or_else(|| "无法读取安装包中的 GEO 数据".to_string())?;
-            crate::bundled_geo::seed(&apk, &self.work_dir)?;
-        }
         let mut command = Command::new(&path);
         let config: Value = serde_yaml::from_str(&effective_yaml).unwrap_or(Value::Null);
         let tun = config.get("tun").and_then(|t| t.get("enable")).and_then(Value::as_bool) == Some(true);
@@ -1986,9 +1992,7 @@ impl ProcessRuntime {
                 command.arg("-f").arg(&config_path);
             }
             Engine::Rust => {
-                // The native kernel takes the YAML positionally; Mihomo's
-                // `-d`/`-f` flags and controller API do not apply to it.
-                command.arg(&config_path);
+                command.arg(&config_path).arg("--geosite-dir").arg(&self.home_dir);
             }
         }
         // Android hands the established VpnService TUN to the Rust process as
@@ -2242,6 +2246,9 @@ impl KernelLaunch for ProcessRuntime {
         if !path.is_file() {
             return Err(missing_kernel());
         }
+        if self.engine == Engine::Rust {
+            self.seed_geodata()?;
+        }
         fs::create_dir_all(&self.work_dir).map_err(|_| "配置没有写入".to_string())?;
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2257,7 +2264,8 @@ impl KernelLaunch for ProcessRuntime {
             Engine::Rust => {
                 // `--check` binds its listener before exiting; port 0 keeps the
                 // validation off the live session's port.
-                command.arg(&config_path).arg("--check").arg("--port").arg("0");
+                command.arg(&config_path).arg("--geosite-dir").arg(&self.home_dir);
+                command.arg("--check").arg("--port").arg("0");
             }
         }
         let output = command.stdin(Stdio::null()).output();
@@ -4362,7 +4370,7 @@ impl ProfileBook {
                 Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
                 None => yaml,
             };
-            let yaml = self.finish_yaml_for(engine, &yaml, &self.custom_selected);
+            let yaml = self.finish_yaml(&yaml, &self.custom_selected);
             return Ok((yaml, port));
         }
         let Some(profile) = self.profiles.iter().find(|profile| profile.id == active) else {
@@ -4402,7 +4410,7 @@ impl ProfileBook {
             Some(mode) => force_mode(&yaml, mode).map_err(StartError::Failed)?,
             None => yaml,
         };
-        let yaml = self.finish_yaml_for(engine, &yaml, &selected);
+        let yaml = self.finish_yaml(&yaml, &selected);
         Ok((yaml, port))
     }
 
@@ -4414,20 +4422,10 @@ impl ProfileBook {
         }
     }
 
-    /// Adds only the launch-time keys the selected engine actually serves.
-    /// `external-controller` is Billow's own control adapter for Mihomo; the
-    /// native kernel has no controller yet and rejects unknown keys, so it must
-    /// receive the user's configuration unchanged (T5 owns its control layer).
+    /// Supplies the local controller both engines use to publish provider
+    /// groups and accept node selections.
     fn finish_yaml(&self, yaml: &str, selected: &BTreeMap<String, String>) -> String {
-        self.finish_yaml_for(self.engine, yaml, selected)
-    }
-
-    fn finish_yaml_for(&self, engine: Engine, yaml: &str, selected: &BTreeMap<String, String>) -> String {
-        let prioritized = nodes::prioritize_selections(yaml, selected);
-        match engine {
-            Engine::Mihomo => nodes::ensure_controller(&prioritized),
-            Engine::Rust => prioritized,
-        }
+        nodes::ensure_controller(&nodes::prioritize_selections(yaml, selected))
     }
 
     fn link_model(&self) -> takeover::LinkModel {
@@ -8072,7 +8070,7 @@ mod tests {
         let port_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = port_socket.local_addr().unwrap().port();
         drop(port_socket);
-        let yaml = format!("mixed-port: {port}\nmode: rule\nrules:\n  - MATCH,DIRECT\n");
+        let yaml = format!("mixed-port: {port}\nmode: rule\nrules:\n  - GEOSITE,cn,DIRECT\n  - MATCH,DIRECT\n");
         let mut runtime = ProcessRuntime::new(dir.0.join("profiles"));
         runtime.home_dir = home;
         runtime.set_bundled_resources(resources.clone());
@@ -8109,12 +8107,10 @@ mod tests {
         assert!(back.system_proxy);
         assert_eq!(marker_through_proxy(port, target, "mihomo-2"), "pong:mihomo-2");
 
-        // A configuration the native kernel cannot accept is refused before the
-        // live Mihomo session is released. `sniffer.enable` stays a named
-        // rejection (proxy groups became supported in T23, so they are no
-        // longer a valid negative case).
+        // This supported Mihomo domain selector is still rejected by the
+        // Rust sniffer. The live session must survive target validation.
         let grouped = format!(
-            "mixed-port: {port}\nmode: rule\nsniffer:\n  enable: true\nrules:\n  - MATCH,DIRECT\n"
+            "mixed-port: {port}\nmode: rule\nsniffer:\n  enable: true\n  force-domain: ['geosite:cn']\nrules:\n  - MATCH,DIRECT\n"
         );
         book.save_profile_content("p1", &grouped, &mut runtime);
         let refused = book
@@ -8181,6 +8177,46 @@ mod tests {
         assert!(result.is_ok(), "kernel startup failed; inspect the private fixture's startup-error.log");
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
         runtime.stop();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    #[ignore = "requires BILLOW_TEST_PROFILE_DIR, BILLOW_TEST_RUST_KERNEL and BILLOW_TEST_RESOURCES"]
+    fn rust_subscription_runs_through_profile_session() {
+        let fixture = PathBuf::from(std::env::var_os("BILLOW_TEST_PROFILE_DIR").unwrap());
+        let resources = PathBuf::from(std::env::var_os("BILLOW_TEST_RESOURCES").unwrap());
+        let rust = PathBuf::from(std::env::var_os("BILLOW_TEST_RUST_KERNEL").unwrap());
+        let content = fs::read_to_string(fixture.join("input.yaml")).unwrap();
+        let dir = temp_dir("rust-subscription-session");
+        let mut book = ProfileBook::open(dir.0.join("book"));
+        book.set_platform(ClientPlatform::Desktop);
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+        book.settings.mixed_port = Some(port);
+
+        let mut runtime = ProcessRuntime::new(dir.0.join("runtime"));
+        runtime.home_dir = dir.0.join("home");
+        runtime.set_bundled_resources(resources);
+        runtime.set_rust_kernel_path(Some(rust));
+        let mut proxy = MemoryProxy::default();
+        let mut tun = MemoryTun::default();
+        let mut vpn = MemoryVpn::default();
+        book.switch_engine(Engine::Rust, &mut runtime, &mut proxy, &mut tun, &mut vpn).unwrap();
+
+        let added = book.add_local("subscription.yaml", &content);
+        let id = added.profiles[0].id.clone();
+        let enabled = book.enable(&id, &RejectSource, &mut runtime);
+        if let Some(failure) = &enabled.failure {
+            fs::write(fixture.join("profile-session-error.log"), failure).unwrap();
+        }
+        assert!(enabled.kernel_running, "subscription failed to start through ProfileBook");
+        assert!(nodes::controller_from_yaml(book.runtime_base.as_deref().unwrap()).is_some());
+        let connected = book.connect(&mut runtime, &mut proxy, &mut tun, &mut vpn);
+        assert!(connected.connected);
+        assert_eq!(connected.running_engine.as_deref(), Some("rust"));
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        assert!(!connected.node_catalog.is_empty(), "the controller must expose subscription groups");
+        book.disconnect(&mut runtime, &mut proxy, &mut tun, &mut vpn);
+        runtime.shutdown();
     }
 
     /// Opt-in host smoke test: uses an installed Mihomo, never writes system proxy settings.
@@ -12846,7 +12882,7 @@ proxy-groups:
         book.connect(&mut kernel, &mut proxy, &mut tun, &mut vpn);
         assert!(kernel.alive);
         assert_eq!(book.snapshot().running_engine.as_deref(), Some("rust"));
-        assert!(!kernel.last.contains("external-controller"), "{}", kernel.last);
+        assert!(nodes::controller_from_yaml(&kernel.last).is_some());
     }
 
     #[test]
@@ -12907,18 +12943,6 @@ proxy-groups:
         assert!(snapshot.failure.as_deref().is_some_and(|message| message.contains("已恢复")));
     }
 
-    #[test]
-    fn controller_injection_belongs_to_the_mihomo_engine_only() {
-        let dir = temp_dir("engine-yaml");
-        let book = ProfileBook::open(&dir.0);
-        let yaml = "mixed-port: 7890\nmode: rule\nrules:\n  - MATCH,DIRECT\n";
-        let selected = BTreeMap::new();
-        let mihomo = book.finish_yaml_for(Engine::Mihomo, yaml, &selected);
-        let rust = book.finish_yaml_for(Engine::Rust, yaml, &selected);
-        assert!(mihomo.contains("external-controller"));
-        assert!(!rust.contains("external-controller"));
-        assert!(!rust.contains("secret:"));
-    }
 
     #[test]
     fn the_native_kernel_never_receives_the_launcher_tun_block() {
